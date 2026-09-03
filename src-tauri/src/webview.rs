@@ -118,5 +118,55 @@ pub fn grant_media_permissions(webview: &tauri::webview::PlatformWebview) {
         if let Err(err) = result {
             eprintln!("[voxa] falha ao registrar PermissionRequested: {err}");
         }
+
+        suppress_screen_capture_bar(&core);
+    }
+}
+
+/// Remove a faixa "tauri.localhost esta compartilhando sua tela".
+///
+/// Essa barra e a interface padrao do WebView2 para captura de tela. Num
+/// navegador ela faz todo sentido: avisa que um site qualquer esta te
+/// gravando. Aqui ela e ruido — quem iniciou a captura foi o proprio usuario,
+/// clicando num botao deste app, e o app ja mostra o estado de transmissao em
+/// tres lugares (barra do canal, tile e lista de membros). Pior: ela cobre o
+/// campo de mensagem e exibe uma URL interna que nao significa nada para quem
+/// usa.
+///
+/// `SetHandled(TRUE)` diz ao WebView2 que a interface e responsabilidade
+/// nossa; a captura em si continua (`SetCancel(FALSE)`).
+///
+/// Requer WebView2 Runtime recente (interface ICoreWebView2_27). Em runtime
+/// antigo o cast falha, registramos e seguimos — a barra volta a aparecer,
+/// mas nada quebra.
+#[cfg(target_os = "windows")]
+unsafe fn suppress_screen_capture_bar(
+    core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
+) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_27;
+    use webview2_com::ScreenCaptureStartingEventHandler;
+    use windows::core::Interface;
+
+    let core27: ICoreWebView2_27 = match core.cast() {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("[voxa] WebView2 antigo: a barra de compartilhamento nao pode ser removida");
+            return;
+        }
+    };
+
+    let mut token: i64 = 0;
+    let result = core27.add_ScreenCaptureStarting(
+        &ScreenCaptureStartingEventHandler::create(Box::new(|_, args| {
+            let Some(args) = args else { return Ok(()) };
+            args.SetCancel(false)?;
+            args.SetHandled(true)?;
+            Ok(())
+        })),
+        &mut token,
+    );
+
+    if let Err(err) = result {
+        eprintln!("[voxa] falha ao registrar ScreenCaptureStarting: {err}");
     }
 }

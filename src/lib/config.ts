@@ -59,7 +59,13 @@ export const PC_CONFIG: RTCConfiguration = {
 
 /* ------------------------------- VIDEO ---------------------------------- */
 
-export type VideoPresetId = "lan" | "alta" | "equilibrada" | "economica";
+export type VideoPresetId =
+  | "lan"
+  | "alta"
+  | "nitida"
+  | "fluida"
+  | "equilibrada"
+  | "economica";
 
 export interface VideoPreset {
   id: VideoPresetId;
@@ -96,6 +102,34 @@ export const VIDEO_PRESETS: Record<VideoPresetId, VideoPreset> = {
     maxBitrate: 15_000_000,
     startBitrate: 8_000_000,
     minBitrate: 2_500_000,
+  },
+  // 1080p30: mesma nitidez da "Alta" com metade dos quadros. Serve para
+  // assistir alguem programar, desenhar ou ler — onde texto importa mais que
+  // fluidez, e onde metade do bitrate ja basta.
+  nitida: {
+    id: "nitida",
+    label: "Nitida",
+    hint: "1080p30 · ate 8 Mbps",
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    maxBitrate: 8_000_000,
+    startBitrate: 4_000_000,
+    minBitrate: 1_500_000,
+  },
+  // 720p60: o oposto — sacrifica pixels para manter 60 quadros. E o preset
+  // certo para jogo rapido em conexao modesta, porque movimento fluido pesa
+  // mais que resolucao quando a tela nao para quieta.
+  fluida: {
+    id: "fluida",
+    label: "Fluida",
+    hint: "720p60 · ate 8 Mbps",
+    width: 1280,
+    height: 720,
+    fps: 60,
+    maxBitrate: 8_000_000,
+    startBitrate: 4_000_000,
+    minBitrate: 1_500_000,
   },
   equilibrada: {
     id: "equilibrada",

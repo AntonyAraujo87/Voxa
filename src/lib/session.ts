@@ -242,11 +242,16 @@ class Session {
     if (s.activeVoice === channelId) return;
     if (s.activeVoice) this.leaveVoice({ keepMic: true });
 
+    // Microfone indisponivel nao pode barrar a entrada. Quem nao tem mic,
+    // negou a permissao ou esta com o dispositivo ocupado por outro programa
+    // ainda quer ouvir os outros — e antes disso o canal simplesmente nao
+    // abria, com um toast vermelho e nenhuma explicacao do que fazer.
+    let semMicrofone = false;
     try {
       await this.openMic();
     } catch (err) {
-      s.toast("error", (err as Error).message);
-      return;
+      semMicrofone = true;
+      s.toast("info", `Entrando so para ouvir — ${(err as Error).message}`);
     }
 
     // Marca o canal ANTES do ack: se alguem entrar nesse intervalo, o
@@ -256,6 +261,10 @@ class Session {
 
     // Nos chegamos por ultimo => nos ofertamos pra todo mundo que ja estava.
     for (const peer of peers) this.mesh.addPeer(peer.id, true);
+
+    // Sem microfone o estado precisa sair como mudo, senao os outros veem um
+    // icone de microfone aberto que nunca vai produzir som.
+    if (semMicrofone) app.setState({ muted: true });
     this.signaling.setState({ muted: app.getState().muted });
   }
 

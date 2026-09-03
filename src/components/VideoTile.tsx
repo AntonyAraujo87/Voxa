@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { Loader2, Maximize2, MicOff, Minimize2, ScreenShare } from "lucide-react";
+import { Expand, Loader2, Maximize2, MicOff, Minimize2, ScreenShare, Shrink } from "lucide-react";
 import { useApp } from "../store/store";
 import { usePeerMedia, useLocalScreen } from "../store/mediaStore";
 import { Avatar } from "./Avatar";
@@ -102,6 +102,8 @@ interface Props {
 
 function VideoTileBase({ peerId, name, color, isSelf, muted, speaking, focused, hasScreen }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [emTelaCheia, setEmTelaCheia] = useState(false);
   const remote = usePeerMedia(peerId);
   const local = useLocalScreen();
   const stream = isSelf ? local : remote.screen;
@@ -145,9 +147,37 @@ function VideoTileBase({ peerId, name, color, isSelf, muted, speaking, focused, 
   const toggleFocus = () =>
     useApp.setState((s) => ({ focusPeer: s.focusPeer === peerId ? null : peerId }));
 
+  // O estado precisa vir do documento, nao de um clique nosso: sair com Esc
+  // ou pelo gesto do sistema tambem tem que atualizar o icone.
+  useEffect(() => {
+    const sync = () => setEmTelaCheia(document.fullscreenElement === containerRef.current);
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+
+  /**
+   * Tela cheia de verdade, sobre todo o monitor.
+   *
+   * Antes so existia o "destaque", que cresce dentro da janela — e a unica
+   * forma de tela cheia era o menu de contexto do WebView2, escondido atras
+   * de "Mostrar todas as opcoes". Agora: duplo clique no video, ou o botao no
+   * canto. Esc sai, que e o que todo mundo ja espera.
+   */
+  const toggleFullscreen = async () => {
+    const el = containerRef.current;
+    if (!el) return;
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await el.requestFullscreen({ navigationUI: "hide" });
+    } catch {
+      // Alguns estados da janela recusam; o destaque continua disponivel.
+    }
+  };
+
   return (
     <div
-      onDoubleClick={toggleFocus}
+      ref={containerRef}
+      onDoubleClick={hasScreen ? () => void toggleFullscreen() : toggleFocus}
       // size-full e obrigatorio: no modo destaque o pai tem altura vinda do
       // flex, e sem isso o tile ficaria com altura de conteudo — que e zero,
       // porque o <video> dentro dele pede 100% da altura do proprio tile.
@@ -192,13 +222,24 @@ function VideoTileBase({ peerId, name, color, isSelf, muted, speaking, focused, 
         {muted && <MicOff size={13} className="text-danger" />}
       </div>
 
-      <button
-        onClick={toggleFocus}
-        className="absolute right-2 top-2 grid size-7 place-items-center rounded bg-black/60 text-ink-soft opacity-0 transition-opacity hover:bg-black/80 group-hover:opacity-100"
-        title={focused ? "Sair do destaque" : "Destacar"}
-      >
-        {focused ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-      </button>
+      <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+        {hasScreen && (
+          <button
+            onClick={() => void toggleFullscreen()}
+            className="grid size-7 place-items-center rounded bg-black/60 text-ink-soft transition-colors hover:bg-black/80"
+            title={emTelaCheia ? "Sair da tela cheia (Esc)" : "Tela cheia (ou duplo clique)"}
+          >
+            {emTelaCheia ? <Shrink size={14} /> : <Expand size={14} />}
+          </button>
+        )}
+        <button
+          onClick={toggleFocus}
+          className="grid size-7 place-items-center rounded bg-black/60 text-ink-soft transition-colors hover:bg-black/80"
+          title={focused ? "Sair do destaque" : "Destacar na janela"}
+        >
+          {focused ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </button>
+      </div>
     </div>
   );
 }
