@@ -62,10 +62,13 @@ voz já tem seu lugar na lista ao lado. Clicar numa miniatura amplia com tela
 cheia e picture-in-picture. Começar a própria transmissão abre a grade sozinho,
 pela mesma lógica de conveniência.
 
-**Dois volumes, dois lugares.** O volume da voz de alguém fica ao lado da
-pessoa, no canal de voz — como no Discord. O volume da transmissão de tela é
-outro controle, independente, no próprio vídeo: uma pessoa pode estar alta na
-voz e baixa no jogo, ou o contrário.
+**Dois volumes, dois lugares, até 200%.** O volume da voz de alguém fica ao
+lado da pessoa, no canal de voz — como no Discord. O volume da transmissão de
+tela é outro controle, independente, no próprio vídeo: uma pessoa pode estar
+alta na voz e baixa no jogo, ou o contrário. Os dois vão até 200% — o
+`<audio>` do HTML trava em 100% por especificação, então acima disso o áudio
+passa por um `GainNode` do WebAudio, com aviso na interface a partir de 150%
+de que pode distorcer.
 
 O áudio de voz nunca depende da UI de transmissão — continua tocando mesmo com
 a grade fechada, minimizada ou em erro.

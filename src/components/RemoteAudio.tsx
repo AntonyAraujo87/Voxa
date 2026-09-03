@@ -1,16 +1,64 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useApp } from "../store/store";
 import { usePeerMedia } from "../store/mediaStore";
+import { audioContext } from "../lib/media";
 
 /* ---------------------------------------------------------------------------
-   Elementos <audio> invisiveis, um por fonte remota (microfone + som da tela).
+   Audio remoto (voz + som da transmissao), roteado por WebAudio em vez de
+   <audio>.volume — HTMLMediaElement.volume trava em 1.0 por especificacao;
+   o slider desta aplicacao vai ate 2.0 (200%), e so um GainNode alcanca isso.
+
    Ficam fora da grade de video de proposito: assim o audio nunca e cortado
    quando o tile some da tela (foco, thumbnail, scroll, ou nem existe tile —
    a maioria das chamadas nao tem ninguem transmitindo tela).
 
-   Voz e transmissao tem volumes INDEPENDENTES: uma pessoa pode estar alta
+   Voz e transmissao tem ganhos INDEPENDENTES: uma pessoa pode estar alta
    demais no microfone mas o audio do jogo dela estar baixo, ou vice-versa.
 --------------------------------------------------------------------------- */
+
+/**
+ * Liga um MediaStream a um GainNode no destino padrao do AudioContext.
+ *
+ * Reconstroi o grafo sempre que o STREAM muda — nao só o volume. O peer
+ * troca de objeto MediaStream a cada mute/unmute remoto (`new MediaStream([track])`
+ * em rtc/peer.ts), entao o source node antigo ficaria apontando pra um
+ * stream morto se so o ganho fosse atualizado.
+ */
+function useGainStream(stream: MediaStream | null, gain: number, silenciado: boolean) {
+  const gainNodeRef = useRef<GainNode | null>(null);
+
+  useEffect(() => {
+    if (!stream || stream.getAudioTracks().length === 0) return;
+
+    const ctx = audioContext();
+    const source = ctx.createMediaStreamSource(stream);
+    const gainNode = ctx.createGain();
+    gainNodeRef.current = gainNode;
+
+    source.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    return () => {
+      try {
+        source.disconnect();
+        gainNode.disconnect();
+      } catch {
+        /* stream ja parou, contexto ja fechou — nao ha o que desfazer */
+      }
+      if (gainNodeRef.current === gainNode) gainNodeRef.current = null;
+    };
+    // Recria so quando o STREAM troca. gain/silenciado tem seu proprio efeito
+    // abaixo, que atualiza o node existente sem religar a fonte.
+  }, [stream]);
+
+  // Ganho e mudo sao atualizados no node existente, sem recriar o grafo —
+  // arrastar o slider nao pode religar a fonte a cada pixel.
+  useEffect(() => {
+    const node = gainNodeRef.current;
+    if (!node) return;
+    node.gain.value = silenciado ? 0 : Math.max(0, gain);
+  }, [gain, silenciado]);
+}
 
 const PeerAudio = memo(function PeerAudio({
   peerId,
@@ -24,42 +72,9 @@ const PeerAudio = memo(function PeerAudio({
   streamVolume: number;
 }) {
   const media = usePeerMedia(peerId);
-  const micRef = useRef<HTMLAudioElement>(null);
-  const screenRef = useRef<HTMLAudioElement>(null);
-
-  // HTMLMediaElement.volume so vai ate 1. Acima disso seria preciso um
-  // GainNode do WebAudio, que adiciona um hop no grafo de audio — nao vale
-  // o custo de latencia so pra passar de 100%.
-  useEffect(() => {
-    if (micRef.current) micRef.current.volume = Math.min(1, Math.max(0, micVolume));
-  }, [micVolume, media.mic]);
-
-  useEffect(() => {
-    if (screenRef.current) screenRef.current.volume = Math.min(1, Math.max(0, streamVolume));
-  }, [streamVolume, media.screenAudio]);
-
-  useEffect(() => {
-    const el = micRef.current;
-    if (el && el.srcObject !== media.mic) {
-      el.srcObject = media.mic;
-      if (media.mic) void el.play().catch(() => {});
-    }
-  }, [media.mic]);
-
-  useEffect(() => {
-    const el = screenRef.current;
-    if (el && el.srcObject !== media.screenAudio) {
-      el.srcObject = media.screenAudio;
-      if (media.screenAudio) void el.play().catch(() => {});
-    }
-  }, [media.screenAudio]);
-
-  return (
-    <>
-      <audio ref={micRef} autoPlay muted={deafened} />
-      <audio ref={screenRef} autoPlay muted={deafened} />
-    </>
-  );
+  useGainStream(media.mic, micVolume, deafened);
+  useGainStream(media.screenAudio, streamVolume, deafened);
+  return null;
 });
 
 function RemoteAudioBase() {
@@ -80,7 +95,7 @@ function RemoteAudioBase() {
   );
 
   return (
-    <div className="hidden">
+    <>
       {peers.map((p) => (
         <PeerAudio
           key={p.id}
@@ -90,7 +105,7 @@ function RemoteAudioBase() {
           streamVolume={streamVolumes[p.userId] ?? 1}
         />
       ))}
-    </div>
+    </>
   );
 }
 
