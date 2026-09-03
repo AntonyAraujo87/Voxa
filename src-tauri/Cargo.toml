@@ -25,6 +25,7 @@ serde_json = "1"
 tauri-plugin-updater = "2.11.0"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-global-shortcut = "2.3.2"
+tauri-plugin-single-instance = "2.4.4"
 
 [target.'cfg(windows)'.dependencies]
 # Mesma versao que o wry usa (0.38.2) — precisa bater pra compartilhar os tipos COM.

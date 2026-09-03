@@ -45,6 +45,8 @@ interface Handlers {
   onChat?: (msg: ChatMessage) => void;
   onTyping?: (p: { channelId: string; name: string }) => void;
   onStatus?: (s: "connecting" | "online" | "offline") => void;
+  /** Reconectou depois de uma queda: o socket tem id NOVO. */
+  onReconnected?: (p: { selfId: string; roster: RosterEntry[] }) => void;
 }
 
 /**
@@ -120,8 +122,21 @@ export class Signaling {
         this.socket.once("connect", onReady);
         this.socket.connect();
       }
-      // Reidentifica automaticamente depois de cada reconexao.
-      this.socket.io.on("reconnect", () => this.socket.emit("hello", { user, token }, () => {}));
+      // Reidentifica depois de cada reconexao.
+      //
+      // O socket.io cria um socket NOVO ao reconectar, com id novo. Ignorar o
+      // ack aqui deixava o app usando o id antigo: a regra polite/impolite
+      // passava a comparar contra um id que nao existe mais, o proprio tile
+      // deixava de ser reconhecido como "eu", e — pior — o servidor via um
+      // socket sem canal de voz, avisava os outros que saimos e a malha morria
+      // enquanto a interface continuava dizendo "Voz conectada".
+      this.socket.io.on("reconnect", () => {
+        this.socket.emit("hello", { user, token }, (res: { selfId?: string; roster?: RosterEntry[] }) => {
+          if (!res?.selfId) return;
+          this.selfId = res.selfId;
+          this.handlers.onReconnected?.({ selfId: res.selfId, roster: res.roster ?? [] });
+        });
+      });
       // "nao autorizado" vem do middleware do servidor: nao adianta insistir.
       this.socket.on("connect_error", (err) => {
         if (/autorizado|token/i.test(err?.message ?? "")) {

@@ -2,7 +2,7 @@ import { AUDIO_PRESETS, VIDEO_PRESETS, type Channel } from "./config";
 import { LocalMedia } from "./localMedia";
 import { listDevices } from "./media";
 import { Mesh, type TuningState } from "./rtc";
-import { Signaling, type ChatMessage, type PeerUser } from "./signaling";
+import { Signaling, type ChatMessage, type PeerUser, type RosterEntry } from "./signaling";
 import { useApp } from "../store/store";
 import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
 import { loadChannels, loadMessages, saveMessage, supabaseEnabled, upsertUser } from "./supabase";
@@ -30,13 +30,22 @@ class Session {
   private pendingUpdate: (() => Promise<void>) | null = null;
   /** trava contra duplo clique / atalho repetido durante o await da captura */
   private sharePending = false;
+  /** serializa entradas em canal: dois cliques rapidos criavam duas malhas */
+  private joinPending: Promise<void> | null = null;
 
   constructor() {
     this.signaling = new Signaling({
       onStatus: (status) => app.setState({ status }),
+      onReconnected: ({ selfId, roster }) => void this.onReconnected(selfId, roster),
       onRoster: (roster) => app.setState({ roster }),
       onPeerState: (p) => app.getState().patchPeerState(p.id, p.state),
-      onSignal: ({ from, data }) => void this.mesh.handleSignal(from, data),
+      onSignal: ({ from, data }) => {
+        // Sinal atrasado de quem ficou para tras depois que saimos do canal
+        // criaria um peer fantasma: conexao viva, sem tile, sem ninguem para
+        // fecha-la. Fora de canal, nao ha negociacao legitima possivel.
+        if (!app.getState().activeVoice) return;
+        void this.mesh.handleSignal(from, data);
+      },
       onChat: (msg) => app.getState().pushMessage(msg),
       onTyping: ({ channelId, name }) =>
         app.setState((s) => ({ typing: { ...s.typing, [name + channelId]: Date.now() } })),
@@ -76,6 +85,29 @@ class Session {
       },
       onScreenEnded: () => this.stopShare(),
     });
+  }
+
+  /**
+   * Volta de uma queda do signaling (servidor dormindo, rede oscilando,
+   * redeploy). A identidade mudou e o servidor nos considera fora do canal:
+   * refazemos a malha do zero em vez de tentar remendar conexoes que apontam
+   * para um id que nao existe mais.
+   */
+  private async onReconnected(selfId: string, roster: RosterEntry[]) {
+    const canal = app.getState().activeVoice;
+    app.setState({ selfSocketId: selfId, roster, stats: {}, connState: {} });
+
+    if (!canal) return;
+
+    this.mesh.clear();
+    for (const r of roster) clearPeerMedia(r.id);
+
+    const { peers } = await this.signaling.joinVoice(canal);
+    for (const peer of peers) this.mesh.addPeer(peer.id, true);
+
+    const { muted, deafened, sharing } = app.getState();
+    this.signaling.setState({ muted, deafened, sharing });
+    app.getState().toast("ok", "Reconectado ao canal");
   }
 
   /* -------------------------------- boot -------------------------------- */
@@ -191,6 +223,15 @@ class Session {
   /* --------------------------------- voz -------------------------------- */
 
   async joinVoice(channelId: string) {
+    // `openMic` e o ack do servidor sao assincronos. Sem serializar, clicar em
+    // dois canais em sequencia rapida dispara duas entradas: a segunda comeca
+    // antes de a primeira registrar o canal, e sobram peers da sala errada.
+    const anterior = this.joinPending ?? Promise.resolve();
+    this.joinPending = anterior.then(() => this.doJoinVoice(channelId)).catch(() => {});
+    return this.joinPending;
+  }
+
+  private async doJoinVoice(channelId: string) {
     const s = app.getState();
     if (s.activeVoice === channelId) return;
     if (s.activeVoice) this.leaveVoice({ keepMic: true });

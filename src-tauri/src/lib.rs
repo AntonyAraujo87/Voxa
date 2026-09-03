@@ -33,6 +33,17 @@ pub fn run() {
     webview::tune();
 
     tauri::Builder::default()
+        // Fechar a janela esconde na bandeja: sem esta guarda, abrir o atalho
+        // de novo criaria um SEGUNDO processo — dois icones na bandeja, duas
+        // conexoes com o mesmo apelido e o microfone disputado entre eles.
+        // A segunda instancia apenas traz a primeira de volta e encerra.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

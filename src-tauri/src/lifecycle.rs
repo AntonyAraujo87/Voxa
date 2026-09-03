@@ -116,18 +116,42 @@ fn restore(app: &AppHandle) {
     }
 }
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Ultima liberacao de memoria, em segundos desde a epoca.
+static ULTIMO_TRIM: AtomicU64 = AtomicU64::new(0);
+const INTERVALO_MINIMO_S: u64 = 20;
+
+/// `Resized` dispara em rajada durante a animacao de minimizar. Sem esta
+/// travar, EmptyWorkingSet rodaria dezenas de vezes seguidas, varrendo a lista
+/// de processos filhos a cada uma — trabalho puro para nenhum ganho extra.
+fn trim_memory_debounced() {
+    let agora = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let anterior = ULTIMO_TRIM.load(Ordering::Relaxed);
+    if agora.saturating_sub(anterior) < INTERVALO_MINIMO_S {
+        return;
+    }
+    ULTIMO_TRIM.store(agora, Ordering::Relaxed);
+    trim_memory();
+}
+
 /// Fechar esconde na bandeja em vez de encerrar; a chamada de voz continua.
 pub fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
     match event {
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             let _ = window.hide();
-            trim_memory();
+            trim_memory_debounced();
         }
         // Minimizar tambem e um bom momento: a janela para de ser desenhada.
         WindowEvent::Resized(_) => {
             if window.is_minimized().unwrap_or(false) {
-                trim_memory();
+                trim_memory_debounced();
             }
         }
         _ => {}

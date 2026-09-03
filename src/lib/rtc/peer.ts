@@ -142,6 +142,13 @@ export class Peer {
       const state = this.pc.connectionState;
       if (this.closed || state === "connected" || state === "closed") return;
 
+      // `connecting` significa que uma tentativa esta em curso: reiniciar o
+      // ICE agora abortaria justamente a negociacao que ia dar certo.
+      if (state === "connecting") {
+        this.scheduleRecovery(RECOVERY_GRACE_MS);
+        return;
+      }
+
       this.recoveryAttempts++;
       try {
         // restartIce() dispara onnegotiationneeded, que refaz a oferta com
@@ -237,6 +244,11 @@ export class Peer {
   /* ---------------------------- negociacao ------------------------------ */
 
   private async negotiate() {
+    // createOffer() so e valido em `stable`. Sem esta guarda, um ICE restart
+    // que caia no meio de uma oferta remota (ou uma colisao de ofertas) lanca
+    // InvalidStateError e a conexao fica travada em vez de se recuperar.
+    if (this.pc.signalingState !== "stable") return;
+
     try {
       this.makingOffer = true;
       const offer = await this.pc.createOffer();
