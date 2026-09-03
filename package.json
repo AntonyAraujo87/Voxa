@@ -12,7 +12,9 @@
     "dev:all": "node scripts/dev.mjs",
     "app": "tauri dev",
     "app:build": "tauri build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test server/test/security.test.js server/test/handshake.test.js",
+    "verify": "tsc --noEmit && npm test"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.114.0",
@@ -33,6 +35,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "sharp": "^0.35.4",
     "tailwindcss": "^4.3.3",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"

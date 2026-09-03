@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from "react";
-import { Cpu, Gauge, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, X } from "lucide-react";
+import { Bell, Cpu, Gauge, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, X } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import {
@@ -82,6 +82,7 @@ function SettingsModalBase() {
   const mics = useApp((s) => s.mics);
   const micDeviceId = useApp((s) => s.micDeviceId);
   const pushToTalk = useApp((s) => s.pushToTalk);
+  const sounds = useApp((s) => s.sounds);
   const updateVersion = useApp((s) => s.updateVersion);
   const updateBusy = useApp((s) => s.updateBusy);
 
@@ -236,6 +237,25 @@ function SettingsModalBase() {
                 </option>
               ))}
             </select>
+          </Section>
+
+          <Section icon={<Bell size={13} />} title="Avisos sonoros">
+            <button
+              onClick={() => session.setSounds(!sounds)}
+              className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${
+                sounds
+                  ? "border-brand bg-brand/15 text-ink"
+                  : "border-transparent bg-base-500/60 text-muted hover:bg-base-500"
+              }`}
+            >
+              <p className="text-sm font-medium">
+                {sounds ? "Ligados" : "Desligados"}
+              </p>
+              <p className="text-xs text-faint">
+                Tons curtos quando alguem entra ou sai do canal, e ao ligar ou desligar
+                o proprio microfone — util com o jogo em tela cheia.
+              </p>
+            </button>
           </Section>
 
           <Section icon={<RefreshCw size={13} />} title="Atualizacao">

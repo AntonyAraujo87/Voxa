@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from "react";
-import { Minus, Square, X, Copy, Waves } from "lucide-react";
+import { Minus, Square, X, Copy } from "lucide-react";
+import { VoxaMark } from "./VoxaMark";
 import { useApp } from "../store/store";
 
 /* Barra de titulo propria (a janela roda sem decoracao nativa).
@@ -54,7 +55,7 @@ function TitleBarBase() {
       data-tauri-drag-region
       className="drag-region flex h-8 shrink-0 items-center gap-2 border-b border-line bg-base-900 px-3 text-xs text-muted"
     >
-      <Waves size={14} className="text-brand" />
+      <VoxaMark size={15} className="text-ink" />
       <span className="font-semibold tracking-wide text-ink-soft">VOXA</span>
       <span className={`ml-1 size-1.5 rounded-full ${STATUS_COLOR[status]}`} />
       <span>{STATUS_LABEL[status]}</span>

@@ -17,7 +17,9 @@ pub struct BootConfig {
 
 fn config_path() -> PathBuf {
     let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
-    std::path::Path::new(&base).join("com.voxa.app").join("boot.json")
+    std::path::Path::new(&base)
+        .join("com.voxa.app")
+        .join("boot.json")
 }
 
 pub fn read_config() -> BootConfig {

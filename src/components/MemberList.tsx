@@ -42,6 +42,39 @@ const VolumeControl = memo(function VolumeControl({ userId }: { userId: string }
   );
 });
 
+/**
+ * Ponto de saude da conexao com aquela pessoa.
+ *
+ * Existe porque, quando alguem picota, ninguem sabe de quem e o problema. O
+ * ping so aparecia no overlay de metricas, que fica escondido atras de um
+ * botao e so mostra quem esta com a tela aberta.
+ */
+const HealthDot = memo(function HealthDot({ peerId }: { peerId: string }) {
+  const stats = useApp((s) => s.stats[peerId]);
+  const conn = useApp((s) => s.connState[peerId]);
+
+  if (!conn) return null;
+
+  const reconectando = conn === "disconnected" || conn === "failed";
+  const rtt = stats?.rttMs ?? 0;
+  const perda = stats?.lossPct ?? 0;
+
+  const ruim = reconectando || perda > 5 || rtt > 200;
+  const atencao = perda > 1.5 || rtt > 90;
+
+  const cor = ruim ? "bg-danger" : atencao ? "bg-warn" : "bg-online";
+  const titulo = reconectando
+    ? "reconectando"
+    : `${rtt || "?"}ms · perda ${perda.toFixed(1)}%`;
+
+  return (
+    <span
+      title={titulo}
+      className={`size-2 shrink-0 rounded-full ${cor} ${reconectando ? "animate-pulse" : ""}`}
+    />
+  );
+});
+
 function MemberListBase() {
   const roster = useApp((s) => s.roster);
   const speaking = useApp((s) => s.speaking);
@@ -85,6 +118,7 @@ function MemberListBase() {
           </p>
         )}
       </div>
+      {voice && id !== selfId && <HealthDot peerId={id} />}
       {sharing && <ScreenShare size={13} className="text-stream" />}
       {muted && <MicOff size={13} className="text-danger" />}
       {voice && id !== selfId && <VolumeControl userId={userId} />}

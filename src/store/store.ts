@@ -46,6 +46,7 @@ interface AppState {
   volumes: Record<string, number>;
   pushToTalk: boolean;
   talking: boolean;
+  sounds: boolean;
 
   /* atualizacao automatica */
   updateVersion: string | null;
@@ -97,6 +98,7 @@ export const useApp = create<AppState>((set) => ({
   volumes: {},
   pushToTalk: false,
   talking: false,
+  sounds: true,
 
   updateVersion: null,
   updateBusy: false,

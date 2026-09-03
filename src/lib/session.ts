@@ -8,6 +8,7 @@ import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaSto
 import { loadChannels, loadMessages, saveMessage, supabaseEnabled, upsertUser } from "./supabase";
 import { loadPrefs, primePrefsCache, savePrefs } from "./prefs";
 import { checkForUpdate, listenEvent, setPushToTalkNative } from "./desktop";
+import { playJoin, playLeave, playMute, playUnmute, setSoundsEnabled } from "./sounds";
 
 const app = useApp;
 
@@ -54,12 +55,15 @@ class Session {
         // Quem ja estava na sala apenas espera a oferta do recem-chegado.
         if (app.getState().activeVoice !== channelId) return;
         this.mesh.addPeer(id, false);
+        playJoin();
       },
 
-      onPeerLeft: ({ id }) => {
+      onPeerLeft: ({ id, channelId }) => {
+        const estavaNoCanal = app.getState().activeVoice === channelId;
         this.mesh.removePeer(id);
         clearPeerMedia(id);
         if (app.getState().focusPeer === id) app.setState({ focusPeer: null });
+        if (estavaNoCanal) playLeave();
       },
     });
 
@@ -124,7 +128,9 @@ class Session {
       showStats: prefs.showStats,
       pushToTalk: prefs.pushToTalk,
       muted: prefs.pushToTalk, // em push-to-talk o padrao e mudo ate apertar
+      sounds: prefs.sounds,
     });
+    setSoundsEnabled(prefs.sounds);
     void this.mesh.setTuning(prefs.tuning);
     return prefs;
   }
@@ -283,6 +289,17 @@ class Session {
     app.setState({ muted });
     this.media.setMicEnabled(!muted);
     this.signaling.setState({ muted });
+    // Confirmacao audivel importa mais aqui do que em qualquer outro botao:
+    // o atalho global funciona com o jogo em tela cheia, sem a UI a vista.
+    if (muted) playMute();
+    else playUnmute();
+  }
+
+  setSounds(on: boolean) {
+    app.setState({ sounds: on });
+    savePrefs({ sounds: on });
+    setSoundsEnabled(on);
+    if (on) playUnmute();
   }
 
   toggleDeafen() {

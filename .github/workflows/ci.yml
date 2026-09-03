@@ -1,0 +1,70 @@
+name: ci
+
+# Roda em todo push e pull request. Existe porque a auditoria encontrou dois
+# bugs que passavam despercebidos justamente por serem silenciosos — token
+# aceito indevidamente e autoria de mensagem falsificavel. Sem um portao
+# automatico, a proxima regressao desse tipo so apareceria em producao.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Tipos, build e testes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm ci --prefix server
+
+      - name: Tipos
+        run: npx tsc --noEmit
+
+      - name: Build de producao
+        run: npx vite build
+
+      - name: Testes do servidor
+        run: npm test
+
+  rust:
+    name: Rust
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+
+      # O build do Tauri exige a pasta dist; um placeholder basta para
+      # compilar o backend sem precisar do bundle do frontend aqui.
+      - name: Placeholder do frontend
+        run: New-Item -ItemType Directory -Force dist | Out-Null; Set-Content dist/index.html "<html></html>"
+        shell: pwsh
+
+      - name: Formatacao
+        run: cargo fmt --check
+        working-directory: src-tauri
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+        working-directory: src-tauri

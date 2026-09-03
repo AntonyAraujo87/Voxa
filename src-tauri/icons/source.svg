@@ -1,0 +1,31 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Icone mestre do Voxa — "anel de voz".
+    O anel e o mesmo que acende ao redor do avatar quando alguem fala.
+    Todos os tamanhos exigidos pelo Windows sao gerados deste arquivo por
+    `npx tauri icon`, entao qualquer ajuste comeca aqui.
+  -->
+  <defs>
+    <linearGradient id="anel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#A855F7"/>
+      <stop offset="100%" stop-color="#5865F2"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="232" fill="#16171A"/>
+
+  <!-- anel principal -->
+  <circle cx="512" cy="512" r="296" fill="none" stroke="url(#anel)" stroke-width="86"/>
+
+  <!-- lampejo claro: da volume ao anel sem adicionar detalhe que suma em 16px -->
+  <circle cx="512" cy="512" r="296" fill="none" stroke="#FFFFFF" stroke-width="86"
+          stroke-dasharray="250 4000" stroke-linecap="round" opacity="0.5"
+          transform="rotate(-62 512 512)"/>
+
+  <!-- tres barras: forma de onda, centro otico do icone -->
+  <g fill="#FFFFFF">
+    <rect x="386" y="452" width="52" height="120" rx="26"/>
+    <rect x="486" y="392" width="52" height="240" rx="26"/>
+    <rect x="586" y="472" width="52" height="80" rx="26"/>
+  </g>
+</svg>

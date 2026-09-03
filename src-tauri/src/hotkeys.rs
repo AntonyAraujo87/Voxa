@@ -11,7 +11,9 @@ struct HotkeyEvent {
 
 #[cfg(desktop)]
 pub fn setup(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+    use tauri_plugin_global_shortcut::{
+        Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
+    };
 
     let mods = Modifiers::CONTROL | Modifiers::SHIFT;
     let mute = Shortcut::new(Some(mods), Code::KeyM);
@@ -64,12 +66,12 @@ pub fn set_push_to_talk(app: tauri::AppHandle, enabled: bool) -> Result<(), Stri
         use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut};
         let talk = Shortcut::new(None, Code::F8);
         let manager = app.global_shortcut();
-        let result = if enabled {
+        if enabled {
             manager.register(talk)
         } else {
             manager.unregister(talk)
-        };
-        return result.map_err(|e| e.to_string());
+        }
+        .map_err(|e| e.to_string())
     }
     #[cfg(not(desktop))]
     {

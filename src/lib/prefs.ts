@@ -26,6 +26,7 @@ export interface Prefs {
   membersOpen: boolean;
   showStats: boolean;
   pushToTalk: boolean;
+  sounds: boolean;
 }
 
 const DEFAULTS: Prefs = {
@@ -39,6 +40,7 @@ const DEFAULTS: Prefs = {
   membersOpen: true,
   showStats: false,
   pushToTalk: false,
+  sounds: true,
 };
 
 export function loadPrefs(): Prefs {

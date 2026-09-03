@@ -149,10 +149,8 @@ pub fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
             trim_memory_debounced();
         }
         // Minimizar tambem e um bom momento: a janela para de ser desenhada.
-        WindowEvent::Resized(_) => {
-            if window.is_minimized().unwrap_or(false) {
-                trim_memory_debounced();
-            }
+        WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
+            trim_memory_debounced();
         }
         _ => {}
     }

@@ -1,5 +1,6 @@
 import { memo, useState } from "react";
-import { AlertTriangle, KeyRound, Waves } from "lucide-react";
+import { AlertTriangle, KeyRound } from "lucide-react";
+import { VoxaMark } from "./VoxaMark";
 import { USER_COLORS, hasTurn } from "../lib/config";
 import { session } from "../lib/session";
 import { supabaseEnabled } from "../lib/supabase";
@@ -37,7 +38,7 @@ function LoginGateBase({ onDone }: { onDone: () => void }) {
     <div className="grid h-full place-items-center bg-base-800">
       <div className="w-80 rounded-xl border border-line bg-base-600 p-6 shadow-2xl">
         <div className="mb-5 flex items-center gap-2">
-          <Waves size={22} className="text-brand" />
+          <VoxaMark size={24} className="text-ink" />
           <h1 className="text-lg font-bold tracking-wide text-ink">VOXA</h1>
         </div>
 
