@@ -1,32 +1,35 @@
 import { AUDIO_PRESETS, VIDEO_PRESETS, type Channel } from "./config";
-import { captureMic, captureScreen, createVoiceDetector, listDevices, stopStream } from "./media";
+import { LocalMedia } from "./localMedia";
+import { listDevices } from "./media";
 import { Mesh, type TuningState } from "./rtc";
 import { Signaling, type ChatMessage, type PeerUser } from "./signaling";
-import * as store from "../store/store";
-import {
-  clearPeerMedia,
-  setLocalScreen,
-  setPeerStream,
-} from "../store/mediaStore";
+import { useApp } from "../store/store";
+import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
 import { loadChannels, loadMessages, saveMessage, supabaseEnabled, upsertUser } from "./supabase";
 import { loadPrefs, primePrefsCache, savePrefs } from "./prefs";
 import { checkForUpdate, listenEvent, setPushToTalkNative } from "./desktop";
 
-const app = store.useApp;
+const app = useApp;
 
 /* ---------------------------------------------------------------------------
-   Orquestrador. Une signaling + mesh + captura + store.
-   Vive fora do React de proposito: nada aqui causa render por si so; a UI so
-   reage as fatias do zustand que realmente mudaram.
+   Orquestrador: liga signaling, malha P2P, midia local e store.
+
+   Vive fora do React de proposito — nada aqui causa render por si so; a UI so
+   reage as fatias do zustand que realmente mudaram. As tres camadas abaixo
+   dele (Signaling, Mesh, LocalMedia) nao se conhecem: toda a coordenacao
+   acontece neste arquivo.
 --------------------------------------------------------------------------- */
 
 class Session {
   private signaling: Signaling;
   private mesh: Mesh;
-  private micStream: MediaStream | null = null;
-  private screenStream: MediaStream | null = null;
-  private stopVad: (() => void) | null = null;
+  private media: LocalMedia;
+
   private started = false;
+  private mutedBeforeDeafen = false;
+  private pendingUpdate: (() => Promise<void>) | null = null;
+  /** trava contra duplo clique / atalho repetido durante o await da captura */
+  private sharePending = false;
 
   constructor() {
     this.signaling = new Signaling({
@@ -34,9 +37,7 @@ class Session {
       onRoster: (roster) => app.setState({ roster }),
       onPeerState: (p) => app.getState().patchPeerState(p.id, p.state),
       onSignal: ({ from, data }) => void this.mesh.handleSignal(from, data),
-      onChat: (msg) => {
-        app.getState().pushMessage(msg);
-      },
+      onChat: (msg) => app.getState().pushMessage(msg),
       onTyping: ({ channelId, name }) =>
         app.setState((s) => ({ typing: { ...s.typing, [name + channelId]: Date.now() } })),
 
@@ -62,13 +63,20 @@ class Session {
       onStats: (map) => app.setState({ stats: Object.fromEntries(map) }),
       onSpeaking: (peerId, speaking) =>
         app.setState((s) => ({ speaking: { ...s.speaking, [peerId]: speaking } })),
-      onError: (peerId, err) => {
-        console.error("[rtc]", peerId, err);
+      onError: (peerId, err) => console.error("[rtc]", peerId, err),
+    });
+
+    this.media = new LocalMedia({
+      onSpeaking: (speaking) => {
+        const selfId = app.getState().selfSocketId;
+        app.setState((s) => ({ speaking: { ...s.speaking, [selfId]: speaking } }));
+        this.signaling.setState({ speaking });
       },
+      onScreenEnded: () => this.stopShare(),
     });
   }
 
-  /* ------------------------------- BOOT ---------------------------------- */
+  /* -------------------------------- boot -------------------------------- */
 
   /** Le as preferencias salvas antes de qualquer render. */
   hydrate() {
@@ -97,7 +105,6 @@ class Session {
     const user: PeerUser = { id: prefs.userId, name, color };
     app.setState({ me: user });
 
-    // Supabase e opcional: se der ruim, o app segue em modo efemero.
     if (supabaseEnabled) {
       const stored = await upsertUser(name, color);
       if (stored) app.setState({ supabaseUserId: stored.id });
@@ -128,7 +135,7 @@ class Session {
     app.setState({ mics });
   }
 
-  /* ------------------------------- TEXTO --------------------------------- */
+  /* -------------------------------- texto ------------------------------- */
 
   async openTextChannel(id: string) {
     app.setState({ activeText: id });
@@ -161,7 +168,7 @@ class Session {
     this.signaling.typing(app.getState().activeText);
   }
 
-  /* -------------------------------- VOZ ---------------------------------- */
+  /* --------------------------------- voz -------------------------------- */
 
   async joinVoice(channelId: string) {
     const s = app.getState();
@@ -195,44 +202,27 @@ class Session {
   }
 
   private async openMic() {
-    if (this.micStream) return;
-    const { tuning, micDeviceId } = app.getState();
-    const stream = await captureMic(tuning.audio, micDeviceId);
-    this.micStream = stream;
+    const { tuning, micDeviceId, muted } = app.getState();
+    const track = await this.media.openMic(tuning.audio, micDeviceId);
+    if (!track) return;
 
-    const track = stream.getAudioTracks()[0];
-    track.enabled = !app.getState().muted;
-    await this.mesh.setMic(track);
-
-    this.stopVad = createVoiceDetector(stream, (speaking) => {
-      const selfId = app.getState().selfSocketId;
-      app.setState((s) => ({ speaking: { ...s.speaking, [selfId]: speaking } }));
-      this.signaling.setState({ speaking });
-    });
-
+    this.media.setMicEnabled(!muted);
+    this.mesh.setMic(track);
     app.setState({ micReady: true });
   }
 
   private closeMic() {
-    this.stopVad?.();
-    this.stopVad = null;
-    void this.mesh.setMic(null);
-    stopStream(this.micStream);
-    this.micStream = null;
+    this.media.closeMic();
+    this.mesh.setMic(null);
     app.setState({ micReady: false });
   }
 
   toggleMute() {
     const muted = !app.getState().muted;
     app.setState({ muted });
-    const track = this.micStream?.getAudioTracks()[0];
-    // enabled=false continua enviando pacotes de silencio: nao renegocia nada,
-    // o unmute e instantaneo e o outro lado nao ve a conexao piscar.
-    if (track) track.enabled = !muted;
+    this.media.setMicEnabled(!muted);
     this.signaling.setState({ muted });
   }
-
-  private mutedBeforeDeafen = false;
 
   toggleDeafen() {
     const deafened = !app.getState().deafened;
@@ -242,26 +232,24 @@ class Session {
     const muted = deafened ? true : this.mutedBeforeDeafen;
 
     app.setState({ deafened, muted });
-    const track = this.micStream?.getAudioTracks()[0];
-    if (track) track.enabled = !muted;
+    this.media.setMicEnabled(!muted);
     this.signaling.setState({ deafened, muted });
   }
 
   async setMicDevice(deviceId: string) {
     app.setState({ micDeviceId: deviceId });
     savePrefs({ micDeviceId: deviceId });
-    if (!this.micStream) return;
+    if (!this.media.hasMic) return;
     this.closeMic();
     await this.openMic();
   }
 
-  /* --------------------------- PUSH-TO-TALK ------------------------------- */
+  /* ---------------------------- push-to-talk ---------------------------- */
 
   async setPushToTalk(enabled: boolean) {
     app.setState({ pushToTalk: enabled, muted: enabled, talking: false });
     savePrefs({ pushToTalk: enabled });
-    const track = this.micStream?.getAudioTracks()[0];
-    if (track) track.enabled = !enabled;
+    this.media.setMicEnabled(!enabled);
     this.signaling.setState({ muted: enabled });
     await setPushToTalkNative(enabled);
   }
@@ -270,14 +258,14 @@ class Session {
   setTalking(active: boolean) {
     const s = app.getState();
     if (!s.pushToTalk || s.talking === active) return;
+
     const muted = !active || s.deafened;
     app.setState({ talking: active, muted });
-    const track = this.micStream?.getAudioTracks()[0];
-    if (track) track.enabled = !muted;
+    this.media.setMicEnabled(!muted);
     this.signaling.setState({ muted });
   }
 
-  /* ------------------------- ATALHOS E UPDATE ------------------------------ */
+  /* ------------------------- atalhos e atualizacao ---------------------- */
 
   /** Atalhos globais vindos do Rust: funcionam com o app em segundo plano. */
   async initHotkeys() {
@@ -304,14 +292,10 @@ class Session {
     const update = await checkForUpdate();
     app.setState({ updateBusy: false, updateVersion: update?.version ?? null });
     this.pendingUpdate = update?.install ?? null;
-    if (update) {
-      app.getState().toast("info", `Versao ${update.version} disponivel`);
-    } else if (!silent) {
-      app.getState().toast("ok", "Voce ja esta na ultima versao");
-    }
-  }
 
-  private pendingUpdate: (() => Promise<void>) | null = null;
+    if (update) app.getState().toast("info", `Versao ${update.version} disponivel`);
+    else if (!silent) app.getState().toast("ok", "Voce ja esta na ultima versao");
+  }
 
   async installUpdate() {
     if (!this.pendingUpdate) return;
@@ -325,43 +309,49 @@ class Session {
     }
   }
 
-  /* ---------------------------- TELA / JOGO ------------------------------- */
+  /* ------------------------------ tela / jogo --------------------------- */
 
   async startShare() {
     const s = app.getState();
-    if (s.sharing) return;
+    // A captura e assincrona: sem esta trava, dois cliques rapidos (ou o
+    // atalho global repetido) abririam duas capturas e vazariam um stream.
+    if (s.sharing || this.sharePending) return;
     if (!s.activeVoice) {
       s.toast("info", "Entre num canal de voz antes de compartilhar.");
       return;
     }
 
+    this.sharePending = true;
     try {
-      const preset = VIDEO_PRESETS[s.tuning.video];
-      const { stream, video, audio } = await captureScreen(preset, s.tuning.content);
-      this.screenStream = stream;
+      const { stream, video, audio } = await this.media.openScreen(s.tuning.video, s.tuning.content);
       setLocalScreen(stream);
-
       await this.mesh.setScreen(video, audio);
-
-      // Parar pelo botao nativo do Windows tambem tem que refletir na UI.
-      video.onended = () => this.stopShare();
 
       app.setState({ sharing: true, focusPeer: s.selfSocketId });
       this.signaling.setState({ sharing: true });
+
+      const preset = VIDEO_PRESETS[s.tuning.video];
       s.toast("ok", `Compartilhando ${preset.width}x${preset.height} @ ${preset.fps}fps`);
     } catch (err) {
+      this.media.closeScreen();
+      setLocalScreen(null);
       s.toast("error", (err as Error).message);
+    } finally {
+      this.sharePending = false;
     }
   }
 
   stopShare() {
-    if (!this.screenStream) return;
+    if (!this.media.isSharing) return;
     void this.mesh.setScreen(null, null);
-    stopStream(this.screenStream);
-    this.screenStream = null;
+    this.media.closeScreen();
     setLocalScreen(null);
+
     const selfId = app.getState().selfSocketId;
-    app.setState((s) => ({ sharing: false, focusPeer: s.focusPeer === selfId ? null : s.focusPeer }));
+    app.setState((s) => ({
+      sharing: false,
+      focusPeer: s.focusPeer === selfId ? null : s.focusPeer,
+    }));
     this.signaling.setState({ sharing: false });
   }
 
@@ -370,7 +360,7 @@ class Session {
     else await this.startShare();
   }
 
-  /* ----------------------------- QUALIDADE -------------------------------- */
+  /* ------------------------------- qualidade ---------------------------- */
 
   async setTuning(patch: Partial<TuningState>) {
     const next = { ...app.getState().tuning, ...patch };
@@ -379,33 +369,21 @@ class Session {
     await this.mesh.setTuning(patch);
 
     // Trocar o preset de audio muda os constraints da captura: precisa
-    // reabrir o microfone pra o DSP entrar/sair do caminho.
-    if (patch.audio && this.micStream) {
+    // reabrir o microfone para o DSP entrar ou sair do caminho.
+    if (patch.audio && this.media.hasMic) {
       this.closeMic();
       await this.openMic();
       app.getState().toast("info", `Audio: ${AUDIO_PRESETS[next.audio].label}`);
     }
 
-    // Resolucao/fps mudam a captura da tela: reaplica no track vivo.
-    if ((patch.video || patch.content) && this.screenStream) {
-      const preset = VIDEO_PRESETS[next.video];
-      const track = this.screenStream.getVideoTracks()[0];
-      if (track) {
-        track.contentHint = next.content === "jogo" ? "motion" : "detail";
-        try {
-          await track.applyConstraints({
-            frameRate: { ideal: preset.fps, max: preset.fps },
-            width: { ideal: preset.width, max: preset.width },
-            height: { ideal: preset.height, max: preset.height },
-          });
-        } catch {
-          /* a fonte nao aceita; o encoder ainda respeita maxBitrate/maxFramerate */
-        }
-      }
+    if (patch.video || patch.content) {
+      await this.media.applyScreenSettings(next.video, next.content);
     }
   }
 
-  /** so pra depuracao no console */
+  /* -------------------------------- ciclo ------------------------------- */
+
+  /** so para depuracao no console */
   debugSenders() {
     return this.mesh.debugSenders();
   }
@@ -413,6 +391,7 @@ class Session {
   destroy() {
     this.leaveVoice();
     this.mesh.destroy();
+    this.media.destroy();
     this.signaling.destroy();
   }
 }
