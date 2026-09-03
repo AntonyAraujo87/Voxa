@@ -41,6 +41,11 @@ O app tem um overlay de métricas mostrando FPS, bitrate, ping, perda, codec, se
 o encoder está na GPU ou na CPU, e se a conexão está direta ou passando por
 relay.
 
+Seis presets, do 1080p60 a 40 Mbps ao 720p30 a 3 Mbps. Dois deles dividem o
+mesmo orçamento de 8 Mbps por caminhos opostos: **Nítida** (1080p30) troca
+quadros por pixels para ler texto; **Fluida** (720p60) troca pixels por quadros
+para jogo rápido.
+
 ## A malha P2P
 
 Cada participante abre uma conexão com cada outro. Latência de um salto só e

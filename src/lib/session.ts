@@ -2,7 +2,13 @@ import { AUDIO_PRESETS, VIDEO_PRESETS, type Channel } from "./config";
 import { LocalMedia } from "./localMedia";
 import { listDevices } from "./media";
 import { Mesh, type TuningState } from "./rtc";
-import { Signaling, type ChatMessage, type PeerUser, type RosterEntry } from "./signaling";
+import {
+  Signaling,
+  pingSignaling,
+  type ChatMessage,
+  type PeerUser,
+  type RosterEntry,
+} from "./signaling";
 import { useApp } from "../store/store";
 import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
 import { loadChannels, loadMessages, saveMessage, supabaseEnabled, upsertUser } from "./supabase";
@@ -160,7 +166,22 @@ class Session {
     } catch (err) {
       // Nao marca como iniciado: o usuario corrige a senha e tenta de novo
       // sem precisar fechar o app.
-      return { ok: false, error: (err as Error).message || "Nao foi possivel conectar" };
+      const motivo = (err as Error).message || "Nao foi possivel conectar";
+
+      // "senha errada" e "servidor fora do ar" pareciam a mesma coisa para
+      // quem usa. Uma consulta ao /health separa os dois casos e diz o que
+      // fazer, em vez de deixar a pessoa insistindo na senha certa contra um
+      // servidor que nem respondia.
+      if (!/senha/i.test(motivo)) {
+        const noAr = await pingSignaling();
+        return {
+          ok: false,
+          error: noAr
+            ? motivo
+            : "Servidor inacessivel. Verifique sua internet — ou aguarde 1 minuto, ele pode estar acordando.",
+        };
+      }
+      return { ok: false, error: motivo };
     }
 
     this.started = true;
@@ -213,6 +234,36 @@ class Session {
 
   typing() {
     this.signaling.typing(app.getState().activeText);
+  }
+
+  /** canais que ja chegaram ao inicio do historico — evita consultas inuteis */
+  private historicoCompleto = new Set<string>();
+  private carregandoHistorico = false;
+
+  /**
+   * Carrega a pagina anterior do historico quando o usuario rola ao topo.
+   * @returns quantas mensagens novas entraram
+   */
+  async loadOlderMessages(channelId: string): Promise<number> {
+    if (this.carregandoHistorico || this.historicoCompleto.has(channelId)) return 0;
+
+    const atuais = app.getState().messages[channelId] ?? [];
+    if (atuais.length === 0) return 0;
+
+    this.carregandoHistorico = true;
+    try {
+      const anteriores = await loadMessages(channelId, 40, atuais[0].createdAt);
+      // Nada mais atras: marca o canal para nao consultar de novo a cada
+      // rolagem ate o topo.
+      if (anteriores.length === 0) {
+        this.historicoCompleto.add(channelId);
+        return 0;
+      }
+      app.getState().prependMessages(channelId, anteriores);
+      return anteriores.length;
+    } finally {
+      this.carregandoHistorico = false;
+    }
   }
 
   /** Mesma janela usada pelo servidor: 8 mensagens a cada 5 segundos. */

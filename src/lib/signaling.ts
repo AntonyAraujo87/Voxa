@@ -53,6 +53,25 @@ interface Handlers {
  * Cliente do signaling. Fina camada sobre socket.io — sem estado de midia,
  * so transporte. Se cair, o P2P ja estabelecido continua vivo.
  */
+/**
+ * Bate no /health do servidor para separar dois erros que, para quem usa,
+ * parecem o mesmo: "senha errada" e "servidor inacessivel". Sem isso, a unica
+ * mensagem possivel era generica, e a pessoa ficava tentando a senha certa
+ * contra um servidor que nem estava no ar.
+ */
+export async function pingSignaling(timeoutMs = 8000): Promise<boolean> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  try {
+    const r = await fetch(`${SIGNALING_URL}/health`, { signal: abort.signal });
+    return r.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class Signaling {
   private socket: Socket;
   selfId = "";

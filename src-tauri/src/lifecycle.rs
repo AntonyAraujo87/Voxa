@@ -78,12 +78,19 @@ pub fn release_memory() {
 
 /// Icone na bandeja com menu de Abrir e Sair.
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    // Sem icone nao ha bandeja — mas isso nao pode derrubar o app inteiro.
+    // Um `expect` aqui transformaria um detalhe cosmetico num crash no boot.
+    let Some(icone) = app.default_window_icon().cloned() else {
+        eprintln!("[voxa] sem icone padrao: bandeja desativada");
+        return Ok(());
+    };
+
     let abrir = MenuItem::with_id(app, "abrir", "Abrir Voxa", true, None::<&str>)?;
     let sair = MenuItem::with_id(app, "sair", "Sair", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&abrir, &sair])?;
 
     TrayIconBuilder::with_id("voxa-tray")
-        .icon(app.default_window_icon().cloned().expect("icone do app"))
+        .icon(icone)
         .tooltip("Voxa")
         .menu(&menu)
         .show_menu_on_left_click(false)

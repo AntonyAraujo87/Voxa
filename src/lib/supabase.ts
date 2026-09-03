@@ -111,7 +111,19 @@ export async function loadChannels(): Promise<Channel[]> {
 
 /* -------------------------------- mensagens -------------------------------- */
 
-export async function loadMessages(channelSlug: string, limit = 60): Promise<ChatMessage[]> {
+/**
+ * Ultimas mensagens do canal, ou as anteriores a um instante (paginacao).
+ *
+ * `antesDe` recebe o `createdAt` da mensagem mais antiga ja carregada. Usar o
+ * timestamp em vez de OFFSET importa: com OFFSET, uma mensagem nova chegando
+ * entre duas paginas empurraria a janela e faria a proxima pagina repetir uma
+ * linha ja exibida.
+ */
+export async function loadMessages(
+  channelSlug: string,
+  limit = 60,
+  antesDe?: string
+): Promise<ChatMessage[]> {
   const sb = await db();
   const uuid = roomUuid(channelSlug);
   if (!sb || !uuid) return [];
@@ -119,12 +131,16 @@ export async function loadMessages(channelSlug: string, limit = 60): Promise<Cha
   try {
     // A view junta o autor sem expor auth.users e roda com security_invoker,
     // ou seja: continua sujeita as politicas de quem consulta.
-    const { data, error } = await sb
+    let query = sb
       .from("messages_with_author")
       .select("id,content,author_id,author_name,author_color,created_at")
       .eq("room_id", uuid)
       .order("created_at", { ascending: false })
       .limit(limit);
+
+    if (antesDe) query = query.lt("created_at", antesDe);
+
+    const { data, error } = await query;
 
     if (error || !data) return [];
 

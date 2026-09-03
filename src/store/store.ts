@@ -62,6 +62,7 @@ interface AppState {
   set: <K extends keyof AppState>(patch: Pick<AppState, K> | Partial<AppState>) => void;
   pushMessage: (msg: ChatMessage) => void;
   setMessages: (channelId: string, msgs: ChatMessage[]) => void;
+  prependMessages: (channelId: string, msgs: ChatMessage[]) => void;
   toast: (kind: Toast["kind"], text: string) => void;
   dropToast: (id: number) => void;
   patchPeerState: (id: string, state: PeerState) => void;
@@ -128,6 +129,16 @@ export const useApp = create<AppState>((set) => ({
 
   setMessages: (channelId, msgs) =>
     set((s) => ({ messages: { ...s.messages, [channelId]: msgs } })),
+
+  /** Insere pagina antiga no topo, sem duplicar o que ja esta na tela. */
+  prependMessages: (channelId, msgs) =>
+    set((s) => {
+      const atuais = s.messages[channelId] ?? [];
+      const conhecidos = new Set(atuais.map((m) => m.id));
+      const novas = msgs.filter((m) => !conhecidos.has(m.id));
+      if (novas.length === 0) return s;
+      return { messages: { ...s.messages, [channelId]: [...novas, ...atuais] } };
+    }),
 
   toast: (kind, text) =>
     set((s) => ({ toasts: [...s.toasts, { id: ++toastSeq, kind, text }].slice(-4) })),

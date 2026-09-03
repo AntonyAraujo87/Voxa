@@ -48,6 +48,7 @@ const MessageList = memo(function MessageList({ channelId }: { channelId: string
   const messages = useApp((s) => s.messages[channelId]);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  const [carregando, setCarregando] = useState(false);
 
   const items = messages ?? [];
 
@@ -55,7 +56,23 @@ const MessageList = memo(function MessageList({ channelId }: { channelId: string
     const el = scroller.current;
     if (!el) return;
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-  }, []);
+
+    // Chegou perto do topo: busca a pagina anterior e devolve o usuario a
+    // posicao de leitura. Sem restaurar o scroll, inserir conteudo acima
+    // jogaria a vista para longe do ponto onde ele estava.
+    if (el.scrollTop < 80) {
+      const alturaAntes = el.scrollHeight;
+      setCarregando(true);
+      void session.loadOlderMessages(channelId).then((qtd) => {
+        setCarregando(false);
+        if (qtd === 0) return;
+        requestAnimationFrame(() => {
+          const atual = scroller.current;
+          if (atual) atual.scrollTop = atual.scrollHeight - alturaAntes;
+        });
+      });
+    }
+  }, [channelId]);
 
   // useLayoutEffect: cola no fim ANTES do browser pintar, sem pulo visivel.
   useLayoutEffect(() => {
@@ -69,6 +86,9 @@ const MessageList = memo(function MessageList({ channelId }: { channelId: string
       onScroll={onScroll}
       className="flex-1 overflow-y-auto overflow-x-hidden pb-4"
     >
+      {carregando && (
+        <p className="py-2 text-center text-[11px] text-faint">carregando historico...</p>
+      )}
       {items.length === 0 && (
         <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
           <Hash size={44} className="text-base-500" />
