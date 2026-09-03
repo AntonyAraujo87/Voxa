@@ -1,0 +1,19 @@
+# Deploy do signaling no Render (free tier).
+# Uso: New > Blueprint > aponte para este repositorio.
+#
+# Limitacao do plano free: o servico dorme apos 15 min sem trafego e leva
+# ~30s para acordar. O primeiro a entrar na sala espera; os outros nao.
+services:
+  - type: web
+    name: voxa-signaling
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node index.js
+    healthCheckPath: /health
+    envVars:
+      - key: VOXA_TOKEN
+        generateValue: true   # o Render gera; copie para VITE_ROOM_TOKEN do app
+      - key: ORIGIN
+        value: "*"

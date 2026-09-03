@@ -1,0 +1,275 @@
+import { memo, useEffect, useState } from "react";
+import { Cpu, Gauge, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, X } from "lucide-react";
+import { useApp } from "../store/store";
+import { session } from "../lib/session";
+import {
+  isDesktop,
+  listCaptureSources,
+  getCaptureSource,
+  setCaptureSource,
+  type CaptureSource,
+} from "../lib/desktop";
+import {
+  AUDIO_PRESETS,
+  CODEC_ORDER,
+  VIDEO_PRESETS,
+  type AudioPresetId,
+  type CodecStrategy,
+  type ContentMode,
+  type VideoPresetId,
+} from "../lib/config";
+
+const CODEC_HINT: Record<CodecStrategy, string> = {
+  hardware: "H264 primeiro — encoder da GPU (NVENC/QuickSync). Menor latencia e CPU.",
+  eficiencia: "AV1/VP9 primeiro — mesma nitidez com menos banda, custa CPU.",
+  compatibilidade: "VP8 primeiro — funciona em qualquer maquina, qualidade menor.",
+};
+
+const CONTENT_HINT: Record<ContentMode, string> = {
+  jogo: "Segura os FPS quando a rede aperta. Perde nitidez, nunca trava.",
+  leitura: "Segura a nitidez do texto. Derruba FPS quando a rede aperta.",
+};
+
+function Section({
+  icon,
+  title,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="mb-6">
+      <h3 className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-faint">
+        {icon}
+        {title}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+function Option({
+  active,
+  label,
+  hint,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  hint: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${
+        active
+          ? "border-brand bg-brand/15 text-ink"
+          : "border-transparent bg-base-500/60 text-muted hover:bg-base-500"
+      }`}
+    >
+      <p className="text-sm font-medium">{label}</p>
+      <p className="text-xs text-faint">{hint}</p>
+    </button>
+  );
+}
+
+function SettingsModalBase() {
+  const open = useApp((s) => s.showSettings);
+  const tuning = useApp((s) => s.tuning);
+  const mics = useApp((s) => s.mics);
+  const micDeviceId = useApp((s) => s.micDeviceId);
+  const pushToTalk = useApp((s) => s.pushToTalk);
+  const updateVersion = useApp((s) => s.updateVersion);
+  const updateBusy = useApp((s) => s.updateBusy);
+
+  const [sources, setSources] = useState<CaptureSource[]>([]);
+  const [source, setSource] = useState("");
+
+  useEffect(() => {
+    if (!open || !isDesktop) return;
+    void listCaptureSources().then((list) => setSources(list ?? []));
+    void getCaptureSource().then((current) => setSource(current ?? ""));
+  }, [open]);
+
+  const chooseSource = async (title: string) => {
+    setSource(title);
+    await setCaptureSource(title);
+    useApp
+      .getState()
+      .toast("info", "Fonte salva. Reinicie o app para valer.");
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") useApp.setState({ showSettings: false });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <div className="absolute inset-0 z-50 grid place-items-center bg-black/60 p-6">
+      <div className="animate-pop flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-line bg-base-600 shadow-2xl">
+        <header className="flex h-12 shrink-0 items-center border-b border-line px-5">
+          <h2 className="font-semibold text-ink">Configuracoes de transmissao</h2>
+          <button
+            onClick={() => useApp.setState({ showSettings: false })}
+            className="ml-auto grid size-8 place-items-center rounded text-muted hover:bg-base-500 hover:text-ink"
+          >
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="overflow-y-auto p-5">
+          <Section icon={<Gauge size={13} />} title="Qualidade de video">
+            <div className="grid grid-cols-2 gap-2">
+              {(Object.keys(VIDEO_PRESETS) as VideoPresetId[]).map((id) => (
+                <Option
+                  key={id}
+                  active={tuning.video === id}
+                  label={VIDEO_PRESETS[id].label}
+                  hint={VIDEO_PRESETS[id].hint}
+                  onClick={() => void session.setTuning({ video: id })}
+                />
+              ))}
+            </div>
+          </Section>
+
+          <Section icon={<MonitorPlay size={13} />} title="Prioridade da imagem">
+            <div className="grid grid-cols-2 gap-2">
+              {(["jogo", "leitura"] as ContentMode[]).map((mode) => (
+                <Option
+                  key={mode}
+                  active={tuning.content === mode}
+                  label={mode === "jogo" ? "Jogo (framerate)" : "Leitura (nitidez)"}
+                  hint={CONTENT_HINT[mode]}
+                  onClick={() => void session.setTuning({ content: mode })}
+                />
+              ))}
+            </div>
+          </Section>
+
+          <Section icon={<Cpu size={13} />} title="Codec de video">
+            <div className="grid gap-2">
+              {(Object.keys(CODEC_ORDER) as CodecStrategy[]).map((id) => (
+                <Option
+                  key={id}
+                  active={tuning.codec === id}
+                  label={id}
+                  hint={CODEC_HINT[id]}
+                  onClick={() => void session.setTuning({ codec: id })}
+                />
+              ))}
+            </div>
+          </Section>
+
+          <Section icon={<MonitorSmartphone size={13} />} title="Fonte de captura">
+            <select
+              value={source}
+              onChange={(e) => void chooseSource(e.target.value)}
+              disabled={!isDesktop}
+              className="w-full rounded-md bg-base-500 px-3 py-2 text-sm text-ink-soft outline-none disabled:opacity-50"
+            >
+              {sources.length === 0 && <option value="">Monitor inteiro (padrao)</option>}
+              {sources.map((src) => (
+                <option key={src.id || "monitor"} value={src.id}>
+                  {src.kind === "window" ? "Janela: " : ""}
+                  {src.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-faint">
+              O WebView2 nao tem o seletor de tela do Chrome: a fonte vira um argumento
+              de linha de comando, lido uma unica vez quando o processo nasce. Por isso a
+              troca so vale no proximo boot.
+            </p>
+          </Section>
+
+          <Section icon={<RadioTower size={13} />} title="Push-to-talk">
+            <button
+              onClick={() => void session.setPushToTalk(!pushToTalk)}
+              className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${
+                pushToTalk
+                  ? "border-brand bg-brand/15 text-ink"
+                  : "border-transparent bg-base-500/60 text-muted hover:bg-base-500"
+              }`}
+            >
+              <p className="text-sm font-medium">
+                {pushToTalk ? "Ligado — segure F8 para falar" : "Desligado (microfone sempre aberto)"}
+              </p>
+              <p className="text-xs text-faint">
+                F8 e capturado no sistema inteiro, entao funciona com o jogo em primeiro
+                plano. So fica registrado enquanto esta ligado.
+              </p>
+            </button>
+          </Section>
+
+          <Section icon={<Mic size={13} />} title="Audio do microfone">
+            <div className="mb-2 grid grid-cols-2 gap-2">
+              {(Object.keys(AUDIO_PRESETS) as AudioPresetId[]).map((id) => (
+                <Option
+                  key={id}
+                  active={tuning.audio === id}
+                  label={AUDIO_PRESETS[id].label}
+                  hint={AUDIO_PRESETS[id].hint}
+                  onClick={() => void session.setTuning({ audio: id })}
+                />
+              ))}
+            </div>
+
+            <select
+              value={micDeviceId}
+              onChange={(e) => void session.setMicDevice(e.target.value)}
+              onFocus={() => void session.refreshDevices()}
+              className="w-full rounded-md bg-base-500 px-3 py-2 text-sm text-ink-soft outline-none"
+            >
+              <option value="default">Dispositivo padrao do sistema</option>
+              {mics.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || `Microfone ${d.deviceId.slice(0, 6)}`}
+                </option>
+              ))}
+            </select>
+          </Section>
+
+          <Section icon={<RefreshCw size={13} />} title="Atualizacao">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void session.checkUpdate({ silent: false })}
+                disabled={updateBusy || !isDesktop}
+                className="rounded-md bg-base-500 px-3 py-2 text-sm text-ink-soft transition-colors enabled:hover:bg-base-400 disabled:opacity-50"
+              >
+                {updateBusy ? "Verificando..." : "Procurar atualizacao"}
+              </button>
+              {updateVersion && (
+                <button
+                  onClick={() => void session.installUpdate()}
+                  disabled={updateBusy}
+                  className="rounded-md bg-brand px-3 py-2 text-sm font-medium text-white transition-colors enabled:hover:bg-brand-hover disabled:opacity-50"
+                >
+                  Instalar {updateVersion}
+                </button>
+              )}
+            </div>
+          </Section>
+
+          <p className="rounded-md bg-base-500/50 p-3 text-xs leading-relaxed text-muted">
+            O bitrate inicial e injetado direto no SDP (x-google-start-bitrate), entao a
+            imagem ja abre nitida em vez de subir de 300 kbps ao longo de 15 segundos. No
+            modo <b className="text-ink-soft">Jogo</b> o encoder usa
+            <b className="text-ink-soft"> maintain-framerate</b>: sob perda de pacote ele
+            reduz resolucao, nunca os FPS.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export const SettingsModal = memo(SettingsModalBase);

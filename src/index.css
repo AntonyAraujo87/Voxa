@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   Design tokens — paleta escura estilo Discord, expostas como CSS vars
+   pra o Tailwind v4 gerar utilitarios (bg-base, text-muted, etc).
+--------------------------------------------------------------------------- */
+@theme {
+  --color-base-900: #1a1b1e; /* rail de servidores  */
+  --color-base-800: #1e1f22; /* fundo da janela     */
+  --color-base-700: #2b2d31; /* sidebar de canais   */
+  --color-base-600: #313338; /* area de chat        */
+  --color-base-500: #383a40; /* inputs / hover      */
+  --color-base-400: #404249; /* hover forte         */
+  --color-line: #26272b;
+
+  --color-ink: #f2f3f5;
+  --color-ink-soft: #dbdee1;
+  --color-muted: #949ba4;
+  --color-faint: #6d6f78;
+
+  --color-brand: #5865f2;
+  --color-brand-hover: #4752c4;
+  --color-online: #23a55a;
+  --color-danger: #f23f43;
+  --color-warn: #f0b232;
+  --color-stream: #a855f7;
+
+  --font-sans: "gg sans", "Inter", "Segoe UI Variable Display", "Segoe UI",
+    system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, monospace;
+
+  --animate-pop: pop 0.16s ease-out;
+}
+
+@keyframes pop {
+  from { opacity: 0; transform: translateY(4px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---------------------------------------------------------------------------
+   Reset + performance
+--------------------------------------------------------------------------- */
+* { min-width: 0; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden; /* app shell: quem rola sao os paineis internos */
+}
+
+body {
+  background: var(--color-base-800);
+  color: var(--color-ink-soft);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeSpeed;
+  user-select: none;
+  cursor: default;
+  overscroll-behavior: none;
+}
+
+input, textarea { user-select: text; }
+
+/* Video: manda a composicao pra GPU e evita repaint do layout inteiro */
+video {
+  display: block;
+  background: #000;
+  contain: strict;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: transform;
+}
+
+/* Scrollbar fina estilo Discord */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #1a1b1e;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #111214; background-clip: padding-box; }
+
+::selection { background: color-mix(in srgb, var(--color-brand) 45%, transparent); }
+
+button { font: inherit; cursor: pointer; }
+
+@utility drag-region {
+  -webkit-app-region: drag;
+}
+@utility no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Camada de composicao isolada pra grade de video: re-render de chat
+   nunca invalida o layer do stream. */
+@utility gpu-layer {
+  contain: layout paint style;
+  transform: translateZ(0);
+}
