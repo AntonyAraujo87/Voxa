@@ -123,7 +123,7 @@ não é aceito.
 
    ```bash
    git init && git add . && git commit -m "feat: voxa"
-   git remote add origin https://github.com/AntonyAraujo87/voxa.git
+   git remote add origin https://github.com/AntonyAraujo87/Voxa.git
    git push -u origin main
    ```
 
