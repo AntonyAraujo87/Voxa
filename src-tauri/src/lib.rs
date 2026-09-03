@@ -54,6 +54,7 @@ pub fn run() {
             capture::get_capture_source,
             hotkeys::set_push_to_talk,
             hotkeys::hotkey_status,
+            hotkeys::rebind_hotkey,
             lifecycle::release_memory,
             lifecycle::flash_taskbar
         ])

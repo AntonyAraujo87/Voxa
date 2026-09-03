@@ -11,6 +11,7 @@ import {
   getHotkeyStatus,
   type CaptureSource,
   type HotkeyStatus,
+  type RebindCombo,
 } from "../lib/desktop";
 import {
   AUDIO_PRESETS,
@@ -79,6 +80,100 @@ function Option({
   );
 }
 
+type HotkeyAction = "mute" | "deafen" | "share" | "talk";
+
+const MODIFICADORES = new Set([
+  "ControlLeft",
+  "ControlRight",
+  "ShiftLeft",
+  "ShiftRight",
+  "AltLeft",
+  "AltRight",
+  "MetaLeft",
+  "MetaRight",
+]);
+
+/** "KeyM" -> "M", "Digit5" -> "5", "Space" -> "Espaço" — o resto (F1..F12,
+ *  setas ja com nome curto) passa direto. */
+function nomeDaTecla(code: string): string {
+  if (code.startsWith("Key")) return code.slice(3);
+  if (code.startsWith("Digit")) return code.slice(5);
+  switch (code) {
+    case "Space":
+      return "Espaço";
+    case "Escape":
+      return "Esc";
+    case "ArrowUp":
+      return "↑";
+    case "ArrowDown":
+      return "↓";
+    case "ArrowLeft":
+      return "←";
+    case "ArrowRight":
+      return "→";
+    default:
+      return code;
+  }
+}
+
+function rotuloDoCombo(code: string, ctrl: boolean, shift: boolean, alt: boolean): string {
+  const partes: string[] = [];
+  if (ctrl) partes.push("Ctrl");
+  if (shift) partes.push("Shift");
+  if (alt) partes.push("Alt");
+  partes.push(nomeDaTecla(code));
+  return partes.join("+");
+}
+
+function HotkeyRow({
+  label,
+  combo,
+  capturando,
+  onCapture,
+  onRemove,
+}: {
+  label: string;
+  combo: string | null | undefined;
+  capturando: boolean;
+  onCapture: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between py-1">
+      <span className="text-muted">{label}</span>
+      <div className="flex items-center gap-1.5">
+        {capturando ? (
+          <kbd className="animate-pulse rounded bg-brand/20 px-1.5 py-0.5 font-mono text-[11px] text-brand">
+            pressione uma tecla (Esc cancela)
+          </kbd>
+        ) : combo ? (
+          <kbd className="rounded bg-base-700 px-1.5 py-0.5 font-mono text-[11px] text-ink-soft">
+            {combo}
+          </kbd>
+        ) : (
+          <span className="text-[11px] text-faint">nao configurado</span>
+        )}
+        <button
+          onClick={onCapture}
+          disabled={capturando}
+          className="rounded px-1.5 py-0.5 text-[11px] text-muted transition-colors hover:bg-base-500 hover:text-ink-soft disabled:opacity-50"
+        >
+          trocar
+        </button>
+        {combo && !capturando && (
+          <button
+            onClick={onRemove}
+            title="remover atalho"
+            className="grid size-5 place-items-center rounded text-muted transition-colors hover:bg-base-500 hover:text-danger"
+          >
+            <X size={11} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SettingsModalBase() {
   const open = useApp((s) => s.showSettings);
   const tuning = useApp((s) => s.tuning);
@@ -95,6 +190,7 @@ function SettingsModalBase() {
   const [sources, setSources] = useState<CaptureSource[]>([]);
   const [source, setSource] = useState("");
   const [atalhos, setAtalhos] = useState<HotkeyStatus | null>(null);
+  const [capturando, setCapturando] = useState<HotkeyAction | null>(null);
 
   useEffect(() => {
     if (!open || !isDesktop) return;
@@ -102,6 +198,46 @@ function SettingsModalBase() {
     void getCaptureSource().then((current) => setSource(current ?? ""));
     void getHotkeyStatus().then(setAtalhos);
   }, [open]);
+
+  const aplicarAtalho = async (action: HotkeyAction, combo: RebindCombo) => {
+    try {
+      const status = await session.rebindHotkey(action, combo);
+      setAtalhos(status);
+    } catch (err) {
+      useApp.getState().toast("error", (err as Error).message);
+    }
+  };
+
+  const removerAtalho = (action: HotkeyAction) =>
+    void aplicarAtalho(action, { code: null, ctrl: false, shift: false, alt: false, label: null });
+
+  // Captura em fase de "capture" e para a propagacao: precisa vencer o
+  // listener de Escape do proprio modal (Escape aqui cancela a captura, nao
+  // fecha a janela) e nao pode deixar a tecla vazar pro resto da pagina.
+  useEffect(() => {
+    if (!capturando) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (MODIFICADORES.has(e.code)) return; // so o modificador sozinho ainda nao e um atalho
+      if (e.code === "Escape") {
+        setCapturando(null);
+        return;
+      }
+      const acao = capturando;
+      setCapturando(null);
+      void aplicarAtalho(acao, {
+        code: e.code,
+        ctrl: e.ctrlKey,
+        shift: e.shiftKey,
+        alt: e.altKey,
+        label: rotuloDoCombo(e.code, e.ctrlKey, e.shiftKey, e.altKey),
+      });
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capturando]);
 
   const chooseSource = async (title: string) => {
     setSource(title);
@@ -210,11 +346,14 @@ function SettingsModalBase() {
               }`}
             >
               <p className="text-sm font-medium">
-                {pushToTalk ? "Ligado — segure F8 para falar" : "Desligado (microfone sempre aberto)"}
+                {pushToTalk
+                  ? `Ligado — segure ${atalhos?.talk ?? "F8"} para falar`
+                  : "Desligado (microfone sempre aberto)"}
               </p>
               <p className="text-xs text-faint">
-                F8 e capturado no sistema inteiro, entao funciona com o jogo em primeiro
-                plano. So fica registrado enquanto esta ligado.
+                A tecla e capturada no sistema inteiro, entao funciona com o jogo em
+                primeiro plano. So fica registrada enquanto esta ligado — troque ela
+                em "Atalhos globais", abaixo.
               </p>
             </button>
           </Section>
@@ -286,29 +425,41 @@ function SettingsModalBase() {
           </Section>
 
           <Section icon={<Keyboard size={13} />} title="Atalhos globais">
-            <div className="rounded-md bg-base-500/50 p-3 text-xs">
-              {[
-                ["Microfone", atalhos?.mute],
-                ["Ensurdecer", atalhos?.deafen],
-                ["Compartilhar tela", atalhos?.share],
-                ["Falar (push-to-talk)", pushToTalk ? "F8" : null],
-              ].map(([nome, combo]) => (
-                <p key={nome as string} className="flex items-center justify-between py-0.5">
-                  <span className="text-muted">{nome}</span>
-                  {combo ? (
-                    <kbd className="rounded bg-base-700 px-1.5 py-0.5 font-mono text-[11px] text-ink-soft">
-                      {combo}
-                    </kbd>
-                  ) : (
-                    <span className="text-faint">indisponivel</span>
-                  )}
-                </p>
-              ))}
+            <div className="rounded-md bg-base-500/50 px-3 py-1 text-xs">
+              <HotkeyRow
+                label="Microfone"
+                combo={atalhos?.mute}
+                capturando={capturando === "mute"}
+                onCapture={() => setCapturando("mute")}
+                onRemove={() => removerAtalho("mute")}
+              />
+              <HotkeyRow
+                label="Ensurdecer"
+                combo={atalhos?.deafen}
+                capturando={capturando === "deafen"}
+                onCapture={() => setCapturando("deafen")}
+                onRemove={() => removerAtalho("deafen")}
+              />
+              <HotkeyRow
+                label="Compartilhar tela"
+                combo={atalhos?.share}
+                capturando={capturando === "share"}
+                onCapture={() => setCapturando("share")}
+                onRemove={() => removerAtalho("share")}
+              />
+              <HotkeyRow
+                label="Falar (push-to-talk)"
+                combo={atalhos?.talk}
+                capturando={capturando === "talk"}
+                onCapture={() => setCapturando("talk")}
+                onRemove={() => removerAtalho("talk")}
+              />
             </div>
             <p className="mt-1 text-xs text-faint">
-              Atalho global pertence a um programa so. Se o Discord ja usa
-              Ctrl+Shift+M, o Voxa cai automaticamente para Ctrl+Alt+M — e e essa
-              que aparece acima.
+              Atalho global pertence a um programa so — se outro programa ja usa a
+              tecla escolhida, o Voxa avisa e mantem a anterior. Push-to-talk nao
+              aceita Ctrl/Shift/Alt: precisa ser uma tecla que da pra segurar sozinha
+              o jogo inteiro.
             </p>
           </Section>
 

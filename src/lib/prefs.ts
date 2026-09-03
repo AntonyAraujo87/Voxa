@@ -1,4 +1,9 @@
 import type { TuningState } from "./rtc";
+import type { RebindCombo } from "./desktop";
+
+/** acao -> combinacao customizada. Chave ausente = nunca mexeu, usa o padrao
+ *  do Rust; `null` = usuario removeu o atalho de proposito. */
+export type HotkeyPrefs = Partial<Record<"mute" | "deafen" | "share" | "talk", RebindCombo | null>>;
 
 /* ---------------------------------------------------------------------------
    Preferencias em disco.
@@ -31,6 +36,7 @@ export interface Prefs {
   showStats: boolean;
   pushToTalk: boolean;
   sounds: boolean;
+  hotkeys: HotkeyPrefs;
 }
 
 const DEFAULTS: Prefs = {
@@ -48,6 +54,7 @@ const DEFAULTS: Prefs = {
   showStats: false,
   pushToTalk: false,
   sounds: true,
+  hotkeys: {},
 };
 
 export function loadPrefs(): Prefs {
@@ -62,6 +69,7 @@ export function loadPrefs(): Prefs {
       tuning: { ...DEFAULTS.tuning, ...(parsed.tuning ?? {}) },
       volumes: { ...(parsed.volumes ?? {}) },
       streamVolumes: { ...(parsed.streamVolumes ?? {}) },
+      hotkeys: { ...(parsed.hotkeys ?? {}) },
     };
   } catch {
     return { ...DEFAULTS };

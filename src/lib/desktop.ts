@@ -84,6 +84,7 @@ export interface HotkeyStatus {
   mute: string | null;
   deafen: string | null;
   share: string | null;
+  talk: string | null;
 }
 
 /**
@@ -92,6 +93,26 @@ export interface HotkeyStatus {
  * interface precisa mostrar a que funciona, nao a que estava no plano.
  */
 export const getHotkeyStatus = () => invoke<HotkeyStatus>("hotkey_status");
+
+export interface RebindCombo {
+  /** `KeyboardEvent.code` cru — "KeyM", "F9", "Digit5"... `null` remove o atalho. */
+  code: string | null;
+  ctrl: boolean;
+  shift: boolean;
+  alt: boolean;
+  /** rotulo amigavel pronto pra mostrar ("Ctrl+Shift+M"), calculado no frontend. */
+  label: string | null;
+}
+
+/** Troca a tecla de uma acao. Rejeita com a razao quando a combinacao nao vale. */
+export async function rebindHotkey(
+  action: "mute" | "deafen" | "share" | "talk",
+  combo: RebindCombo
+): Promise<HotkeyStatus> {
+  if (!isDesktop) throw new Error("atalhos globais so existem no app instalado");
+  const { invoke: chamar } = await import("@tauri-apps/api/core");
+  return chamar("rebind_hotkey", { action, ...combo }) as Promise<HotkeyStatus>;
+}
 
 /* ------------------------------- update ---------------------------------- */
 

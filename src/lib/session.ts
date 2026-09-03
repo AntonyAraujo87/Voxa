@@ -20,7 +20,10 @@ import {
   focusWindow,
   isDesktop,
   listenEvent,
+  rebindHotkey as rebindHotkeyNative,
   setPushToTalkNative,
+  type HotkeyStatus,
+  type RebindCombo,
 } from "./desktop";
 import { playJoin, playLeave, playMute, playUnmute, setSoundsEnabled } from "./sounds";
 
@@ -454,8 +457,45 @@ class Session {
 
   /* ------------------------- atalhos e atualizacao ---------------------- */
 
+  /**
+   * Troca a tecla de uma acao e persiste — reaplicada a cada boot em
+   * `reaplicarHotkeysSalvos`, ja que o Rust sempre sobe com os padroes de
+   * fabrica primeiro. Rejeita (throw) com o motivo quando a Rust nao aceita
+   * a combinacao, pra UI mostrar o erro certo.
+   */
+  async rebindHotkey(
+    action: "mute" | "deafen" | "share" | "talk",
+    combo: RebindCombo
+  ): Promise<HotkeyStatus> {
+    const status = await rebindHotkeyNative(action, combo);
+    const hotkeys = { ...loadPrefs().hotkeys, [action]: combo.code ? combo : null };
+    savePrefs({ hotkeys });
+    return status;
+  }
+
+  /** Reaplica no boot as combinacoes que o usuario trocou — o Rust so sabe
+   *  dos padroes de fabrica, quem lembra do resto e o localStorage. */
+  private async reaplicarHotkeysSalvos() {
+    const salvos = loadPrefs().hotkeys;
+    for (const action of ["mute", "deafen", "share", "talk"] as const) {
+      const combo = salvos[action];
+      if (combo === undefined) continue; // nunca mexeu: fica no padrao do Rust
+      try {
+        await rebindHotkeyNative(
+          action,
+          combo ?? { code: null, ctrl: false, shift: false, alt: false, label: null }
+        );
+      } catch (err) {
+        app
+          .getState()
+          .toast("info", `Atalho de ${action} nao pode ser restaurado: ${(err as Error).message}`);
+      }
+    }
+  }
+
   /** Atalhos globais vindos do Rust: funcionam com o app em segundo plano. */
   async initHotkeys() {
+    await this.reaplicarHotkeysSalvos();
     return listenEvent<{ action: string; pressed: boolean }>("hotkey", (e) => {
       switch (e.action) {
         case "mute":
