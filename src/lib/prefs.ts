@@ -27,6 +27,7 @@ export interface Prefs {
   tuning: TuningState;
   micDeviceId: string;
   noiseSuppression: boolean;
+  camDeviceId: string;
   outputDeviceId: string;
   outputMode: "natural" | "nivelado";
   /** peerUserId -> 0..2 (1 = normal, 2 = dobro) — volume da voz */
@@ -48,6 +49,7 @@ const DEFAULTS: Prefs = {
   tuning: { video: "alta", audio: "voz", codec: "hardware", content: "jogo" },
   micDeviceId: "default",
   noiseSuppression: false,
+  camDeviceId: "default",
   outputDeviceId: "default",
   outputMode: "natural",
   volumes: {},

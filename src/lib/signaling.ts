@@ -6,6 +6,8 @@ export interface PeerState {
   deafened: boolean;
   sharing: boolean;
   speaking: boolean;
+  /** so importa junto de `sharing: true` — o que mostrar na UI dos outros. */
+  sharingKind: "tela" | "camera" | null;
 }
 
 export interface PeerUser {

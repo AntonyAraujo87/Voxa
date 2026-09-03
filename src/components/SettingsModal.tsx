@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from "react";
-import { Bell, Cpu, Gauge, Keyboard, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, Volume2, X } from "lucide-react";
+import { Bell, Camera, Cpu, Gauge, Keyboard, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, Volume2, X } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import { outputSupport } from "../lib/audioOutput";
@@ -180,6 +180,8 @@ function SettingsModalBase() {
   const mics = useApp((s) => s.mics);
   const micDeviceId = useApp((s) => s.micDeviceId);
   const noiseSuppression = useApp((s) => s.noiseSuppression);
+  const cameras = useApp((s) => s.cameras);
+  const camDeviceId = useApp((s) => s.camDeviceId);
   const speakers = useApp((s) => s.speakers);
   const outputDeviceId = useApp((s) => s.outputDeviceId);
   const outputMode = useApp((s) => s.outputMode);
@@ -334,6 +336,26 @@ function SettingsModalBase() {
               O WebView2 nao tem o seletor de tela do Chrome: a fonte vira um argumento
               de linha de comando, lido uma unica vez quando o processo nasce. Por isso a
               troca so vale no proximo boot.
+            </p>
+          </Section>
+
+          <Section icon={<Camera size={13} />} title="Webcam">
+            <select
+              value={camDeviceId}
+              onChange={(e) => void session.setCamDevice(e.target.value)}
+              onFocus={() => void session.refreshDevices()}
+              className="w-full rounded-md bg-base-500 px-3 py-2 text-sm text-ink-soft outline-none"
+            >
+              <option value="default">Dispositivo padrao do sistema</option>
+              {cameras.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || `Camera ${d.deviceId.slice(0, 6)}`}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-faint">
+              Camera e tela vao pelo mesmo canal de video — ligar uma desliga a outra.
+              Trocar aqui com a camera ja ligada reabre ela no dispositivo novo.
             </p>
           </Section>
 

@@ -41,12 +41,16 @@ interface AppState {
   muted: boolean;
   deafened: boolean;
   sharing: boolean;
+  /** so importa junto de `sharing: true` — o que mostrar (tela ou webcam). */
+  sharingKind: "tela" | "camera" | null;
   tuning: TuningState;
   micDeviceId: string;
   mics: MediaDeviceInfo[];
   /** RNNoise (rede neural, WASM) no caminho do mic — mais forte que o
    *  noiseSuppression nativo do getUserMedia, custa CPU, por isso opcional. */
   noiseSuppression: boolean;
+  camDeviceId: string;
+  cameras: MediaDeviceInfo[];
   outputDeviceId: string;
   speakers: MediaDeviceInfo[];
   /** "nivelado" liga um compressor no bus de saida — sobe quem fala baixo */
@@ -111,10 +115,13 @@ export const useApp = create<AppState>((set) => ({
   muted: false,
   deafened: false,
   sharing: false,
+  sharingKind: null,
   tuning: { video: "alta", audio: "voz", codec: "hardware", content: "jogo" },
   micDeviceId: "default",
   mics: [],
   noiseSuppression: false,
+  camDeviceId: "default",
+  cameras: [],
   outputDeviceId: "default",
   speakers: [],
   outputMode: "natural",

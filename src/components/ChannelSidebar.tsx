@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
 import {
+  Camera,
   ChevronDown,
   Hash,
   Headphones,
@@ -149,7 +150,7 @@ const VoiceStatus = memo(function VoiceStatus() {
   const activeVoice = useApp((s) => s.activeVoice);
   const channels = useApp((s) => s.channels);
   const stats = useApp((s) => s.stats);
-  const sharing = useApp((s) => s.sharing);
+  const sharingKind = useApp((s) => s.sharingKind);
 
   if (!activeVoice) return null;
   const channel = channels.find((c) => c.id === activeVoice);
@@ -175,17 +176,32 @@ const VoiceStatus = memo(function VoiceStatus() {
         </button>
       </div>
 
-      <button
-        onClick={() => void session.toggleShare()}
-        className={`mt-2 flex w-full items-center justify-center gap-2 rounded py-1.5 text-sm font-medium transition-colors ${
-          sharing
-            ? "bg-danger/90 text-white hover:bg-danger"
-            : "bg-base-500 text-ink-soft hover:bg-base-400"
-        }`}
-      >
-        <MonitorUp size={16} />
-        {sharing ? "Parar transmissao" : "Compartilhar tela"}
-      </button>
+      <div className="mt-2 flex gap-1.5">
+        <button
+          onClick={() => void session.toggleShare()}
+          title={sharingKind === "tela" ? "Parar transmissao" : "Compartilhar tela"}
+          className={`flex flex-1 items-center justify-center gap-2 rounded py-1.5 text-sm font-medium transition-colors ${
+            sharingKind === "tela"
+              ? "bg-danger/90 text-white hover:bg-danger"
+              : "bg-base-500 text-ink-soft hover:bg-base-400"
+          }`}
+        >
+          <MonitorUp size={16} />
+          {sharingKind === "tela" ? "Parar" : "Tela"}
+        </button>
+        <button
+          onClick={() => session.toggleWebcam()}
+          title={sharingKind === "camera" ? "Desligar câmera" : "Ligar câmera"}
+          className={`flex flex-1 items-center justify-center gap-2 rounded py-1.5 text-sm font-medium transition-colors ${
+            sharingKind === "camera"
+              ? "bg-danger/90 text-white hover:bg-danger"
+              : "bg-base-500 text-ink-soft hover:bg-base-400"
+          }`}
+        >
+          <Camera size={16} />
+          {sharingKind === "camera" ? "Parar" : "Câmera"}
+        </button>
+      </div>
 
       <Soundboard />
     </div>

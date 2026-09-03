@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import {
+  Camera,
   Expand,
   Loader2,
   MicOff,
@@ -108,6 +109,8 @@ interface Props {
   speaking: boolean;
   focused: boolean;
   hasScreen: boolean;
+  /** tela ou webcam — so importa visualmente quando hasScreen e true. */
+  kind?: "tela" | "camera";
   /** clique na miniatura (grade de quem esta transmitindo) — foca esse tile */
   onClick?: () => void;
   /** so existe no tile grande: volta para a grade de miniaturas */
@@ -124,6 +127,7 @@ function VideoTileBase({
   speaking,
   focused,
   hasScreen,
+  kind = "tela",
   onClick,
   onBack,
 }: Props) {
@@ -245,7 +249,12 @@ function VideoTileBase({
           // O audio da tela sai pelos <audio> dedicados (controle de volume por
           // pessoa); aqui fica sempre mudo pra nao duplicar nem causar eco.
           muted
-          className="size-full object-contain"
+          // So a PROPRIA webcam espelha — e como a pessoa se ve no espelho,
+          // convencao universal de qualquer app de video. Espelhar a do outro
+          // lado inverteria texto e gestos pra quem esta assistindo.
+          className={`size-full object-contain ${
+            isSelf && kind === "camera" ? "-scale-x-100" : ""
+          }`}
         />
       ) : (
         <div className="flex size-full flex-col items-center justify-center gap-3 py-8">
@@ -270,7 +279,12 @@ function VideoTileBase({
           {name}
           {isSelf && " (voce)"}
         </span>
-        {hasScreen && <ScreenShare size={13} className="text-stream" />}
+        {hasScreen &&
+          (kind === "camera" ? (
+            <Camera size={13} className="text-stream" />
+          ) : (
+            <ScreenShare size={13} className="text-stream" />
+          ))}
         {muted && <MicOff size={13} className="text-danger" />}
       </div>
 

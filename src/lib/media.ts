@@ -134,11 +134,42 @@ export async function captureScreen(
   return { stream, video, audio };
 }
 
+/* ------------------------------- WEBCAM ----------------------------------- */
+
+export interface WebcamCaptureResult {
+  stream: MediaStream;
+  video: MediaStreamTrack;
+}
+
+export async function captureWebcam(deviceId?: string): Promise<WebcamCaptureResult> {
+  const video: MediaTrackConstraints = {
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+    frameRate: { ideal: 30 },
+    ...(deviceId && deviceId !== "default" ? { deviceId: { exact: deviceId } } : {}),
+  };
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+    const track = stream.getVideoTracks()[0];
+    track.contentHint = "motion";
+    return { stream, video: track };
+  } catch (err) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      return { stream, video: stream.getVideoTracks()[0] };
+    } catch {
+      throw new MediaError(describe(err), err);
+    }
+  }
+}
+
 /* --------------------------- DISPOSITIVOS -------------------------------- */
 
 export interface DeviceList {
   mics: MediaDeviceInfo[];
   speakers: MediaDeviceInfo[];
+  cameras: MediaDeviceInfo[];
 }
 
 export async function listDevices(): Promise<DeviceList> {
@@ -147,9 +178,10 @@ export async function listDevices(): Promise<DeviceList> {
     return {
       mics: all.filter((d) => d.kind === "audioinput"),
       speakers: all.filter((d) => d.kind === "audiooutput"),
+      cameras: all.filter((d) => d.kind === "videoinput"),
     };
   } catch {
-    return { mics: [], speakers: [] };
+    return { mics: [], speakers: [], cameras: [] };
   }
 }
 

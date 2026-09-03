@@ -12,6 +12,10 @@ export const DEFAULT_STATE = Object.freeze({
   deafened: false,
   sharing: false,
   speaking: false,
+  // "tela" | "camera" | null — so importa junto de `sharing: true`; o valor
+  // em si nao controla midia nenhuma, e so pra UI dos outros saber o que
+  // mostrar (icone de monitor ou de camera).
+  sharingKind: null,
 });
 
 export class Registry {
@@ -58,6 +62,12 @@ export class Registry {
     // no objeto que sera transmitido para todo mundo.
     for (const campo of ["muted", "deafened", "sharing", "speaking"]) {
       if (campo in patch) client.state[campo] = !!patch[campo];
+    }
+    // Nao e boolean: so aceita um dos dois rotulos conhecidos, qualquer outra
+    // coisa (incluindo null explicito, pra "parou de compartilhar") vira null.
+    if ("sharingKind" in patch) {
+      client.state.sharingKind =
+        patch.sharingKind === "tela" || patch.sharingKind === "camera" ? patch.sharingKind : null;
     }
     return client.state;
   }

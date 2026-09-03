@@ -56,6 +56,7 @@ class Session {
   private pendingUpdate: (() => Promise<void>) | null = null;
   /** trava contra duplo clique / atalho repetido durante o await da captura */
   private sharePending = false;
+  private webcamPending = false;
   /** serializa entradas em canal: dois cliques rapidos criavam duas malhas */
   private joinPending: Promise<void> | null = null;
 
@@ -121,6 +122,7 @@ class Session {
         this.signaling.setState({ speaking });
       },
       onScreenEnded: () => this.stopShare(),
+      onWebcamEnded: () => this.stopWebcam(),
     });
   }
 
@@ -157,6 +159,7 @@ class Session {
       tuning: prefs.tuning,
       micDeviceId: prefs.micDeviceId,
       noiseSuppression: prefs.noiseSuppression,
+      camDeviceId: prefs.camDeviceId,
       outputDeviceId: prefs.outputDeviceId,
       outputMode: prefs.outputMode,
       volumes: prefs.volumes,
@@ -227,8 +230,8 @@ class Session {
   }
 
   async refreshDevices() {
-    const { mics, speakers } = await listDevices();
-    app.setState({ mics, speakers });
+    const { mics, speakers, cameras } = await listDevices();
+    app.setState({ mics, speakers, cameras });
   }
 
   /* -------------------------------- texto ------------------------------- */
@@ -630,11 +633,18 @@ class Session {
     const s = app.getState();
     // A captura e assincrona: sem esta trava, dois cliques rapidos (ou o
     // atalho global repetido) abririam duas capturas e vazariam um stream.
-    if (s.sharing || this.sharePending) return;
+    // `sharingKind === "tela"` (nao so `s.sharing`) porque a camera tambem
+    // deixa `sharing: true` — senao trocar de camera pra tela nunca saia do
+    // lugar, ja achando que "ja esta compartilhando".
+    if (s.sharingKind === "tela" || this.sharePending) return;
     if (!s.activeVoice) {
       s.toast("info", "Entre num canal de voz antes de compartilhar.");
       return;
     }
+    // Tela e camera vao pro mesmo transceiver de video da malha — so uma
+    // por vez. Trocar de uma pra outra e so desligar a que estava e ligar a
+    // nova, sem exigir dois cliques.
+    if (this.media.isWebcamOn) this.stopWebcam();
 
     this.sharePending = true;
     try {
@@ -642,8 +652,8 @@ class Session {
       setLocalScreen(stream);
       await this.mesh.setScreen(video, audio);
 
-      app.setState({ sharing: true, focusPeer: s.selfSocketId });
-      this.signaling.setState({ sharing: true });
+      app.setState({ sharing: true, sharingKind: "tela", focusPeer: s.selfSocketId });
+      this.signaling.setState({ sharing: true, sharingKind: "tela" });
 
       const preset = VIDEO_PRESETS[s.tuning.video];
       s.toast("ok", `Compartilhando ${preset.width}x${preset.height} @ ${preset.fps}fps`);
@@ -665,9 +675,10 @@ class Session {
     const selfId = app.getState().selfSocketId;
     app.setState((s) => ({
       sharing: false,
+      sharingKind: null,
       focusPeer: s.focusPeer === selfId ? null : s.focusPeer,
     }));
-    this.signaling.setState({ sharing: false });
+    this.signaling.setState({ sharing: false, sharingKind: null });
   }
 
   /**
@@ -678,7 +689,10 @@ class Session {
    * existe o SharePicker, que escolhe ANTES de chamar getDisplayMedia().
    */
   async toggleShare() {
-    if (app.getState().sharing) {
+    // `sharingKind`, nao `sharing` puro — a camera tambem deixa `sharing:
+    // true`, e um toggle "parar" nela nao teria nada pra parar (stopShare
+    // so mexe no que a PROPRIA tela abriu).
+    if (app.getState().sharingKind === "tela") {
       this.stopShare();
       return;
     }
@@ -690,6 +704,63 @@ class Session {
     // seletor precisa estar visivel para poder escolher.
     await focusWindow();
     app.setState({ showSharePicker: true });
+  }
+
+  /* ------------------------------- webcam --------------------------------- */
+
+  async startWebcam() {
+    const s = app.getState();
+    if (this.media.isWebcamOn || this.webcamPending) return;
+    if (!s.activeVoice) {
+      s.toast("info", "Entre num canal de voz antes de ligar a camera.");
+      return;
+    }
+    if (s.sharing) this.stopShare();
+
+    this.webcamPending = true;
+    try {
+      const track = await this.media.openWebcam(s.camDeviceId);
+      if (!track) return;
+      setLocalScreen(new MediaStream([track]));
+      await this.mesh.setScreen(track, null);
+
+      app.setState({ sharing: true, sharingKind: "camera", focusPeer: s.selfSocketId });
+      this.signaling.setState({ sharing: true, sharingKind: "camera" });
+    } catch (err) {
+      this.media.closeWebcam();
+      setLocalScreen(null);
+      s.toast("error", (err as Error).message);
+    } finally {
+      this.webcamPending = false;
+    }
+  }
+
+  stopWebcam() {
+    if (!this.media.isWebcamOn) return;
+    void this.mesh.setScreen(null, null);
+    this.media.closeWebcam();
+    setLocalScreen(null);
+
+    const selfId = app.getState().selfSocketId;
+    app.setState((s) => ({
+      sharing: false,
+      sharingKind: null,
+      focusPeer: s.focusPeer === selfId ? null : s.focusPeer,
+    }));
+    this.signaling.setState({ sharing: false, sharingKind: null });
+  }
+
+  toggleWebcam() {
+    if (this.media.isWebcamOn) this.stopWebcam();
+    else void this.startWebcam();
+  }
+
+  async setCamDevice(deviceId: string) {
+    app.setState({ camDeviceId: deviceId });
+    savePrefs({ camDeviceId: deviceId });
+    if (!this.media.isWebcamOn) return;
+    this.stopWebcam();
+    await this.startWebcam();
   }
 
   /* ------------------------------- qualidade ---------------------------- */

@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo } from "react";
-import { Activity, MonitorUp, Radio, X } from "lucide-react";
+import { Activity, Camera, MonitorUp, Radio, X } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import { VideoTile } from "./VideoTile";
@@ -24,9 +24,23 @@ function nomesDeQuemTransmite(nomes: string[]): string {
   return `${nomes.slice(0, -1).join(", ")} e ${nomes[nomes.length - 1]}`;
 }
 
+/** "esta transmitindo" so quando todos sao tela; "ligou a camera" so quando
+ *  todos sao camera; misto cai num rotulo neutro. */
+function rotuloDeQuemTransmite(kinds: ("tela" | "camera" | null)[]): string {
+  const plural = kinds.length > 1;
+  if (kinds.every((k) => k === "camera")) return plural ? "ligaram a câmera" : "ligou a câmera";
+  if (kinds.every((k) => k === "tela")) return plural ? "estão transmitindo" : "está transmitindo";
+  return plural ? "estão ao vivo" : "está ao vivo";
+}
+
 /** Faixa fina: "Fulano esta transmitindo" + botao para abrir a grade. */
-const LiveBanner = memo(function LiveBanner({ names }: { names: string[] }) {
-  const plural = names.length > 1;
+const LiveBanner = memo(function LiveBanner({
+  names,
+  kinds,
+}: {
+  names: string[];
+  kinds: ("tela" | "camera" | null)[];
+}) {
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-line bg-stream/10 px-3 py-2">
       <span className="relative flex size-2 shrink-0">
@@ -34,8 +48,7 @@ const LiveBanner = memo(function LiveBanner({ names }: { names: string[] }) {
         <span className="relative inline-flex size-2 rounded-full bg-stream" />
       </span>
       <span className="min-w-0 truncate text-[13px] text-ink-soft">
-        <b className="text-ink">{nomesDeQuemTransmite(names)}</b>{" "}
-        {plural ? "estão transmitindo" : "está transmitindo"}
+        <b className="text-ink">{nomesDeQuemTransmite(names)}</b> {rotuloDeQuemTransmite(kinds)}
       </span>
       <button
         onClick={() => useApp.setState({ watchingLive: true })}
@@ -53,6 +66,7 @@ function StageGridBase() {
   const roster = useApp((s) => s.roster);
   const selfId = useApp((s) => s.selfSocketId);
   const sharing = useApp((s) => s.sharing);
+  const sharingKind = useApp((s) => s.sharingKind);
   const selfMuted = useApp((s) => s.muted);
   const speaking = useApp((s) => s.speaking);
   const focusPeer = useApp((s) => s.focusPeer);
@@ -68,6 +82,9 @@ function StageGridBase() {
     () => members.filter((m) => (m.id === selfId ? sharing : m.state.sharing)),
     [members, selfId, sharing]
   );
+
+  const kindOf = (m: (typeof streamers)[number]): "tela" | "camera" | null =>
+    m.id === selfId ? sharingKind : m.state.sharingKind;
 
   // Comecar a propria transmissao abre a grade sozinho — faz sentido ver a
   // propria previa na hora. Transmissao de outra pessoa nunca abre sozinha:
@@ -85,7 +102,12 @@ function StageGridBase() {
   if (!activeVoice || streamers.length === 0) return null;
 
   if (!watchingLive) {
-    return <LiveBanner names={streamers.map((m) => m.user.name)} />;
+    return (
+      <LiveBanner
+        names={streamers.map((m) => m.user.name)}
+        kinds={streamers.map(kindOf)}
+      />
+    );
   }
 
   const focused = focusPeer && streamers.some((m) => m.id === focusPeer) ? focusPeer : null;
@@ -104,6 +126,7 @@ function StageGridBase() {
       speaking={!!speaking[m.id]}
       focused={!!opts.focused}
       hasScreen
+      kind={kindOf(m) ?? "tela"}
       onClick={opts.onClick}
       onBack={opts.onBack}
     />
@@ -128,10 +151,19 @@ function StageGridBase() {
         <button
           onClick={() => void session.toggleShare()}
           className={`rounded px-2 py-1 text-xs transition-colors ${
-            sharing ? "bg-danger/90 text-white" : "bg-base-600 text-ink-soft hover:bg-base-500"
+            sharingKind === "tela" ? "bg-danger/90 text-white" : "bg-base-600 text-ink-soft hover:bg-base-500"
           }`}
         >
-          {sharing ? "parar" : "compartilhar"}
+          {sharingKind === "tela" ? "parar" : "compartilhar"}
+        </button>
+        <button
+          onClick={() => session.toggleWebcam()}
+          className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
+            sharingKind === "camera" ? "bg-danger/90 text-white" : "bg-base-600 text-ink-soft hover:bg-base-500"
+          }`}
+        >
+          <Camera size={12} />
+          {sharingKind === "camera" ? "parar câmera" : "câmera"}
         </button>
         <button
           onClick={() => useApp.setState({ watchingLive: false, focusPeer: null })}

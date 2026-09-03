@@ -1,6 +1,13 @@
 import type { RnnoiseWorkletNode } from "@sapphi-red/web-noise-suppressor";
 import { VIDEO_PRESETS, type AudioPresetId, type ContentMode, type VideoPresetId } from "./config";
-import { audioContext, captureMic, captureScreen, createVoiceDetector, stopStream } from "./media";
+import {
+  audioContext,
+  captureMic,
+  captureScreen,
+  captureWebcam,
+  createVoiceDetector,
+  stopStream,
+} from "./media";
 import { criarSupressorDeRuido } from "./noiseSuppression";
 
 /* ---------------------------------------------------------------------------
@@ -16,6 +23,8 @@ export interface LocalMediaHooks {
   onSpeaking: (speaking: boolean) => void;
   /** usuario parou o compartilhamento pela barra nativa do sistema */
   onScreenEnded: () => void;
+  /** dispositivo de camera sumiu (desconectado, outro programa tomou) */
+  onWebcamEnded: () => void;
 }
 
 export interface ScreenHandles {
@@ -27,6 +36,7 @@ export interface ScreenHandles {
 export class LocalMedia {
   private micStream: MediaStream | null = null;
   private screenStream: MediaStream | null = null;
+  private webcamStream: MediaStream | null = null;
   private stopVad: (() => void) | null = null;
 
   // O track que de fato vai pro RTCPeerConnection nao e o track cru do
@@ -54,6 +64,10 @@ export class LocalMedia {
 
   get isSharing() {
     return this.screenStream !== null;
+  }
+
+  get isWebcamOn() {
+    return this.webcamStream !== null;
   }
 
   /** Ponto de mixagem pro soundboard se conectar — null com o mic fechado. */
@@ -176,8 +190,30 @@ export class LocalMedia {
     }
   }
 
+  /* ------------------------------- webcam -------------------------------- */
+
+  /**
+   * Camera e tela sao mutuamente exclusivas por escolho — as duas iriam pro
+   * mesmo transceiver de video da malha (mesh.setScreen), entao quem chama
+   * (session.ts) precisa garantir que so uma esteja aberta por vez.
+   */
+  async openWebcam(deviceId: string): Promise<MediaStreamTrack | null> {
+    if (this.webcamStream) return this.webcamStream.getVideoTracks()[0] ?? null;
+
+    const { stream, video } = await captureWebcam(deviceId);
+    this.webcamStream = stream;
+    video.onended = () => this.hooks.onWebcamEnded();
+    return video;
+  }
+
+  closeWebcam() {
+    stopStream(this.webcamStream);
+    this.webcamStream = null;
+  }
+
   destroy() {
     this.closeMic();
     this.closeScreen();
+    this.closeWebcam();
   }
 }
