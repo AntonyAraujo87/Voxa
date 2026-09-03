@@ -84,7 +84,13 @@ export class Signaling {
   ): Promise<{ selfId: string; roster: RosterEntry[] }> {
     this.handlers.onStatus?.("connecting");
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Signaling nao respondeu")), 10000);
+      // 45s e nao 10s: no plano free do Render o servico dorme depois de 15min
+      // ociosos e leva ~30s pra acordar. Timeout curto reprovaria o primeiro
+      // login do dia mesmo com tudo certo.
+      const timeout = setTimeout(
+        () => reject(new Error("Servidor nao respondeu. Ele pode estar acordando — tente de novo.")),
+        45000
+      );
       const onReady = () => {
         this.socket.emit(
           "hello",

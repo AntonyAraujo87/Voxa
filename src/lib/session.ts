@@ -87,12 +87,10 @@ class Session {
     return prefs;
   }
 
-  async start(name: string, color: string, token: string) {
-    if (this.started) return;
-    this.started = true;
+  async start(name: string, color: string, token: string): Promise<{ ok: boolean; error?: string }> {
+    if (this.started) return { ok: true };
 
     const prefs = loadPrefs();
-    savePrefs({ name, color, token });
 
     // id estavel entre sessoes: volume por pessoa e autoria no Supabase
     // continuam apontando pra mesma identidade depois de reiniciar.
@@ -113,11 +111,16 @@ class Session {
       const { selfId, roster } = await this.signaling.connect(user, token);
       app.setState({ selfSocketId: selfId, roster });
     } catch (err) {
-      app.getState().toast("error", (err as Error).message || "Signaling offline");
+      // Nao marca como iniciado: o usuario corrige a senha e tenta de novo
+      // sem precisar fechar o app.
+      return { ok: false, error: (err as Error).message || "Nao foi possivel conectar" };
     }
 
+    this.started = true;
+    savePrefs({ name, color, token });
     await this.openTextChannel(firstText);
     void this.refreshDevices();
+    return { ok: true };
   }
 
   async refreshDevices() {

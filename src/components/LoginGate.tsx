@@ -1,5 +1,5 @@
 import { memo, useState } from "react";
-import { KeyRound, Waves } from "lucide-react";
+import { AlertTriangle, KeyRound, Waves } from "lucide-react";
 import { USER_COLORS, hasTurn } from "../lib/config";
 import { session } from "../lib/session";
 import { supabaseEnabled } from "../lib/supabase";
@@ -15,12 +15,21 @@ function LoginGateBase({ onDone }: { onDone: () => void }) {
     saved.token || ((import.meta.env.VITE_ROOM_TOKEN as string) ?? "")
   );
   const [busy, setBusy] = useState(false);
+  const [erro, setErro] = useState("");
 
   const enter = async () => {
     const nick = name.trim();
     if (nick.length < 2 || busy) return;
     setBusy(true);
-    await session.start(nick, color, token.trim());
+    setErro("");
+    const res = await session.start(nick, color, token.trim());
+    if (!res.ok) {
+      // Fica na tela de login: senha errada ou servidor dormindo sao os dois
+      // casos comuns, e ambos se resolvem tentando de novo aqui mesmo.
+      setErro(res.error ?? "Nao foi possivel conectar");
+      setBusy(false);
+      return;
+    }
     onDone();
   };
 
@@ -77,6 +86,13 @@ function LoginGateBase({ onDone }: { onDone: () => void }) {
           ))}
         </div>
 
+        {erro && (
+          <p className="mb-3 flex items-start gap-2 rounded-md bg-danger/15 px-3 py-2 text-[13px] text-danger">
+            <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+            {erro}
+          </p>
+        )}
+
         <button
           onClick={() => void enter()}
           disabled={name.trim().length < 2 || busy}
@@ -84,6 +100,12 @@ function LoginGateBase({ onDone }: { onDone: () => void }) {
         >
           {busy ? "Conectando..." : "Entrar"}
         </button>
+
+        {busy && (
+          <p className="mt-2 text-center text-[11px] text-faint">
+            o servidor pode levar ate 30s para acordar
+          </p>
+        )}
 
         <p className="mt-3 text-center text-[11px] text-faint">
           {supabaseEnabled ? "historico no Supabase" : "modo efemero"} ·{" "}

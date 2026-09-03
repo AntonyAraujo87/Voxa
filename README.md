@@ -77,11 +77,16 @@ que descubra o endereço entra e escuta a conversa.
 
 ```
 servidor:  VOXA_TOKEN=<segredo>
-app:       VITE_ROOM_TOKEN=<mesmo segredo>
 ```
 
-O campo também aparece na tela de entrada, então dá para distribuir a senha
-separada do instalador.
+**A senha não é embutida no instalador de propósito.** O Vite grava qualquer
+`VITE_*` dentro do bundle na hora de compilar, e o instalador é público — quem
+baixasse o `.exe` conseguiria extrair a senha dele. Então cada pessoa digita a
+senha uma vez, na tela de entrada; o app guarda e não pergunta de novo. Você
+distribui a senha por outro canal.
+
+Existe a variável `VITE_ROOM_TOKEN` para builds privados (uso interno, rede
+fechada). Em release público, deixe-a vazia.
 
 ### 3. TURN — o ponto que decide se funciona
 
@@ -133,7 +138,6 @@ não é aceito.
    |---|---|
    | `TAURI_SIGNING_PRIVATE_KEY` | conteúdo de `.keys/voxa.key` |
    | `VITE_SIGNALING_URL` | URL do Render |
-   | `VITE_ROOM_TOKEN` | a senha da sala |
    | `VITE_TURN_URLS` / `_USERNAME` / `_CREDENTIAL` | se usar TURN |
    | `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | se usar Supabase |
 
