@@ -44,10 +44,21 @@ export interface AdaptiveDecision {
   reason: string;
 }
 
+/**
+ * Encoder novo leva um instante pra estabilizar: os primeiros segundos de
+ * uma transmissao costumam reportar 0 fps ou "limitado por CPU" so porque o
+ * primeiro keyframe ainda esta sendo gerado, nao porque a maquina nao
+ * aguenta. Sem essa folga, toda transmissao comecava direto no pior degrau
+ * — a mesma leitura transitoria que o start-bitrate do SDP ja existe pra
+ * evitar do lado do bitrate, faltava do lado da resolucao/fps.
+ */
+const AQUECIMENTO_MS = 4000;
+
 export class AdaptiveQuality {
   private level = 0;
   private ruins = 0;
   private boas = 0;
+  private iniciadoEm = 0;
 
   get current(): DegradeStep {
     return DEGRADE_STEPS[this.level];
@@ -57,6 +68,7 @@ export class AdaptiveQuality {
     this.level = 0;
     this.ruins = 0;
     this.boas = 0;
+    this.iniciadoEm = Date.now();
   }
 
   /**
@@ -65,6 +77,10 @@ export class AdaptiveQuality {
    * porque a mesma imagem e codificada uma vez para cada espectador.
    */
   evaluate(stats: Iterable<PeerStats>): AdaptiveDecision {
+    if (Date.now() - this.iniciadoEm < AQUECIMENTO_MS) {
+      return { step: this.current, changed: false, reason: "aquecendo" };
+    }
+
     let pior = { limitation: "none", loss: 0 };
     let algum = false;
 

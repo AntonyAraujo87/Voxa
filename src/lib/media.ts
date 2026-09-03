@@ -156,11 +156,45 @@ export async function listDevices(): Promise<DeviceList> {
 /* ------------------------- DETECCAO DE FALA ------------------------------ */
 
 let sharedCtx: AudioContext | null = null;
+let unlockArmado = false;
+
+/**
+ * Destrava o AudioContext no PRIMEIRO clique em qualquer lugar do app.
+ *
+ * `--autoplay-policy=no-user-gesture-required` (webview.rs) libera o
+ * autoplay de <audio>/<video>, mas NAO cobre AudioContext.resume() — sao
+ * duas politicas separadas no Chromium. O audio remoto passou a depender
+ * de AudioContext puro (GainNode, para o volume ir alem de 100%), e o
+ * clique que entra no canal de voz acontece varios `await`s antes do
+ * efeito que cria o contexto — tempo suficiente pra a "ativacao do
+ * usuario" expirar e o resume() ficar suspenso pra sempre, em silencio,
+ * sem erro nenhum. Um listener no documento inteiro garante que QUALQUER
+ * clique — silenciar, abrir configuracoes, o que for — destrava.
+ */
+function armarDestravamento(ctx: AudioContext) {
+  if (unlockArmado || typeof document === "undefined") return;
+  unlockArmado = true;
+
+  const destravar = () => {
+    if (ctx.state === "suspended") void ctx.resume();
+    if (ctx.state === "running") {
+      document.removeEventListener("click", destravar, true);
+      document.removeEventListener("keydown", destravar, true);
+    }
+  };
+  document.addEventListener("click", destravar, true);
+  document.addEventListener("keydown", destravar, true);
+}
+
 export function audioContext(): AudioContext {
   if (!sharedCtx || sharedCtx.state === "closed") {
     sharedCtx = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+    unlockArmado = false;
   }
-  if (sharedCtx.state === "suspended") void sharedCtx.resume();
+  if (sharedCtx.state === "suspended") {
+    void sharedCtx.resume();
+    armarDestravamento(sharedCtx);
+  }
   return sharedCtx;
 }
 
