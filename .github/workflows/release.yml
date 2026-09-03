@@ -1,48 +1,67 @@
 name: release
 
 # Publica o instalador assinado + latest.json (o arquivo que o auto-update le).
-# Dispare criando uma tag:  git tag v0.1.1 && git push --tags
+# Dispare criando uma tag:  git tag v0.1.3 && git push --tags
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
+# Sem isto, o GITHUB_TOKEN herda permissoes amplas do repositorio. O job so
+# precisa criar release e enviar arquivos.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
-    permissions:
-      contents: write
+    timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      # As acoes de terceiros rodam no MESMO job que recebe a chave privada de
+      # assinatura. Uma tag como @v4 e mutavel: quem controlar o repositorio da
+      # acao pode reapontar a tag e passar a executar codigo proprio aqui
+      # dentro, com acesso aos secrets. Por isso cada uma esta presa ao commit
+      # exato, com a versao anotada ao lado para facilitar a atualizacao.
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - name: Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
-      - uses: swatinem/rust-cache@v2
+      - name: Cache do Rust
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
 
-      - run: npm ci
+      # `npm ci` respeita o package-lock e falha se ele divergir do
+      # package.json — build reprodutivel, sem resolver versao nova sozinho.
+      - name: Dependencias
+        run: npm ci
 
-      - uses: tauri-apps/tauri-action@v0
+      - name: Build e publicacao
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Chave privada de assinatura (conteudo de .keys/voxa.key).
+          # Chave privada de assinatura do updater (conteudo de .keys/voxa.key).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-          # O .env nao vai pro repositorio: as URLs entram como secrets.
+          # O .env nao vai para o repositorio: as URLs entram como secrets.
           VITE_SIGNALING_URL: ${{ secrets.VITE_SIGNALING_URL }}
-          VITE_ROOM_TOKEN: ${{ secrets.VITE_ROOM_TOKEN }}
           VITE_TURN_URLS: ${{ secrets.VITE_TURN_URLS }}
           VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
           VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          # VITE_ROOM_TOKEN fica de fora de proposito: o Vite grava qualquer
+          # VITE_* dentro do bundle, e o instalador e publico. A senha da sala
+          # e digitada pelo usuario na tela de entrada.
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Voxa __VERSION__"
