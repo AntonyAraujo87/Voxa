@@ -44,6 +44,9 @@ interface AppState {
   tuning: TuningState;
   micDeviceId: string;
   mics: MediaDeviceInfo[];
+  /** RNNoise (rede neural, WASM) no caminho do mic — mais forte que o
+   *  noiseSuppression nativo do getUserMedia, custa CPU, por isso opcional. */
+  noiseSuppression: boolean;
   outputDeviceId: string;
   speakers: MediaDeviceInfo[];
   /** "nivelado" liga um compressor no bus de saida — sobe quem fala baixo */
@@ -111,6 +114,7 @@ export const useApp = create<AppState>((set) => ({
   tuning: { video: "alta", audio: "voz", codec: "hardware", content: "jogo" },
   micDeviceId: "default",
   mics: [],
+  noiseSuppression: false,
   outputDeviceId: "default",
   speakers: [],
   outputMode: "natural",

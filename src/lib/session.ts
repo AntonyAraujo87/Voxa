@@ -156,6 +156,7 @@ class Session {
     app.setState({
       tuning: prefs.tuning,
       micDeviceId: prefs.micDeviceId,
+      noiseSuppression: prefs.noiseSuppression,
       outputDeviceId: prefs.outputDeviceId,
       outputMode: prefs.outputMode,
       volumes: prefs.volumes,
@@ -426,8 +427,8 @@ class Session {
   }
 
   private async openMic() {
-    const { tuning, micDeviceId, muted } = app.getState();
-    const track = await this.media.openMic(tuning.audio, micDeviceId);
+    const { tuning, micDeviceId, muted, noiseSuppression } = app.getState();
+    const track = await this.media.openMic(tuning.audio, micDeviceId, noiseSuppression);
     if (!track) return;
 
     this.media.setMicEnabled(!muted);
@@ -506,6 +507,19 @@ class Session {
     aplicarModoSaida(mode === "nivelado");
     app.setState({ outputMode: mode });
     savePrefs({ outputMode: mode });
+  }
+
+  /**
+   * Liga/desliga o RNNoise. Precisa reabrir o microfone pra valer — o node
+   * so entra no grafo dentro de `openMic`, nao da pra inserir/remover no meio
+   * de uma captura ja em andamento sem reconstruir a cadeia inteira.
+   */
+  async setNoiseSuppression(on: boolean) {
+    app.setState({ noiseSuppression: on });
+    savePrefs({ noiseSuppression: on });
+    if (!this.media.hasMic) return;
+    this.closeMic();
+    await this.openMic();
   }
 
   /* ---------------------------- push-to-talk ---------------------------- */

@@ -1,5 +1,7 @@
+import type { RnnoiseWorkletNode } from "@sapphi-red/web-noise-suppressor";
 import { VIDEO_PRESETS, type AudioPresetId, type ContentMode, type VideoPresetId } from "./config";
 import { audioContext, captureMic, captureScreen, createVoiceDetector, stopStream } from "./media";
+import { criarSupressorDeRuido } from "./noiseSuppression";
 
 /* ---------------------------------------------------------------------------
    Dono dos streams locais: microfone e captura de tela.
@@ -37,6 +39,8 @@ export class LocalMedia {
   private micGain: GainNode | null = null;
   private mixDestino: MediaStreamAudioDestinationNode | null = null;
   private micEnabled = true;
+  // Opcional, entra ENTRE a fonte e o ganho quando ligado — ver noiseSuppression.ts.
+  private rnnoiseNode: RnnoiseWorkletNode | null = null;
 
   constructor(private hooks: LocalMediaHooks) {}
 
@@ -59,8 +63,17 @@ export class LocalMedia {
 
   /* ------------------------------ microfone ----------------------------- */
 
-  /** Idempotente: chamar com o microfone ja aberto devolve o track existente. */
-  async openMic(preset: AudioPresetId, deviceId: string): Promise<MediaStreamTrack | null> {
+  /**
+   * Idempotente: chamar com o microfone ja aberto devolve o track existente
+   * (o pedido de trocar `noiseSuppression` nesse caso e ignorado — quem
+   * chama precisa fechar e reabrir pra isso valer, mesmo padrao de trocar
+   * preset de audio ou dispositivo).
+   */
+  async openMic(
+    preset: AudioPresetId,
+    deviceId: string,
+    noiseSuppression = false
+  ): Promise<MediaStreamTrack | null> {
     if (this.micStream) return this.mixDestino?.stream.getAudioTracks()[0] ?? null;
 
     const stream = await captureMic(preset, deviceId);
@@ -72,7 +85,30 @@ export class LocalMedia {
     this.micGain = ctx.createGain();
     this.micGain.gain.value = this.micEnabled ? 1 : 0;
     this.mixDestino = ctx.createMediaStreamDestination();
-    this.micSource.connect(this.micGain);
+
+    // Entra ANTES do ganho: assim mudar/ensurdecer nao interfere no estado
+    // interno do supressor, e o soundboard (que se mistura depois do ganho,
+    // em session.ts) nunca passa por ele — nao faz sentido "filtrar ruido"
+    // de um efeito sintetico.
+    let entrada: AudioNode = this.micSource;
+    if (noiseSuppression) {
+      // So bloqueia entrada em voz na primeira vez da sessao (carrega e
+      // cacheia o wasm); reaberturas seguintes reusam o cache e nao esperam.
+      const node = await criarSupressorDeRuido(ctx);
+      // Quem chamou pode ter saido do canal (closeMic) enquanto o wasm
+      // carregava — sem essa checagem, o node conectaria num grafo que ja
+      // nao existe mais.
+      if (this.micStream !== stream) {
+        node?.destroy();
+        return null;
+      }
+      if (node) {
+        this.micSource.connect(node);
+        entrada = node;
+        this.rnnoiseNode = node;
+      }
+    }
+    entrada.connect(this.micGain);
     this.micGain.connect(this.mixDestino);
 
     return this.mixDestino.stream.getAudioTracks()[0];
@@ -83,11 +119,14 @@ export class LocalMedia {
     this.stopVad = null;
     try {
       this.micSource?.disconnect();
+      this.rnnoiseNode?.disconnect();
+      this.rnnoiseNode?.destroy();
       this.micGain?.disconnect();
     } catch {
       /* grafo ja desfeito — nada a fazer */
     }
     this.micSource = null;
+    this.rnnoiseNode = null;
     this.micGain = null;
     this.mixDestino = null;
     stopStream(this.micStream);

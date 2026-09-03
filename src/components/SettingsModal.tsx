@@ -179,6 +179,7 @@ function SettingsModalBase() {
   const tuning = useApp((s) => s.tuning);
   const mics = useApp((s) => s.mics);
   const micDeviceId = useApp((s) => s.micDeviceId);
+  const noiseSuppression = useApp((s) => s.noiseSuppression);
   const speakers = useApp((s) => s.speakers);
   const outputDeviceId = useApp((s) => s.outputDeviceId);
   const outputMode = useApp((s) => s.outputMode);
@@ -384,6 +385,23 @@ function SettingsModalBase() {
                 </option>
               ))}
             </select>
+
+            <button
+              onClick={() => void session.setNoiseSuppression(!noiseSuppression)}
+              className={`mt-2 w-full rounded-md border px-3 py-2 text-left transition-colors ${
+                noiseSuppression
+                  ? "border-brand bg-brand/15 text-ink"
+                  : "border-transparent bg-base-500/60 text-muted hover:bg-base-500"
+              }`}
+            >
+              <p className="text-sm font-medium">
+                Reducao de ruido avancada {noiseSuppression ? "— ligada" : "— desligada"}
+              </p>
+              <p className="text-xs text-faint">
+                RNNoise: rede neural treinada pra separar voz de ruido de fundo (teclado,
+                ventoinha) — mais forte que o filtro padrao, custa um pouco mais de CPU.
+              </p>
+            </button>
           </Section>
 
           <Section icon={<Volume2 size={13} />} title="Som">
