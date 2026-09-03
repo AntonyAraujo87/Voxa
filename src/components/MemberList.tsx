@@ -1,46 +1,7 @@
-import { memo, useMemo, useState } from "react";
-import { MicOff, ScreenShare, Volume1, Volume2, VolumeX } from "lucide-react";
+import { memo, useMemo } from "react";
+import { MicOff, ScreenShare, Volume2 } from "lucide-react";
 import { useApp } from "../store/store";
 import { Avatar } from "./Avatar";
-
-const VolumeControl = memo(function VolumeControl({ userId }: { userId: string }) {
-  const volume = useApp((s) => s.volumes[userId] ?? 1);
-  const setVolume = useApp((s) => s.setVolume);
-  const [open, setOpen] = useState(false);
-
-  const Icon = volume === 0 ? VolumeX : volume < 0.7 ? Volume1 : Volume2;
-
-  return (
-    <div className="relative flex items-center">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        title={`Volume: ${Math.round(volume * 100)}%`}
-        className={`grid size-6 place-items-center rounded transition-colors hover:bg-base-400 ${
-          volume === 0 ? "text-danger" : volume === 1 ? "text-faint" : "text-brand"
-        }`}
-      >
-        <Icon size={14} />
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-7 z-20 flex w-40 items-center gap-2 rounded-md border border-line bg-base-900 px-3 py-2 shadow-xl">
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={volume}
-            onChange={(e) => setVolume(userId, Number(e.target.value))}
-            className="h-1 flex-1 accent-brand"
-          />
-          <span className="w-8 text-right font-mono text-[11px] text-muted">
-            {Math.round(volume * 100)}
-          </span>
-        </div>
-      )}
-    </div>
-  );
-});
 
 /**
  * Ponto de saude da conexao com aquela pessoa.
@@ -63,9 +24,7 @@ const HealthDot = memo(function HealthDot({ peerId }: { peerId: string }) {
   const atencao = perda > 1.5 || rtt > 90;
 
   const cor = ruim ? "bg-danger" : atencao ? "bg-warn" : "bg-online";
-  const titulo = reconectando
-    ? "reconectando"
-    : `${rtt || "?"}ms · perda ${perda.toFixed(1)}%`;
+  const titulo = reconectando ? "reconectando" : `${rtt || "?"}ms · perda ${perda.toFixed(1)}%`;
 
   return (
     <span
@@ -75,11 +34,17 @@ const HealthDot = memo(function HealthDot({ peerId }: { peerId: string }) {
   );
 });
 
+/**
+ * Lista pura de quem esta no servidor — sem controles de audio.
+ *
+ * Ajustar volume e coisa de canal de voz (ao lado de quem esta falando, na
+ * barra esquerda) ou de transmissao (no proprio video); aqui e so presenca:
+ * quem esta online, em qual canal, e se esta mudo ou transmitindo.
+ */
 function MemberListBase() {
   const roster = useApp((s) => s.roster);
   const speaking = useApp((s) => s.speaking);
   const channels = useApp((s) => s.channels);
-  const selfId = useApp((s) => s.selfSocketId);
 
   const { inVoice, idle } = useMemo(
     () => ({
@@ -93,7 +58,6 @@ function MemberListBase() {
 
   const Row = ({
     id,
-    userId,
     name,
     color,
     voice,
@@ -101,7 +65,6 @@ function MemberListBase() {
     sharing,
   }: {
     id: string;
-    userId: string;
     name: string;
     color: string;
     voice: string | null;
@@ -118,10 +81,9 @@ function MemberListBase() {
           </p>
         )}
       </div>
-      {voice && id !== selfId && <HealthDot peerId={id} />}
+      {voice && <HealthDot peerId={id} />}
       {sharing && <ScreenShare size={13} className="text-stream" />}
       {muted && <MicOff size={13} className="text-danger" />}
-      {voice && id !== selfId && <VolumeControl userId={userId} />}
     </div>
   );
 
@@ -136,7 +98,6 @@ function MemberListBase() {
             <Row
               key={r.id}
               id={r.id}
-              userId={r.user.id}
               name={r.user.name}
               color={r.user.color}
               voice={r.voice}
@@ -154,7 +115,6 @@ function MemberListBase() {
         <Row
           key={r.id}
           id={r.id}
-          userId={r.user.id}
           name={r.user.name}
           color={r.user.color}
           voice={null}

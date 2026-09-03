@@ -16,6 +16,7 @@ import {
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import { Avatar } from "./Avatar";
+import { VolumeControl } from "./VolumeControl";
 
 /* ------------------------------- CANAIS ---------------------------------- */
 
@@ -53,25 +54,44 @@ const TextChannel = memo(function TextChannel({
 });
 
 const VoiceMember = memo(function VoiceMember({
+  userId,
   name,
   color,
   speaking,
   muted,
   sharing,
+  isSelf,
 }: {
+  userId: string;
   name: string;
   color: string;
   speaking: boolean;
   muted: boolean;
   sharing: boolean;
+  isSelf: boolean;
 }) {
+  // Volume da VOZ de quem esta no canal — estilo Discord: o controle mora do
+  // lado da pessoa, no lugar onde ela ja aparece, nao numa tela separada.
+  // Nao faz sentido regular o proprio volume, entao some para o proprio usuario.
+  const volume = useApp((s) => s.volumes[userId] ?? 1);
+  const setVolume = useApp((s) => s.setVolume);
+
   return (
-    <div className="flex items-center gap-2 rounded px-2 py-1 pl-7 hover:bg-base-600/50">
+    <div className="group flex items-center gap-2 rounded px-2 py-1 pl-7 hover:bg-base-600/50">
       <Avatar name={name} color={color} size={22} speaking={speaking} />
       <span className={`truncate text-sm ${speaking ? "text-ink" : "text-muted"}`}>{name}</span>
       <span className="ml-auto flex items-center gap-1">
         {sharing && <ScreenShare size={13} className="text-stream" />}
         {muted && <MicOff size={13} className="text-danger" />}
+        {!isSelf && (
+          <VolumeControl
+            volume={volume}
+            onChange={(v) => setVolume(userId, v)}
+            title={`Volume de ${name}: ${Math.round(volume * 100)}%`}
+            size={13}
+            className="opacity-0 group-hover:opacity-100"
+          />
+        )}
       </span>
     </div>
   );
@@ -88,6 +108,7 @@ const VoiceChannel = memo(function VoiceChannel({
 }) {
   const roster = useApp((s) => s.roster);
   const speaking = useApp((s) => s.speaking);
+  const selfId = useApp((s) => s.selfSocketId);
   const members = useMemo(() => roster.filter((r) => r.voice === id), [roster, id]);
 
   return (
@@ -108,11 +129,13 @@ const VoiceChannel = memo(function VoiceChannel({
       {members.map((m) => (
         <VoiceMember
           key={m.id}
+          userId={m.user.id}
           name={m.user.name}
           color={m.user.color}
           speaking={!!speaking[m.id]}
           muted={m.state.muted}
           sharing={m.state.sharing}
+          isSelf={m.id === selfId}
         />
       ))}
     </div>

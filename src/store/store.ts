@@ -44,8 +44,10 @@ interface AppState {
   tuning: TuningState;
   micDeviceId: string;
   mics: MediaDeviceInfo[];
-  /** userId -> ganho 0..2 aplicado no <audio> daquela pessoa */
+  /** userId -> ganho 0..2 aplicado no <audio> daquela pessoa (voz do microfone) */
   volumes: Record<string, number>;
+  /** userId -> ganho 0..2 aplicado no audio da tela/jogo daquela pessoa, separado da voz */
+  streamVolumes: Record<string, number>;
   pushToTalk: boolean;
   talking: boolean;
   sounds: boolean;
@@ -56,6 +58,10 @@ interface AppState {
 
   /* UI */
   focusPeer: string | null;
+  /** o usuario abriu a grade de quem esta transmitindo (clicou "assistir") */
+  watchingLive: boolean;
+  /** escolhendo qual tela/janela compartilhar, antes de comecar a transmitir */
+  showSharePicker: boolean;
   showStats: boolean;
   showSettings: boolean;
   membersOpen: boolean;
@@ -69,6 +75,7 @@ interface AppState {
   dropToast: (id: number) => void;
   patchPeerState: (id: string, state: PeerState) => void;
   setVolume: (userId: string, volume: number) => void;
+  setStreamVolume: (userId: string, volume: number) => void;
   clearUnread: (channelId: string) => void;
 }
 
@@ -101,6 +108,7 @@ export const useApp = create<AppState>((set) => ({
   micDeviceId: "default",
   mics: [],
   volumes: {},
+  streamVolumes: {},
   pushToTalk: false,
   talking: false,
   sounds: true,
@@ -109,6 +117,8 @@ export const useApp = create<AppState>((set) => ({
   updateBusy: false,
 
   focusPeer: null,
+  watchingLive: false,
+  showSharePicker: false,
   showStats: false,
   showSettings: false,
   membersOpen: true,
@@ -179,6 +189,13 @@ export const useApp = create<AppState>((set) => ({
       const volumes = { ...s.volumes, [userId]: volume };
       savePrefs({ volumes });
       return { volumes };
+    }),
+
+  setStreamVolume: (userId, volume) =>
+    set((s) => {
+      const streamVolumes = { ...s.streamVolumes, [userId]: volume };
+      savePrefs({ streamVolumes });
+      return { streamVolumes };
     }),
 }));
 

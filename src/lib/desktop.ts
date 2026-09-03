@@ -42,6 +42,32 @@ export interface CaptureSource {
 export const listCaptureSources = () => invoke<CaptureSource[]>("list_capture_sources");
 export const getCaptureSource = () => invoke<string>("get_capture_source");
 export const setCaptureSource = (title: string) => invoke("set_capture_source", { title });
+
+/**
+ * Traz a janela pra frente e foca — usada antes de abrir o seletor de
+ * transmissao, porque o atalho global (Ctrl+Shift+E) pode disparar com o
+ * app escondido na bandeja, e o seletor precisa estar visivel pra escolher.
+ */
+let winPromise: Promise<{ show: () => Promise<void>; setFocus: () => Promise<void> } | null> | null =
+  null;
+export async function focusWindow(): Promise<void> {
+  if (!isDesktop) return;
+  if (!winPromise) {
+    winPromise = import("@tauri-apps/api/window")
+      .then((m) => m.getCurrentWindow())
+      .catch(() => null);
+  }
+  const win = await winPromise;
+  await win?.show().catch(() => {});
+  await win?.setFocus().catch(() => {});
+}
+
+/** Reinicia o app — usado depois de trocar a fonte de captura, que so vale no proximo boot. */
+export async function relaunchApp(): Promise<void> {
+  if (!isDesktop) return;
+  const { relaunch } = await import("@tauri-apps/plugin-process");
+  await relaunch();
+}
 export const setPushToTalkNative = (enabled: boolean) => invoke("set_push_to_talk", { enabled });
 
 /**

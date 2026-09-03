@@ -1,8 +1,17 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { Expand, Loader2, Maximize2, MicOff, Minimize2, ScreenShare, Shrink } from "lucide-react";
+import {
+  Expand,
+  Loader2,
+  MicOff,
+  PictureInPicture2,
+  ScreenShare,
+  Shrink,
+  X,
+} from "lucide-react";
 import { useApp } from "../store/store";
 import { usePeerMedia, useLocalScreen } from "../store/mediaStore";
 import { Avatar } from "./Avatar";
+import { VolumeControl } from "./VolumeControl";
 import type { PeerStats } from "../lib/rtc";
 
 /* --------------------------- overlay de metricas --------------------------- */
@@ -91,6 +100,7 @@ const LocalOverlay = memo(function LocalOverlay({ info }: { info: MediaTrackSett
 
 interface Props {
   peerId: string;
+  userId: string;
   name: string;
   color: string;
   isSelf: boolean;
@@ -98,12 +108,29 @@ interface Props {
   speaking: boolean;
   focused: boolean;
   hasScreen: boolean;
+  /** clique na miniatura (grade de quem esta transmitindo) — foca esse tile */
+  onClick?: () => void;
+  /** so existe no tile grande: volta para a grade de miniaturas */
+  onBack?: () => void;
 }
 
-function VideoTileBase({ peerId, name, color, isSelf, muted, speaking, focused, hasScreen }: Props) {
+function VideoTileBase({
+  peerId,
+  userId,
+  name,
+  color,
+  isSelf,
+  muted,
+  speaking,
+  focused,
+  hasScreen,
+  onClick,
+  onBack,
+}: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [emTelaCheia, setEmTelaCheia] = useState(false);
+  const [emPip, setEmPip] = useState(false);
   const remote = usePeerMedia(peerId);
   const local = useLocalScreen();
   const stream = isSelf ? local : remote.screen;
@@ -111,6 +138,8 @@ function VideoTileBase({ peerId, name, color, isSelf, muted, speaking, focused, 
   const stats = useApp((s) => (showStats ? s.stats[peerId] : undefined));
   const conexao = useApp((s) => s.connState[peerId]);
   const localInfo = useLocalCaptureInfo(stream, showStats && isSelf && hasScreen);
+  const streamVolume = useApp((s) => s.streamVolumes[userId] ?? 1);
+  const setStreamVolume = useApp((s) => s.setStreamVolume);
 
   // `hasScreen` PRECISA estar nas dependencias: o track remoto costuma chegar
   // antes do estado "sharing" daquela pessoa (caminhos diferentes — um vem do
@@ -144,15 +173,19 @@ function VideoTileBase({ peerId, name, color, isSelf, muted, speaking, focused, 
     };
   }, [stream, hasScreen]);
 
-  const toggleFocus = () =>
-    useApp.setState((s) => ({ focusPeer: s.focusPeer === peerId ? null : peerId }));
-
   // O estado precisa vir do documento, nao de um clique nosso: sair com Esc
   // ou pelo gesto do sistema tambem tem que atualizar o icone.
   useEffect(() => {
-    const sync = () => setEmTelaCheia(document.fullscreenElement === containerRef.current);
-    document.addEventListener("fullscreenchange", sync);
-    return () => document.removeEventListener("fullscreenchange", sync);
+    const syncFullscreen = () => setEmTelaCheia(document.fullscreenElement === containerRef.current);
+    const syncPip = () => setEmPip(document.pictureInPictureElement === videoRef.current);
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    document.addEventListener("enterpictureinpicture", syncPip);
+    document.addEventListener("leavepictureinpicture", syncPip);
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreen);
+      document.removeEventListener("enterpictureinpicture", syncPip);
+      document.removeEventListener("leavepictureinpicture", syncPip);
+    };
   }, []);
 
   /**
@@ -170,20 +203,39 @@ function VideoTileBase({ peerId, name, color, isSelf, muted, speaking, focused, 
       if (document.fullscreenElement) await document.exitFullscreen();
       else await el.requestFullscreen({ navigationUI: "hide" });
     } catch {
-      // Alguns estados da janela recusam; o destaque continua disponivel.
+      // Alguns estados da janela recusam; o botao continua ali pra tentar de novo.
     }
   };
+
+  /** Picture-in-picture: assistir a transmissao numa janela flutuante enquanto
+   *  usa outro programa — o proprio jogo, por exemplo. */
+  const togglePip = async () => {
+    const el = videoRef.current;
+    if (!el) return;
+    try {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture();
+      else await el.requestPictureInPicture();
+    } catch {
+      // Sem suporte no runtime do WebView2 instalado; os outros controles seguem.
+    }
+  };
+
+  const pipDisponivel =
+    typeof document !== "undefined" && "pictureInPictureEnabled" in document
+      ? (document as Document & { pictureInPictureEnabled: boolean }).pictureInPictureEnabled
+      : false;
 
   return (
     <div
       ref={containerRef}
-      onDoubleClick={hasScreen ? () => void toggleFullscreen() : toggleFocus}
+      onClick={onClick}
+      onDoubleClick={hasScreen ? () => void toggleFullscreen() : undefined}
       // size-full e obrigatorio: no modo destaque o pai tem altura vinda do
       // flex, e sem isso o tile ficaria com altura de conteudo — que e zero,
       // porque o <video> dentro dele pede 100% da altura do proprio tile.
       className={`gpu-layer group relative size-full overflow-hidden rounded-lg bg-base-900 ${
         speaking ? "ring-2 ring-online" : "ring-1 ring-line"
-      }`}
+      } ${onClick ? "cursor-pointer" : ""}`}
     >
       {stream && hasScreen ? (
         <video
@@ -222,23 +274,60 @@ function VideoTileBase({ peerId, name, color, isSelf, muted, speaking, focused, 
         {muted && <MicOff size={13} className="text-danger" />}
       </div>
 
-      <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+      <div
+        className={`absolute right-2 top-2 flex gap-1 transition-opacity ${
+          focused ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+        }`}
+      >
+        {/* Volume da transmissao, separado do volume da voz — nao existe para
+            a propria tela, so faz sentido regular o audio de quem se ouve. */}
+        {hasScreen && !isSelf && (
+          <VolumeControl
+            volume={streamVolume}
+            onChange={(v) => setStreamVolume(userId, v)}
+            title={`Volume da transmissao: ${Math.round(streamVolume * 100)}%`}
+            size={14}
+            className="bg-black/60 text-ink-soft hover:bg-black/80"
+          />
+        )}
+        {hasScreen && pipDisponivel && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              void togglePip();
+            }}
+            className={`grid size-7 place-items-center rounded bg-black/60 text-ink-soft transition-colors hover:bg-black/80 ${
+              emPip ? "text-brand" : ""
+            }`}
+            title="Picture-in-picture"
+          >
+            <PictureInPicture2 size={14} />
+          </button>
+        )}
         {hasScreen && (
           <button
-            onClick={() => void toggleFullscreen()}
+            onClick={(e) => {
+              e.stopPropagation();
+              void toggleFullscreen();
+            }}
             className="grid size-7 place-items-center rounded bg-black/60 text-ink-soft transition-colors hover:bg-black/80"
             title={emTelaCheia ? "Sair da tela cheia (Esc)" : "Tela cheia (ou duplo clique)"}
           >
             {emTelaCheia ? <Shrink size={14} /> : <Expand size={14} />}
           </button>
         )}
-        <button
-          onClick={toggleFocus}
-          className="grid size-7 place-items-center rounded bg-black/60 text-ink-soft transition-colors hover:bg-black/80"
-          title={focused ? "Sair do destaque" : "Destacar na janela"}
-        >
-          {focused ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-        </button>
+        {onBack && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onBack();
+            }}
+            className="grid size-7 place-items-center rounded bg-black/60 text-ink-soft transition-colors hover:bg-black/80"
+            title="Voltar para a grade"
+          >
+            <X size={14} />
+          </button>
+        )}
       </div>
     </div>
   );

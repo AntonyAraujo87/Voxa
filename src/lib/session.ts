@@ -13,7 +13,14 @@ import { useApp } from "../store/store";
 import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
 import { loadChannels, loadMessages, saveMessage, supabaseEnabled, upsertUser } from "./supabase";
 import { loadPrefs, primePrefsCache, savePrefs } from "./prefs";
-import { checkForUpdate, flashTaskbar, listenEvent, setPushToTalkNative } from "./desktop";
+import {
+  checkForUpdate,
+  flashTaskbar,
+  focusWindow,
+  isDesktop,
+  listenEvent,
+  setPushToTalkNative,
+} from "./desktop";
 import { playJoin, playLeave, playMute, playUnmute, setSoundsEnabled } from "./sounds";
 
 const app = useApp;
@@ -138,6 +145,7 @@ class Session {
       tuning: prefs.tuning,
       micDeviceId: prefs.micDeviceId,
       volumes: prefs.volumes,
+      streamVolumes: prefs.streamVolumes,
       membersOpen: prefs.membersOpen,
       showStats: prefs.showStats,
       pushToTalk: prefs.pushToTalk,
@@ -316,7 +324,10 @@ class Session {
 
     // Marca o canal ANTES do ack: se alguem entrar nesse intervalo, o
     // onPeerJoined ja reconhece o canal e nao descarta o peer.
-    app.setState({ activeVoice: channelId });
+    // watchingLive comeca sempre fechado: entrar num canal novo nao deve abrir
+    // a grade de video sozinho, so quando alguem estiver transmitindo E o
+    // usuario clicar em "assistir" (ou for ele mesmo quem comecar a transmitir).
+    app.setState({ activeVoice: channelId, watchingLive: false });
     const { peers } = await this.signaling.joinVoice(channelId);
 
     // Nos chegamos por ultimo => nos ofertamos pra todo mundo que ja estava.
@@ -333,7 +344,13 @@ class Session {
     this.mesh.clear();
     for (const r of app.getState().roster) clearPeerMedia(r.id);
     this.signaling.leaveVoice();
-    app.setState({ activeVoice: null, focusPeer: null, stats: {}, connState: {} });
+    app.setState({
+      activeVoice: null,
+      focusPeer: null,
+      watchingLive: false,
+      stats: {},
+      connState: {},
+    });
     if (!keepMic) this.closeMic();
   }
 
@@ -502,9 +519,26 @@ class Session {
     this.signaling.setState({ sharing: false });
   }
 
+  /**
+   * Abre o seletor de fonte antes de compartilhar — como todo mundo espera,
+   * ao estilo Discord. No navegador (dev/teste) nao precisa de seletor
+   * proprio: getDisplayMedia() ja mostra o seletor nativo do Chrome sozinho.
+   * No app empacotado, o WebView2 nao tem esse seletor embutido — por isso
+   * existe o SharePicker, que escolhe ANTES de chamar getDisplayMedia().
+   */
   async toggleShare() {
-    if (app.getState().sharing) this.stopShare();
-    else await this.startShare();
+    if (app.getState().sharing) {
+      this.stopShare();
+      return;
+    }
+    if (!isDesktop) {
+      await this.startShare();
+      return;
+    }
+    // O atalho global pode disparar com a janela escondida na bandeja; o
+    // seletor precisa estar visivel para poder escolher.
+    await focusWindow();
+    app.setState({ showSharePicker: true });
   }
 
   /* ------------------------------- qualidade ---------------------------- */

@@ -21,8 +21,10 @@ export interface Prefs {
   token: string;
   tuning: TuningState;
   micDeviceId: string;
-  /** peerUserId -> 0..2 (1 = normal, 2 = dobro) */
+  /** peerUserId -> 0..2 (1 = normal, 2 = dobro) — volume da voz */
   volumes: Record<string, number>;
+  /** peerUserId -> 0..2 — volume do audio da transmissao de tela, separado da voz */
+  streamVolumes: Record<string, number>;
   membersOpen: boolean;
   showStats: boolean;
   pushToTalk: boolean;
@@ -37,6 +39,7 @@ const DEFAULTS: Prefs = {
   tuning: { video: "alta", audio: "voz", codec: "hardware", content: "jogo" },
   micDeviceId: "default",
   volumes: {},
+  streamVolumes: {},
   membersOpen: true,
   showStats: false,
   pushToTalk: false,
@@ -54,6 +57,7 @@ export function loadPrefs(): Prefs {
       userId: parsed.userId || crypto.randomUUID(),
       tuning: { ...DEFAULTS.tuning, ...(parsed.tuning ?? {}) },
       volumes: { ...(parsed.volumes ?? {}) },
+      streamVolumes: { ...(parsed.streamVolumes ?? {}) },
     };
   } catch {
     return { ...DEFAULTS };

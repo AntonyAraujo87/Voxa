@@ -4,8 +4,10 @@ import { ServerRail } from "./components/ServerRail";
 import { ChannelSidebar } from "./components/ChannelSidebar";
 import { ChatPanel } from "./components/ChatPanel";
 import { StageGrid } from "./components/StageGrid";
+import { RemoteAudio } from "./components/RemoteAudio";
 import { MemberList } from "./components/MemberList";
 import { SettingsModal } from "./components/SettingsModal";
+import { SharePicker } from "./components/SharePicker";
 import { Toasts } from "./components/Toasts";
 import { LoginGate } from "./components/LoginGate";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -126,6 +128,10 @@ export default function App() {
             nao pode levar junto o chat, e vice-versa. */}
         <main className="flex min-w-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
+            {/* RemoteAudio fica FORA do boundary de video e sempre montado
+                enquanto ha canal de voz: audio nao pode depender da UI de
+                transmissao, que na maior parte do tempo nao mostra nada. */}
+            {activeVoice && <RemoteAudio />}
             {activeVoice && (
               <ErrorBoundary area="video">
                 <StageGrid />
@@ -144,6 +150,7 @@ export default function App() {
       </div>
 
       <SettingsModal />
+      <SharePicker />
       <Toasts />
     </div>
   );

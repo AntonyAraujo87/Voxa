@@ -46,6 +46,38 @@ mesmo orçamento de 8 Mbps por caminhos opostos: **Nítida** (1080p30) troca
 quadros por pixels para ler texto; **Fluida** (720p60) troca pixels por quadros
 para jogo rápido.
 
+## Interface
+
+**Entrada em duas etapas.** Nome e cor são escolhidos uma vez só, na primeira
+abertura — isso é identidade, não muda a cada uso. Da segunda vez em diante a
+tela pede só o código do servidor, com o perfil já pronto ao lado e um link
+para trocar nome ou cor quando quiser.
+
+**Transmissão não invasiva.** A maior parte de uma chamada não tem ninguém
+compartilhando tela, então por padrão a área de vídeo não existe — chat e voz
+ocupam o espaço todo. Quando alguém começa a transmitir, aparece só uma faixa
+fina avisando; quem quiser assiste, clicando em "Assistir". A grade que abre
+mostra apenas quem está transmitindo, não a chamada inteira — quem só está de
+voz já tem seu lugar na lista ao lado. Clicar numa miniatura amplia com tela
+cheia e picture-in-picture. Começar a própria transmissão abre a grade sozinho,
+pela mesma lógica de conveniência.
+
+**Dois volumes, dois lugares.** O volume da voz de alguém fica ao lado da
+pessoa, no canal de voz — como no Discord. O volume da transmissão de tela é
+outro controle, independente, no próprio vídeo: uma pessoa pode estar alta na
+voz e baixa no jogo, ou o contrário.
+
+O áudio de voz nunca depende da UI de transmissão — continua tocando mesmo com
+a grade fechada, minimizada ou em erro.
+
+**Escolher o que compartilhar.** Clicar em "Compartilhar tela" abre um seletor
+com o monitor e as janelas abertas, em vez de compartilhar a fonte configurada
+sem perguntar. O WebView2 não tem o seletor nativo do Chrome — a fonte captu-
+rada é um argumento de linha de comando do Chromium, lido uma vez só quando o
+processo nasce. Escolher a mesma fonte que já está ativa começa a transmitir
+na hora; escolher outra salva a preferência e propõe reiniciar o app para
+aplicar, deixando claro o porquê em vez de fingir que é instantâneo.
+
 ## A malha P2P
 
 Cada participante abre uma conexão com cada outro. Latência de um salto só e
