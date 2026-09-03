@@ -9,11 +9,13 @@
 //   capture.rs   escolha e persistencia da fonte de captura
 //   hotkeys.rs   atalhos globais e push-to-talk
 //   lifecycle.rs bandeja do sistema e liberacao de memoria
+//   overlay.rs   janela flutuante de quem esta falando, por cima do jogo
 // ---------------------------------------------------------------------------
 
 mod capture;
 mod hotkeys;
 mod lifecycle;
+mod overlay;
 mod webview;
 
 use tauri::Manager;
@@ -56,7 +58,8 @@ pub fn run() {
             hotkeys::hotkey_status,
             hotkeys::rebind_hotkey,
             lifecycle::release_memory,
-            lifecycle::flash_taskbar
+            lifecycle::flash_taskbar,
+            overlay::set_overlay_enabled
         ])
         .on_window_event(lifecycle::handle_window_event)
         .setup(|app| {

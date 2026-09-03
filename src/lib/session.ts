@@ -29,6 +29,7 @@ import {
   isDesktop,
   listenEvent,
   rebindHotkey as rebindHotkeyNative,
+  setOverlayWindowEnabled,
   setPushToTalkNative,
   type HotkeyStatus,
   type RebindCombo,
@@ -169,6 +170,7 @@ class Session {
       pushToTalk: prefs.pushToTalk,
       muted: prefs.pushToTalk, // em push-to-talk o padrao e mudo ate apertar
       sounds: prefs.sounds,
+      overlayEnabled: prefs.overlayEnabled,
     });
     setSoundsEnabled(prefs.sounds);
     void this.mesh.setTuning(prefs.tuning);
@@ -176,6 +178,7 @@ class Session {
     if (prefs.outputDeviceId && prefs.outputDeviceId !== "default") {
       void setOutputDevice(prefs.outputDeviceId);
     }
+    if (prefs.overlayEnabled) void setOverlayWindowEnabled(true);
     return prefs;
   }
 
@@ -523,6 +526,14 @@ class Session {
     if (!this.media.hasMic) return;
     this.closeMic();
     await this.openMic();
+  }
+
+  /** Cria/fecha a janela flutuante (overlay.rs). Sem efeito fora do app
+   *  instalado — no navegador (dev/teste) so fica marcado no estado. */
+  async setOverlayEnabled(on: boolean) {
+    app.setState({ overlayEnabled: on });
+    savePrefs({ overlayEnabled: on });
+    await setOverlayWindowEnabled(on);
   }
 
   /* ---------------------------- push-to-talk ---------------------------- */

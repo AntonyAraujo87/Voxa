@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "Permissoes da janela overlay — so escuta o estado de quem esta falando, nao faz nada sozinha",
+  "windows": [
+    "overlay"
+  ],
+  "permissions": [
+    "core:event:default"
+  ]
+}

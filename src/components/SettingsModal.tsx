@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from "react";
-import { Bell, Camera, Cpu, Gauge, Keyboard, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, Volume2, X } from "lucide-react";
+import { Bell, Camera, Cpu, Gamepad2, Gauge, Keyboard, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, Volume2, X } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import { outputSupport } from "../lib/audioOutput";
@@ -186,6 +186,7 @@ function SettingsModalBase() {
   const outputDeviceId = useApp((s) => s.outputDeviceId);
   const outputMode = useApp((s) => s.outputMode);
   const pushToTalk = useApp((s) => s.pushToTalk);
+  const overlayEnabled = useApp((s) => s.overlayEnabled);
   const sounds = useApp((s) => s.sounds);
   const updateVersion = useApp((s) => s.updateVersion);
   const updateBusy = useApp((s) => s.updateBusy);
@@ -357,6 +358,26 @@ function SettingsModalBase() {
               Camera e tela vao pelo mesmo canal de video — ligar uma desliga a outra.
               Trocar aqui com a camera ja ligada reabre ela no dispositivo novo.
             </p>
+          </Section>
+
+          <Section icon={<Gamepad2 size={13} />} title="Overlay em jogo">
+            <button
+              onClick={() => void session.setOverlayEnabled(!overlayEnabled)}
+              disabled={!isDesktop}
+              className={`w-full rounded-md border px-3 py-2 text-left transition-colors disabled:opacity-50 ${
+                overlayEnabled
+                  ? "border-brand bg-brand/15 text-ink"
+                  : "border-transparent bg-base-500/60 text-muted hover:bg-base-500"
+              }`}
+            >
+              <p className="text-sm font-medium">
+                {overlayEnabled ? "Ligado" : "Desligado"}
+              </p>
+              <p className="text-xs text-faint">
+                Janela flutuante mostrando quem esta falando, por cima de outros
+                programas. So em janela/borderless — fullscreen exclusivo cobre ela.
+              </p>
+            </button>
           </Section>
 
           <Section icon={<RadioTower size={13} />} title="Push-to-talk">

@@ -39,6 +39,7 @@ export interface Prefs {
   pushToTalk: boolean;
   sounds: boolean;
   hotkeys: HotkeyPrefs;
+  overlayEnabled: boolean;
 }
 
 const DEFAULTS: Prefs = {
@@ -59,6 +60,7 @@ const DEFAULTS: Prefs = {
   pushToTalk: false,
   sounds: true,
   hotkeys: {},
+  overlayEnabled: false,
 };
 
 export function loadPrefs(): Prefs {

@@ -31,6 +31,18 @@ export async function listenEvent<T>(
   }
 }
 
+/** Manda um evento pra TODAS as janelas do app — e como a principal fala
+ *  com a do overlay, que roda um processo de WebView separado. */
+export async function emitEvent<T>(event: string, payload: T): Promise<void> {
+  if (!isDesktop) return;
+  try {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(event, payload);
+  } catch {
+    /* overlay pode nao existir ainda; nao ha o que fazer alem de tentar de novo na proxima mudanca */
+  }
+}
+
 /* ------------------------------- captura --------------------------------- */
 
 export interface CaptureSource {
@@ -148,3 +160,8 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     return null;
   }
 }
+
+/* -------------------------------- overlay --------------------------------- */
+
+/** Cria/fecha a janela flutuante de quem esta falando, por cima do jogo. */
+export const setOverlayWindowEnabled = (on: boolean) => invoke("set_overlay_enabled", { on });

@@ -11,10 +11,11 @@ import { SharePicker } from "./components/SharePicker";
 import { Toasts } from "./components/Toasts";
 import { LoginGate } from "./components/LoginGate";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { useApp } from "./store/store";
+import { useApp, type AppState } from "./store/store";
 import { session } from "./lib/session";
 import { savePrefs } from "./lib/prefs";
-import { releaseMemory } from "./lib/desktop";
+import { emitEvent, releaseMemory } from "./lib/desktop";
+import type { OverlayPeer } from "./components/Overlay";
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -79,6 +80,37 @@ export default function App() {
     const bye = () => session.destroy();
     window.addEventListener("beforeunload", bye);
     return () => window.removeEventListener("beforeunload", bye);
+  }, []);
+
+  // Alimenta a janela overlay (processo de WebView separado, sem store
+  // proprio) com quem esta no canal de voz agora. So serializa e emite
+  // quando o resultado muda de verdade — "speaking" oscila o tempo todo,
+  // mas na maioria dos ticks ninguem come started/parou de falar.
+  useEffect(() => {
+    const montar = (s: AppState): OverlayPeer[] => {
+      if (!s.overlayEnabled || !s.activeVoice || !s.me) return [];
+      return s.roster
+        .filter((r) => r.voice === s.activeVoice)
+        .map((r) => ({
+          id: r.id,
+          name: r.user.name,
+          color: r.user.color,
+          speaking: !!s.speaking[r.id],
+          muted: r.id === s.selfSocketId ? s.muted : r.state.muted,
+        }));
+    };
+
+    let ultimo = "";
+    const emitir = (s: AppState) => {
+      const peers = montar(s);
+      const serial = JSON.stringify(peers);
+      if (serial === ultimo) return;
+      ultimo = serial;
+      void emitEvent("overlay:roster", peers);
+    };
+
+    emitir(useApp.getState());
+    return useApp.subscribe(emitir);
   }, []);
 
   // O app passa horas em segundo plano enquanto o jogo roda. Alguns segundos

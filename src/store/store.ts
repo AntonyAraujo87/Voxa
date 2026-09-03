@@ -12,7 +12,7 @@ export interface Toast {
   text: string;
 }
 
-interface AppState {
+export interface AppState {
   /* identidade */
   me: PeerUser | null;
   selfSocketId: string;
@@ -62,6 +62,8 @@ interface AppState {
   pushToTalk: boolean;
   talking: boolean;
   sounds: boolean;
+  /** janela flutuante de quem esta falando, por cima do jogo */
+  overlayEnabled: boolean;
 
   /* atualizacao automatica */
   updateVersion: string | null;
@@ -130,6 +132,7 @@ export const useApp = create<AppState>((set) => ({
   pushToTalk: false,
   talking: false,
   sounds: true,
+  overlayEnabled: false,
 
   updateVersion: null,
   updateBusy: false,
