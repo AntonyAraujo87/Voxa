@@ -1,7 +1,8 @@
 import { memo, useEffect, useState } from "react";
-import { Bell, Cpu, Gauge, Keyboard, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, X } from "lucide-react";
+import { Bell, Cpu, Gauge, Keyboard, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, Volume2, X } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
+import { outputSupport } from "../lib/audioOutput";
 import {
   isDesktop,
   listCaptureSources,
@@ -83,6 +84,9 @@ function SettingsModalBase() {
   const tuning = useApp((s) => s.tuning);
   const mics = useApp((s) => s.mics);
   const micDeviceId = useApp((s) => s.micDeviceId);
+  const speakers = useApp((s) => s.speakers);
+  const outputDeviceId = useApp((s) => s.outputDeviceId);
+  const outputMode = useApp((s) => s.outputMode);
   const pushToTalk = useApp((s) => s.pushToTalk);
   const sounds = useApp((s) => s.sounds);
   const updateVersion = useApp((s) => s.updateVersion);
@@ -241,6 +245,44 @@ function SettingsModalBase() {
                 </option>
               ))}
             </select>
+          </Section>
+
+          <Section icon={<Volume2 size={13} />} title="Som">
+            <div className="mb-2 grid grid-cols-2 gap-2">
+              <Option
+                active={outputMode === "natural"}
+                label="Natural"
+                hint="Volume de cada pessoa como veio, sem ajuste automatico."
+                onClick={() => session.setOutputMode("natural")}
+              />
+              <Option
+                active={outputMode === "nivelado"}
+                label="Nivelado"
+                hint="Sobe quem fala baixo e segura quem fala alto — bom com mics desiguais."
+                onClick={() => session.setOutputMode("nivelado")}
+              />
+            </div>
+
+            <select
+              value={outputDeviceId}
+              onChange={(e) => void session.setOutputDeviceId(e.target.value)}
+              onFocus={() => void session.refreshDevices()}
+              disabled={!outputSupport.setSinkId}
+              className="w-full rounded-md bg-base-500 px-3 py-2 text-sm text-ink-soft outline-none disabled:opacity-50"
+            >
+              <option value="default">Dispositivo padrao do sistema</option>
+              {speakers.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || `Saida ${d.deviceId.slice(0, 6)}`}
+                </option>
+              ))}
+            </select>
+            {!outputSupport.setSinkId && (
+              <p className="mt-1 text-xs text-faint">
+                Este navegador/runtime nao permite escolher o dispositivo de saida —
+                o audio segue pelo fone/caixa padrao do sistema.
+              </p>
+            )}
           </Section>
 
           <Section icon={<Keyboard size={13} />} title="Atalhos globais">

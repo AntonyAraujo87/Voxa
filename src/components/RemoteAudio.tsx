@@ -2,11 +2,17 @@ import { memo, useEffect, useMemo, useRef } from "react";
 import { useApp } from "../store/store";
 import { usePeerMedia } from "../store/mediaStore";
 import { audioContext } from "../lib/media";
+import { entradaDoBus } from "../lib/audioOutput";
 
 /* ---------------------------------------------------------------------------
    Audio remoto (voz + som da transmissao), roteado por WebAudio em vez de
    <audio>.volume — HTMLMediaElement.volume trava em 1.0 por especificacao;
    o slider desta aplicacao vai ate 2.0 (200%), e so um GainNode alcanca isso.
+
+   Cada peer tem seu proprio GainNode (volume individual), mas nenhum vai
+   direto pro alto-falante: todos convergem no bus de audioOutput.ts, que e
+   quem decide o dispositivo de saida e se o modo "Nivelado" esta ligado —
+   um unico ponto de controle em vez de logica espalhada por peer.
 
    Ficam fora da grade de video de proposito: assim o audio nunca e cortado
    quando o tile some da tela (foco, thumbnail, scroll, ou nem existe tile —
@@ -17,7 +23,7 @@ import { audioContext } from "../lib/media";
 --------------------------------------------------------------------------- */
 
 /**
- * Liga um MediaStream a um GainNode no destino padrao do AudioContext.
+ * Liga um MediaStream a um GainNode no bus de saida compartilhado.
  *
  * Reconstroi o grafo sempre que o STREAM muda — nao só o volume. O peer
  * troca de objeto MediaStream a cada mute/unmute remoto (`new MediaStream([track])`
@@ -36,7 +42,7 @@ function useGainStream(stream: MediaStream | null, gain: number, silenciado: boo
     gainNodeRef.current = gainNode;
 
     source.connect(gainNode);
-    gainNode.connect(ctx.destination);
+    gainNode.connect(entradaDoBus());
 
     return () => {
       try {

@@ -13,6 +13,7 @@ import { useApp } from "../store/store";
 import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
 import { loadChannels, loadMessages, saveMessage, supabaseEnabled, upsertUser } from "./supabase";
 import { loadPrefs, primePrefsCache, savePrefs } from "./prefs";
+import { setOutputDevice, setOutputMode as aplicarModoSaida } from "./audioOutput";
 import {
   checkForUpdate,
   flashTaskbar,
@@ -144,6 +145,8 @@ class Session {
     app.setState({
       tuning: prefs.tuning,
       micDeviceId: prefs.micDeviceId,
+      outputDeviceId: prefs.outputDeviceId,
+      outputMode: prefs.outputMode,
       volumes: prefs.volumes,
       streamVolumes: prefs.streamVolumes,
       membersOpen: prefs.membersOpen,
@@ -154,6 +157,10 @@ class Session {
     });
     setSoundsEnabled(prefs.sounds);
     void this.mesh.setTuning(prefs.tuning);
+    aplicarModoSaida(prefs.outputMode === "nivelado");
+    if (prefs.outputDeviceId && prefs.outputDeviceId !== "default") {
+      void setOutputDevice(prefs.outputDeviceId);
+    }
     return prefs;
   }
 
@@ -208,8 +215,8 @@ class Session {
   }
 
   async refreshDevices() {
-    const { mics } = await listDevices();
-    app.setState({ mics });
+    const { mics, speakers } = await listDevices();
+    app.setState({ mics, speakers });
   }
 
   /* -------------------------------- texto ------------------------------- */
@@ -406,6 +413,22 @@ class Session {
     if (!this.media.hasMic) return;
     this.closeMic();
     await this.openMic();
+  }
+
+  async setOutputDeviceId(deviceId: string) {
+    const ok = await setOutputDevice(deviceId);
+    if (!ok) {
+      app.getState().toast("error", "Nao foi possivel trocar o dispositivo de saida.");
+      return;
+    }
+    app.setState({ outputDeviceId: deviceId });
+    savePrefs({ outputDeviceId: deviceId });
+  }
+
+  setOutputMode(mode: "natural" | "nivelado") {
+    aplicarModoSaida(mode === "nivelado");
+    app.setState({ outputMode: mode });
+    savePrefs({ outputMode: mode });
   }
 
   /* ---------------------------- push-to-talk ---------------------------- */

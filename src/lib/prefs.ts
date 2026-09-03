@@ -21,6 +21,8 @@ export interface Prefs {
   token: string;
   tuning: TuningState;
   micDeviceId: string;
+  outputDeviceId: string;
+  outputMode: "natural" | "nivelado";
   /** peerUserId -> 0..2 (1 = normal, 2 = dobro) — volume da voz */
   volumes: Record<string, number>;
   /** peerUserId -> 0..2 — volume do audio da transmissao de tela, separado da voz */
@@ -38,6 +40,8 @@ const DEFAULTS: Prefs = {
   token: "",
   tuning: { video: "alta", audio: "voz", codec: "hardware", content: "jogo" },
   micDeviceId: "default",
+  outputDeviceId: "default",
+  outputMode: "natural",
   volumes: {},
   streamVolumes: {},
   membersOpen: true,

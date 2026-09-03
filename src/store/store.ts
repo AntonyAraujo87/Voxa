@@ -44,6 +44,10 @@ interface AppState {
   tuning: TuningState;
   micDeviceId: string;
   mics: MediaDeviceInfo[];
+  outputDeviceId: string;
+  speakers: MediaDeviceInfo[];
+  /** "nivelado" liga um compressor no bus de saida — sobe quem fala baixo */
+  outputMode: "natural" | "nivelado";
   /** userId -> ganho 0..2 aplicado no <audio> daquela pessoa (voz do microfone) */
   volumes: Record<string, number>;
   /** userId -> ganho 0..2 aplicado no audio da tela/jogo daquela pessoa, separado da voz */
@@ -107,6 +111,9 @@ export const useApp = create<AppState>((set) => ({
   tuning: { video: "alta", audio: "voz", codec: "hardware", content: "jogo" },
   micDeviceId: "default",
   mics: [],
+  outputDeviceId: "default",
+  speakers: [],
+  outputMode: "natural",
   volumes: {},
   streamVolumes: {},
   pushToTalk: false,

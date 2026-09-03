@@ -2,6 +2,7 @@ import { memo, useState } from "react";
 import { AlertTriangle, KeyRound, Pencil } from "lucide-react";
 import { VoxaMark } from "./VoxaMark";
 import { Avatar } from "./Avatar";
+import { ColorWheel } from "./ColorWheel";
 import { USER_COLORS, hasTurn } from "../lib/config";
 import { session } from "../lib/session";
 import { supabaseEnabled } from "../lib/supabase";
@@ -63,19 +64,8 @@ function ProfileSetup({ onDone }: ProfileProps) {
       <label className="mb-2 block text-[11px] font-bold uppercase tracking-wide text-faint">
         Cor
       </label>
-      <div className="mb-5 flex flex-wrap gap-2">
-        {USER_COLORS.map((c) => (
-          <button
-            key={c}
-            onClick={() => setColor(c)}
-            className="size-7 rounded-full transition-transform hover:scale-110"
-            style={{
-              background: c,
-              outline: color === c ? "2px solid var(--color-ink)" : "2px solid transparent",
-              outlineOffset: 2,
-            }}
-          />
-        ))}
+      <div className="mb-5 flex justify-center">
+        <ColorWheel value={color} onChange={setColor} />
       </div>
 
       <button
