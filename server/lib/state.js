@@ -51,6 +51,9 @@ export class Registry {
   patchState(socketId, patch) {
     const client = this.#clients.get(socketId);
     if (!client) return null;
+    // `in` lanca TypeError sobre primitivos: um cliente mandando
+    // `emit("state", "boom")` derrubava o handler inteiro.
+    if (patch === null || typeof patch !== "object") return client.state;
     // Lista fechada de campos: um cliente malicioso nao injeta chaves extras
     // no objeto que sera transmitido para todo mundo.
     for (const campo of ["muted", "deafened", "sharing", "speaking"]) {

@@ -75,7 +75,18 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
 
     const channelId = sanitizeId(payload?.channelId, 64);
     const client = registry.get(socket.id);
-    if (!channelId || client.voice === channelId) return;
+
+    // Sair sem responder deixa a promise do cliente pendente para sempre — e
+    // como as entradas em canal sao serializadas la, uma promise presa trava
+    // todas as trocas de canal seguintes. Responder sempre, mesmo recusando.
+    if (!channelId) {
+      if (typeof ack === "function") ack({ error: "canal-invalido" });
+      return;
+    }
+    if (client.voice === channelId) {
+      if (typeof ack === "function") ack({ channelId, peers: registry.peersOf(channelId) });
+      return;
+    }
 
     if (client.voice) leaveVoice({ silent: true });
 

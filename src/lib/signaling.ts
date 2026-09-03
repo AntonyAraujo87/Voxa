@@ -80,6 +80,9 @@ export class Signaling {
     this.socket.on("chat:typing", (p) => handlers.onTyping?.(p));
   }
 
+  /** evita registrar os mesmos listeners de novo quando o login e repetido */
+  private listenersDeConexao = false;
+
   connect(
     user: PeerUser,
     token: string
@@ -122,6 +125,12 @@ export class Signaling {
         this.socket.once("connect", onReady);
         this.socket.connect();
       }
+      // Senha errada faz o usuario tentar de novo, e cada tentativa passava
+      // por aqui registrando outro par de listeners: na terceira tentativa o
+      // `hello` de reconexao sairia tres vezes.
+      if (this.listenersDeConexao) return;
+      this.listenersDeConexao = true;
+
       // Reidentifica depois de cada reconexao.
       //
       // O socket.io cria um socket NOVO ao reconectar, com id novo. Ignorar o
