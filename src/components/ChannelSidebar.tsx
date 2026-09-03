@@ -17,6 +17,7 @@ import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import { Avatar } from "./Avatar";
 import { VolumeControl } from "./VolumeControl";
+import { Soundboard } from "./Soundboard";
 
 /* ------------------------------- CANAIS ---------------------------------- */
 
@@ -185,6 +186,8 @@ const VoiceStatus = memo(function VoiceStatus() {
         <MonitorUp size={16} />
         {sharing ? "Parar transmissao" : "Compartilhar tela"}
       </button>
+
+      <Soundboard />
     </div>
   );
 });

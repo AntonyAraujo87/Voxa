@@ -1,5 +1,5 @@
 import { VIDEO_PRESETS, type AudioPresetId, type ContentMode, type VideoPresetId } from "./config";
-import { captureMic, captureScreen, createVoiceDetector, stopStream } from "./media";
+import { audioContext, captureMic, captureScreen, createVoiceDetector, stopStream } from "./media";
 
 /* ---------------------------------------------------------------------------
    Dono dos streams locais: microfone e captura de tela.
@@ -27,11 +27,18 @@ export class LocalMedia {
   private screenStream: MediaStream | null = null;
   private stopVad: (() => void) | null = null;
 
-  constructor(private hooks: LocalMediaHooks) {}
+  // O track que de fato vai pro RTCPeerConnection nao e o track cru do
+  // dispositivo: passa por um bus WebAudio (fonte -> ganho -> destino) pra
+  // que o soundboard possa se misturar na voz antes de sair pro peer. O
+  // ganho tambem substitui `track.enabled` como mecanismo de mudo — assim
+  // um efeito do soundboard ainda toca pros outros mesmo com o microfone
+  // silenciado, em vez de ser cortado junto.
+  private micSource: MediaStreamAudioSourceNode | null = null;
+  private micGain: GainNode | null = null;
+  private mixDestino: MediaStreamAudioDestinationNode | null = null;
+  private micEnabled = true;
 
-  get micTrack(): MediaStreamTrack | null {
-    return this.micStream?.getAudioTracks()[0] ?? null;
-  }
+  constructor(private hooks: LocalMediaHooks) {}
 
   get hasMic() {
     return this.micStream !== null;
@@ -45,33 +52,57 @@ export class LocalMedia {
     return this.screenStream !== null;
   }
 
+  /** Ponto de mixagem pro soundboard se conectar — null com o mic fechado. */
+  get mixInput(): AudioNode | null {
+    return this.mixDestino;
+  }
+
   /* ------------------------------ microfone ----------------------------- */
 
   /** Idempotente: chamar com o microfone ja aberto devolve o track existente. */
   async openMic(preset: AudioPresetId, deviceId: string): Promise<MediaStreamTrack | null> {
-    if (this.micStream) return this.micTrack;
+    if (this.micStream) return this.mixDestino?.stream.getAudioTracks()[0] ?? null;
 
     const stream = await captureMic(preset, deviceId);
     this.micStream = stream;
     this.stopVad = createVoiceDetector(stream, (speaking) => this.hooks.onSpeaking(speaking));
-    return this.micTrack;
+
+    const ctx = audioContext();
+    this.micSource = ctx.createMediaStreamSource(stream);
+    this.micGain = ctx.createGain();
+    this.micGain.gain.value = this.micEnabled ? 1 : 0;
+    this.mixDestino = ctx.createMediaStreamDestination();
+    this.micSource.connect(this.micGain);
+    this.micGain.connect(this.mixDestino);
+
+    return this.mixDestino.stream.getAudioTracks()[0];
   }
 
   closeMic() {
     this.stopVad?.();
     this.stopVad = null;
+    try {
+      this.micSource?.disconnect();
+      this.micGain?.disconnect();
+    } catch {
+      /* grafo ja desfeito — nada a fazer */
+    }
+    this.micSource = null;
+    this.micGain = null;
+    this.mixDestino = null;
     stopStream(this.micStream);
     this.micStream = null;
   }
 
   /**
-   * Silenciar desligando o track (em vez de removê-lo) mantem o fluxo RTP vivo:
-   * nao renegocia nada, o unmute e instantaneo e o outro lado nao ve a conexao
-   * piscar.
+   * Silenciar zerando o ganho (em vez de desligar o track) mantem o fluxo RTP
+   * vivo — nao renegocia nada, o unmute e instantaneo — e ainda deixa o
+   * soundboard passar: o track final enviado ao peer continua `enabled`,
+   * so a perna do MIC dentro da mixagem que emudece.
    */
   setMicEnabled(enabled: boolean) {
-    const track = this.micTrack;
-    if (track) track.enabled = enabled;
+    this.micEnabled = enabled;
+    if (this.micGain) this.micGain.gain.value = enabled ? 1 : 0;
   }
 
   /* -------------------------------- tela -------------------------------- */

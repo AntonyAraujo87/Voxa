@@ -13,7 +13,8 @@ import { useApp } from "../store/store";
 import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
 import { loadChannels, loadMessages, saveMessage, supabaseEnabled, upsertUser } from "./supabase";
 import { loadPrefs, primePrefsCache, savePrefs } from "./prefs";
-import { setOutputDevice, setOutputMode as aplicarModoSaida } from "./audioOutput";
+import { entradaDoBus, setOutputDevice, setOutputMode as aplicarModoSaida } from "./audioOutput";
+import { tocarEfeito } from "./soundboard";
 import {
   checkForUpdate,
   flashTaskbar,
@@ -408,6 +409,19 @@ class Session {
     app.setState({ deafened, muted });
     this.media.setMicEnabled(!muted);
     this.signaling.setState({ deafened, muted });
+  }
+
+  /**
+   * Toca um efeito do soundboard pro canal de voz — junto do bus de saida
+   * local (quem apertou tambem ouve) e da mixagem de entrada do microfone
+   * (vai pros outros peers). Sem canal de voz ou sem microfone aberto o
+   * efeito nao teria como chegar em ninguem, entao nem tenta.
+   */
+  playSoundboard(id: string) {
+    const s = app.getState();
+    if (!s.activeVoice) return;
+    const destinos = [entradaDoBus(), this.media.mixInput].filter((d): d is AudioNode => d !== null);
+    tocarEfeito(id, destinos);
   }
 
   async setMicDevice(deviceId: string) {
