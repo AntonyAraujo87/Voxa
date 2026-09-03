@@ -8,10 +8,12 @@
 //   webview.rs   flags do Chromium e permissao de midia
 //   capture.rs   escolha e persistencia da fonte de captura
 //   hotkeys.rs   atalhos globais e push-to-talk
+//   lifecycle.rs bandeja do sistema e liberacao de memoria
 // ---------------------------------------------------------------------------
 
 mod capture;
 mod hotkeys;
+mod lifecycle;
 mod webview;
 
 use tauri::Manager;
@@ -39,12 +41,19 @@ pub fn run() {
             capture::list_capture_sources,
             capture::set_capture_source,
             capture::get_capture_source,
-            hotkeys::set_push_to_talk
+            hotkeys::set_push_to_talk,
+            lifecycle::release_memory
         ])
+        .on_window_event(lifecycle::handle_window_event)
         .setup(|app| {
             #[cfg(desktop)]
             if let Err(err) = hotkeys::setup(app.handle()) {
                 eprintln!("[voxa] atalhos globais indisponiveis: {err}");
+            }
+
+            #[cfg(desktop)]
+            if let Err(err) = lifecycle::setup_tray(app.handle()) {
+                eprintln!("[voxa] bandeja indisponivel: {err}");
             }
 
             #[cfg(target_os = "windows")]

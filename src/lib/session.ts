@@ -64,6 +64,8 @@ class Session {
       onSpeaking: (peerId, speaking) =>
         app.setState((s) => ({ speaking: { ...s.speaking, [peerId]: speaking } })),
       onError: (peerId, err) => console.error("[rtc]", peerId, err),
+      onQuality: (label, reason) =>
+        app.getState().toast("info", `Qualidade ajustada: ${label} (${reason})`),
     });
 
     this.media = new LocalMedia({
@@ -149,6 +151,13 @@ class Session {
     const text = content.trim();
     if (!text || !s.me) return;
 
+    // O servidor tambem limita, mas ali a mensagem excedente e descartada em
+    // silencio. Barrando aqui, quem digitou entende o que aconteceu.
+    if (!this.chatAllowance()) {
+      s.toast("info", "Devagar com o chat — aguarde alguns segundos.");
+      return;
+    }
+
     const msg: ChatMessage = {
       id: crypto.randomUUID(),
       channelId: s.activeText,
@@ -166,6 +175,17 @@ class Session {
 
   typing() {
     this.signaling.typing(app.getState().activeText);
+  }
+
+  /** Mesma janela usada pelo servidor: 8 mensagens a cada 5 segundos. */
+  private chatTimestamps: number[] = [];
+
+  private chatAllowance(): boolean {
+    const agora = Date.now();
+    this.chatTimestamps = this.chatTimestamps.filter((t) => agora - t < 5000);
+    if (this.chatTimestamps.length >= 8) return false;
+    this.chatTimestamps.push(agora);
+    return true;
   }
 
   /* --------------------------------- voz -------------------------------- */

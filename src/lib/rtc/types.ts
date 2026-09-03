@@ -87,4 +87,6 @@ export interface MeshOptions extends PeerCallbacks {
   selfId: () => string;
   onStats: (stats: Map<string, PeerStats>) => void;
   onSpeaking: (peerId: string, speaking: boolean) => void;
+  /** avisa quando a qualidade foi reduzida ou recuperada automaticamente */
+  onQuality?: (label: string, reason: string) => void;
 }

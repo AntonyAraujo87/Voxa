@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -30,4 +30,11 @@ tauri-plugin-global-shortcut = "2.3.2"
 # Mesma versao que o wry usa (0.38.2) — precisa bater pra compartilhar os tipos COM.
 webview2-com = "0.38"
 # GetUserDefaultUILanguage: descobre o idioma do titulo da fonte de captura.
-windows = { version = "0.61", features = ["Win32_Globalization", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = [
+  "Win32_Globalization",
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+  "Win32_System_Diagnostics_ToolHelp",
+] }

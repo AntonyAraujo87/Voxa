@@ -1,5 +1,6 @@
 import { VIDEO_PRESETS } from "../config";
 import type { SignalPayload } from "../signaling";
+import { AdaptiveQuality } from "./adaptive";
 import { Peer } from "./peer";
 import { budgetPerPeer, type EncodingTargets } from "./tuning";
 import { NO_TRACKS, type LocalTracks, type MeshOptions, type PeerStats, type TuningState } from "./types";
@@ -21,6 +22,8 @@ export class Mesh {
   private peers = new Map<string, Peer>();
   private tracks: LocalTracks = { ...NO_TRACKS };
   private timers: number[] = [];
+  private adaptive = new AdaptiveQuality();
+  private detachNetworkWatch: (() => void) | null = null;
 
   tuning: TuningState = { video: "alta", audio: "voz", codec: "hardware", content: "jogo" };
 
@@ -29,6 +32,27 @@ export class Mesh {
       window.setInterval(() => void this.collectStats(), STATS_INTERVAL_MS),
       window.setInterval(() => this.detectSpeaking(), SPEAKING_INTERVAL_MS)
     );
+    this.watchNetwork();
+  }
+
+  /**
+   * Trocar de Wi-Fi para cabo, sair do alcance ou o roteador renovar o IP nao
+   * derrubam a pagina, mas invalidam os candidatos ICE. O navegador avisa; sem
+   * escutar esses eventos, a conexao ficaria morta ate alguem sair e voltar.
+   */
+  private watchNetwork() {
+    const recover = () => {
+      for (const peer of this.peers.values()) peer.recoverNow();
+    };
+
+    window.addEventListener("online", recover);
+    const conexao = (navigator as Navigator & { connection?: EventTarget }).connection;
+    conexao?.addEventListener("change", recover);
+
+    this.detachNetworkWatch = () => {
+      window.removeEventListener("online", recover);
+      conexao?.removeEventListener("change", recover);
+    };
   }
 
   get size() {
@@ -72,6 +96,8 @@ export class Mesh {
   destroy() {
     for (const t of this.timers) window.clearInterval(t);
     this.timers = [];
+    this.detachNetworkWatch?.();
+    this.detachNetworkWatch = null;
     this.clear();
   }
 
@@ -90,6 +116,9 @@ export class Mesh {
   }
 
   async setScreen(video: MediaStreamTrack | null, audio: MediaStreamTrack | null) {
+    // Comeca sempre na qualidade cheia: o degrau anterior foi decidido para
+    // outra captura, que pode ter sido de um jogo bem mais pesado.
+    if (video) this.adaptive.reset();
     this.tracks = { ...this.tracks, screen: video, screenAudio: audio };
     for (const peer of this.peers.values()) peer.attachTracks(this.tracks);
     await this.applyToAll();
@@ -111,10 +140,12 @@ export class Mesh {
   }
 
   private targets(): EncodingTargets {
+    const preset = VIDEO_PRESETS[this.tuning.video];
+    const degrau = this.adaptive.current;
     return {
       maxBitrate: budgetPerPeer(this.tuning, this.peers.size),
-      maxFramerate: VIDEO_PRESETS[this.tuning.video].fps,
-      scaleDownBy: 1,
+      maxFramerate: Math.min(preset.fps, degrau.fpsCap),
+      scaleDownBy: degrau.scaleDownBy,
     };
   }
 
@@ -133,6 +164,12 @@ export class Mesh {
   private async collectStats() {
     if (this.peers.size === 0) return;
 
+    // Janela escondida e sem tela no ar: ninguem esta olhando as metricas e
+    // nao ha encoder para adaptar. Enquanto compartilha, continua medindo —
+    // e exatamente ai (app em segundo plano, jogo em primeiro) que a
+    // adaptacao automatica mais importa.
+    if (document.hidden && !this.tracks.screen) return;
+
     const out = new Map<string, PeerStats>();
     await Promise.all(
       [...this.peers.values()].map(async (peer) => {
@@ -145,9 +182,23 @@ export class Mesh {
     );
 
     this.opts.onStats(out);
+
+    // So adapta enquanto ha tela no ar: sem video, "limitado por CPU" nao
+    // significa nada e reduzir resolucao nao teria efeito nenhum.
+    if (this.tracks.screen) {
+      const decisao = this.adaptive.evaluate(out.values());
+      if (decisao.changed) {
+        void this.applyToAll();
+        this.opts.onQuality?.(decisao.step.label, decisao.reason);
+      }
+    }
   }
 
   private detectSpeaking() {
+    // O anel de "falando" e puramente visual: com a janela escondida, medir
+    // seria trabalho jogado fora 6 vezes por segundo.
+    if (document.hidden) return;
+
     for (const peer of this.peers.values()) {
       const speaking = peer.audioLevel() > SPEAKING_THRESHOLD;
       if (speaking !== peer.speaking) {

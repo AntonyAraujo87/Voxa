@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { Maximize2, MicOff, Minimize2, ScreenShare } from "lucide-react";
+import { Loader2, Maximize2, MicOff, Minimize2, ScreenShare } from "lucide-react";
 import { useApp } from "../store/store";
 import { usePeerMedia, useLocalScreen } from "../store/mediaStore";
 import { Avatar } from "./Avatar";
@@ -107,6 +107,7 @@ function VideoTileBase({ peerId, name, color, isSelf, muted, speaking, focused, 
   const stream = isSelf ? local : remote.screen;
   const showStats = useApp((s) => s.showStats);
   const stats = useApp((s) => (showStats ? s.stats[peerId] : undefined));
+  const conexao = useApp((s) => s.connState[peerId]);
   const localInfo = useLocalCaptureInfo(stream, showStats && isSelf && hasScreen);
 
   // `hasScreen` PRECISA estar nas dependencias: o track remoto costuma chegar
@@ -172,6 +173,15 @@ function VideoTileBase({ peerId, name, color, isSelf, muted, speaking, focused, 
       )}
 
       {showStats && hasScreen && (isSelf && !stats ? <LocalOverlay info={localInfo} /> : <StatsOverlay stats={stats} />)}
+
+      {/* A reconexao acontece sozinha; o aviso existe para o usuario nao achar
+          que travou e sair do canal no meio da recuperacao. */}
+      {!isSelf && (conexao === "disconnected" || conexao === "failed") && (
+        <div className="absolute inset-x-0 top-0 flex items-center justify-center gap-2 bg-warn/90 py-1 text-[12px] font-medium text-black">
+          <Loader2 size={13} className="animate-spin" />
+          reconectando...
+        </div>
+      )}
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
         <span className="truncate text-[13px] font-medium text-ink">

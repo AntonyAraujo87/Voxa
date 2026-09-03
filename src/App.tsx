@@ -8,9 +8,11 @@ import { MemberList } from "./components/MemberList";
 import { SettingsModal } from "./components/SettingsModal";
 import { Toasts } from "./components/Toasts";
 import { LoginGate } from "./components/LoginGate";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useApp } from "./store/store";
 import { session } from "./lib/session";
 import { savePrefs } from "./lib/prefs";
+import { releaseMemory } from "./lib/desktop";
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -77,6 +79,22 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", bye);
   }, []);
 
+  // O app passa horas em segundo plano enquanto o jogo roda. Alguns segundos
+  // depois de sumir da tela, devolve ao Windows a memoria que nao esta usando.
+  // O atraso evita fazer isso num alt-tab rapido, quando a janela volta logo.
+  useEffect(() => {
+    let timer = 0;
+    const onVisibility = () => {
+      window.clearTimeout(timer);
+      if (document.hidden) timer = window.setTimeout(() => void releaseMemory(), 5000);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
   if (!ready) {
     return (
       <div className="flex h-full flex-col">
@@ -94,14 +112,28 @@ export default function App() {
 
       <div className="flex min-h-0 flex-1">
         <ServerRail />
-        <ChannelSidebar />
+        <ErrorBoundary area="canais" compact>
+          <ChannelSidebar />
+        </ErrorBoundary>
 
+        {/* Cada painel tem seu proprio boundary: uma falha no player de video
+            nao pode levar junto o chat, e vice-versa. */}
         <main className="flex min-w-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
-            {activeVoice && <StageGrid />}
-            <ChatPanel />
+            {activeVoice && (
+              <ErrorBoundary area="video">
+                <StageGrid />
+              </ErrorBoundary>
+            )}
+            <ErrorBoundary area="chat">
+              <ChatPanel />
+            </ErrorBoundary>
           </div>
-          {membersOpen && <MemberList />}
+          {membersOpen && (
+            <ErrorBoundary area="lista de membros" compact>
+              <MemberList />
+            </ErrorBoundary>
+          )}
         </main>
       </div>
 

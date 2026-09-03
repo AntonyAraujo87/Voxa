@@ -17,6 +17,12 @@ import {
   type TuningState,
 } from "./types";
 
+/** Espera antes de agir num `disconnected`, que costuma se resolver sozinho. */
+const RECOVERY_GRACE_MS = 2500;
+const RECOVERY_BASE_MS = 1200;
+const MAX_RECOVERY_DELAY_MS = 20_000;
+const MAX_RECOVERY_ATTEMPTS = 8;
+
 /* ---------------------------------------------------------------------------
    Uma conexao com UM outro participante.
 
@@ -39,6 +45,10 @@ export class Peer {
 
   /** transceivers ja mapeados (criados por nos ou vindos da oferta remota) */
   private ready = false;
+
+  private recoveryTimer: number | null = null;
+  private recoveryAttempts = 0;
+  private closed = false;
 
   private samples: StatsSamples = newSamples();
   stats: PeerStats = { ...EMPTY_STATS };
@@ -88,7 +98,78 @@ export class Peer {
       const state = this.pc.connectionState;
       this.stats.connection = state;
       this.cb.onConnectionState(this.id, state);
+
+      if (state === "connected") {
+        // Reconectou: zera o backoff para que a proxima queda seja tratada
+        // com a mesma agressividade da primeira.
+        this.recoveryAttempts = 0;
+        this.cancelRecovery();
+      }
+      if (state === "failed") this.scheduleRecovery(0);
+      if (state === "disconnected") this.scheduleRecovery(RECOVERY_GRACE_MS);
     };
+
+    // `disconnected` costuma ser transitorio (troca de Wi-Fi, pico de latencia)
+    // e frequentemente se resolve sozinho; `failed` nunca se resolve sozinho.
+    this.pc.oniceconnectionstatechange = () => {
+      if (this.pc.iceConnectionState === "failed") this.scheduleRecovery(0);
+    };
+  }
+
+  /* --------------------------- recuperacao de rede ----------------------- */
+
+  /**
+   * Reinicia a negociacao ICE apos uma queda.
+   *
+   * Trocar de Wi-Fi para cabo, cair a rede por alguns segundos ou o roteador
+   * renovar o IP invalidam os candidatos combinados no handshake. Sem o
+   * restart, a conexao fica em `failed` para sempre e a unica saida seria o
+   * usuario sair e voltar do canal.
+   *
+   * O atraso cresce a cada tentativa e leva um jitter aleatorio: sem isso,
+   * numa sala de quatro pessoas todo mundo tentaria renegociar no mesmo
+   * instante e as ofertas colidiriam em rajada.
+   */
+  private scheduleRecovery(delayMs: number) {
+    if (this.recoveryTimer !== null || this.closed) return;
+    if (this.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) return;
+
+    const backoff = delayMs + RECOVERY_BASE_MS * 2 ** this.recoveryAttempts;
+    const jitter = Math.random() * 400;
+
+    this.recoveryTimer = window.setTimeout(() => {
+      this.recoveryTimer = null;
+      const state = this.pc.connectionState;
+      if (this.closed || state === "connected" || state === "closed") return;
+
+      this.recoveryAttempts++;
+      try {
+        // restartIce() dispara onnegotiationneeded, que refaz a oferta com
+        // credenciais ICE novas. A midia ja anexada continua no lugar.
+        this.pc.restartIce();
+      } catch (err) {
+        this.cb.onError(this.id, err);
+      }
+      // Se nao voltar, tenta de novo com o intervalo maior.
+      this.scheduleRecovery(0);
+    }, Math.min(backoff + jitter, MAX_RECOVERY_DELAY_MS));
+  }
+
+  private cancelRecovery() {
+    if (this.recoveryTimer !== null) {
+      window.clearTimeout(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
+  }
+
+  /** Forca reconexao imediata — usado quando o SO avisa que a rede mudou. */
+  recoverNow() {
+    if (this.closed) return;
+    const state = this.pc.connectionState;
+    if (state === "connected" || state === "new") return;
+    this.recoveryAttempts = 0;
+    this.cancelRecovery();
+    this.scheduleRecovery(0);
   }
 
   /**
@@ -139,6 +220,9 @@ export class Peer {
   }
 
   close() {
+    this.closed = true;
+    this.cancelRecovery();
+    this.pc.oniceconnectionstatechange = null;
     this.pc.onicecandidate = null;
     this.pc.ontrack = null;
     this.pc.onnegotiationneeded = null;
@@ -246,6 +330,7 @@ export class Peer {
       ready: this.ready,
       connection: this.pc.connectionState,
       ice: this.pc.iceConnectionState,
+      tentativasDeReconexao: this.recoveryAttempts,
       encodings: this.videoTx?.sender.getParameters().encodings ?? [],
       degradation: this.videoTx
         ? (this.videoTx.sender.getParameters() as unknown as Record<string, unknown>)

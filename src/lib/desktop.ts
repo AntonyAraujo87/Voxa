@@ -44,6 +44,13 @@ export const getCaptureSource = () => invoke<string>("get_capture_source");
 export const setCaptureSource = (title: string) => invoke("set_capture_source", { title });
 export const setPushToTalkNative = (enabled: boolean) => invoke("set_push_to_talk", { enabled });
 
+/**
+ * Pede ao Rust que devolva ao sistema as paginas de memoria ociosas — do
+ * processo do app e dos processos do WebView2, que sao a maior parte do
+ * consumo. Chamado quando a janela deixa de estar visivel.
+ */
+export const releaseMemory = () => invoke("release_memory");
+
 /* ------------------------------- update ---------------------------------- */
 
 export interface UpdateInfo {
