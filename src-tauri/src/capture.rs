@@ -62,16 +62,58 @@ pub fn list_capture_sources() -> Vec<CaptureSource> {
     unsafe {
         use windows::core::BOOL;
         use windows::Win32::Foundation::{HWND, LPARAM, TRUE};
+        use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+        use windows::Win32::System::Threading::GetCurrentProcessId;
         use windows::Win32::UI::WindowsAndMessaging::{
-            EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible,
+            EnumWindows, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+            GetWindowThreadProcessId, IsIconic, IsWindowVisible,
         };
+
+        /// `IsWindowVisible` sozinho nao basta desde o Windows 8: apps do
+        /// shell (Program Manager de tela cheia, "Windows Shell Experience
+        /// Host", hosts do Cortana/busca, etc.) ficam WS_VISIBLE mas
+        /// "cloaked" pelo DWM quando nao ha nada de fato na tela. Sem checar
+        /// isso, a lista mostrava janelas fantasma que o usuario nunca abriu.
+        unsafe fn esta_cloaked(hwnd: HWND) -> bool {
+            let mut cloaked: u32 = 0;
+            let ok = DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_CLOAKED,
+                &mut cloaked as *mut _ as *mut _,
+                std::mem::size_of::<u32>() as u32,
+            );
+            ok.is_ok() && cloaked != 0
+        }
 
         unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
             unsafe {
                 let list = &mut *(lparam.0 as *mut Vec<String>);
-                if !IsWindowVisible(hwnd).as_bool() {
+
+                if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
                     return TRUE;
                 }
+                if esta_cloaked(hwnd) {
+                    return TRUE;
+                }
+
+                // Janela sem area (0x0, ou fora da tela) nao e uma fonte real.
+                let mut rect = Default::default();
+                if GetWindowRect(hwnd, &mut rect).is_ok() {
+                    let vazia = rect.right <= rect.left || rect.bottom <= rect.top;
+                    if vazia {
+                        return TRUE;
+                    }
+                }
+
+                // O proprio Voxa nunca deveria compartilhar a si mesmo. Comparar
+                // pelo processo, nao pelo titulo: o titulo real da janela deste
+                // app e o identificador interno do WebView2, nao "Voxa".
+                let mut pid: u32 = 0;
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                if pid == GetCurrentProcessId() {
+                    return TRUE;
+                }
+
                 let len = GetWindowTextLengthW(hwnd);
                 if len <= 0 {
                     return TRUE;
@@ -94,10 +136,6 @@ pub fn list_capture_sources() -> Vec<CaptureSource> {
         titles.sort();
         titles.dedup();
         for title in titles {
-            // A propria janela do app nao serve de fonte util.
-            if title == "Voxa" {
-                continue;
-            }
             out.push(CaptureSource {
                 id: title.clone(),
                 label: title,
