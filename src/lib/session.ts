@@ -161,7 +161,7 @@ class Session {
 
     s.pushMessage(msg); // eco otimista: aparece antes de sair da maquina
     this.signaling.sendChat({ id: msg.id, channelId: msg.channelId, content: msg.content });
-    void saveMessage(msg, s.supabaseUserId);
+    void saveMessage(msg);
   }
 
   typing() {

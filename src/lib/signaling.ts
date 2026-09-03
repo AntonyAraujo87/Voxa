@@ -110,6 +110,11 @@ export class Signaling {
           }
         );
       };
+      // Token tambem no handshake: o servidor recusa a conexao ANTES de
+      // registrar qualquer handler, entao senha errada nao custa memoria nem
+      // processamento. O envio no `hello` permanece para servidores antigos.
+      this.socket.auth = { token };
+
       if (this.socket.connected) onReady();
       else {
         this.socket.once("connect", onReady);
@@ -117,6 +122,14 @@ export class Signaling {
       }
       // Reidentifica automaticamente depois de cada reconexao.
       this.socket.io.on("reconnect", () => this.socket.emit("hello", { user, token }, () => {}));
+      // "nao autorizado" vem do middleware do servidor: nao adianta insistir.
+      this.socket.on("connect_error", (err) => {
+        if (/autorizado|token/i.test(err?.message ?? "")) {
+          this.socket.io.opts.reconnection = false;
+          clearTimeout(timeout);
+          reject(new Error("Senha da sala incorreta"));
+        }
+      });
     });
   }
 

@@ -2,195 +2,145 @@
  * VOXA — Signaling Server
  * ---------------------------------------------------------------------------
  * Responsabilidade UNICA: handshake WebRTC (SDP/ICE), presenca e relay de chat.
- * Nenhum byte de audio/video passa por aqui — tudo e P2P entre os clientes.
- * Sem Express, sem ORM, sem middleware. http nativo + socket.io.
- * Consumo tipico: ~35 MB de RAM, roda no free tier de qualquer PaaS.
+ * Nenhum byte de audio ou video passa por aqui — tudo e P2P entre os clientes.
+ *
+ * Sem Express, sem ORM, sem middleware: http nativo + socket.io.
+ * O que este arquivo faz e apenas montar as pecas:
+ *   lib/security.js  limites de taxa, sanitizacao, comparacao de segredo
+ *   lib/state.js     quem esta conectado e em qual canal
+ *   lib/handlers.js  o que cada evento faz
  */
 import { createServer } from "node:http";
 import { Server } from "socket.io";
+
+import { Registry } from "./lib/state.js";
+import { registerHandlers } from "./lib/handlers.js";
+import {
+  MAX_HANDSHAKES_PER_MIN,
+  MAX_SOCKETS_PER_IP,
+  RateLimiter,
+  clientIp,
+  safeEqual,
+} from "./lib/security.js";
 
 const PORT = Number(process.env.PORT || 3001);
 const ORIGIN = process.env.ORIGIN || "*";
 
 /**
- * Senha da sala. Sem ela, qualquer um que descubra o endereco do signaling
- * entra no servidor e escuta a conversa. Defina VOXA_TOKEN no host e distribua
- * o mesmo valor para quem for usar o app.
- * Vazio = servidor aberto (ok pra rodar em localhost, nao pra expor na internet).
+ * Senha da sala. Sem ela, qualquer um que descubra o endereco entra e escuta.
+ * Vazio = servidor aberto, aceitavel apenas em localhost.
  */
 const TOKEN = process.env.VOXA_TOKEN || "";
-if (!TOKEN) {
-  console.warn("[voxa-signaling] AVISO: rodando sem VOXA_TOKEN — servidor aberto.");
-}
 
-/** @type {Map<string, {id:string,user:object,state:object,voice:string|null}>} */
-const clients = new Map();
-/** @type {Map<string, Set<string>>} canalDeVoz -> socketIds */
-const voiceChannels = new Map();
+/**
+ * Logs deliberadamente pobres.
+ *
+ * Um servidor de sinalizacao ve SDP (que carrega os IPs de todo mundo), ids de
+ * sala e apelidos. Nada disso precisa ir para disco, e em plataforma gratuita
+ * os logs costumam ser legiveis por terceiros. Registramos contagens e falhas,
+ * nunca conteudo, nunca IP, nunca stack trace de excecao vinda da rede.
+ */
+const log = {
+  info: (...a) => console.log("[voxa]", ...a),
+  warn: (...a) => console.warn("[voxa]", ...a),
+};
 
-const GUILD = "guild:main";
-const DEFAULT_STATE = { muted: false, deafened: false, sharing: false, speaking: false };
+if (!TOKEN) log.warn("AVISO: rodando sem VOXA_TOKEN — servidor aberto.");
+
+const registry = new Registry();
+const limiter = new RateLimiter();
+
+/* ------------------------------- HTTP ------------------------------------- */
 
 const httpServer = createServer((req, res) => {
   if (req.url === "/health") {
-    res.writeHead(200, { "content-type": "application/json" });
+    res.writeHead(200, {
+      "content-type": "application/json",
+      // Endpoint publico de status: nao ha nada a embutir nem a inferir dele.
+      "x-content-type-options": "nosniff",
+      "cache-control": "no-store",
+    });
     res.end(
       JSON.stringify({
         ok: true,
-        clients: clients.size,
-        voiceChannels: [...voiceChannels].map(([id, s]) => ({ id, peers: s.size })),
+        ...registry.summary(),
         uptime: Math.round(process.uptime()),
         rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + "MB",
       })
     );
     return;
   }
-  res.writeHead(404).end();
+
+  // Qualquer outra rota nao existe — e nao conta ao visitante o que existe.
+  res.writeHead(404, { "content-type": "text/plain" });
+  res.end("not found");
 });
+
+/* ------------------------------ socket.io --------------------------------- */
 
 const io = new Server(httpServer, {
   cors: { origin: ORIGIN, methods: ["GET", "POST"] },
-  // Handshake e mensagens curtas: websocket direto, sem polling (menos overhead).
+  // Handshake e mensagens curtas: websocket direto, sem polling.
   transports: ["websocket"],
   perMessageDeflate: false,
-  maxHttpBufferSize: 1e6,
+  // Um SDP com muitos candidatos passa de 10 KB; 256 KB e folga suficiente e
+  // corta payload gigante usado para inflar memoria do processo.
+  maxHttpBufferSize: 256 * 1024,
   pingInterval: 20000,
   pingTimeout: 25000,
+  connectTimeout: 20000,
 });
 
-function roster() {
-  return [...clients.values()].map((c) => ({
-    id: c.id,
-    user: c.user,
-    state: c.state,
-    voice: c.voice,
-  }));
-}
+/**
+ * Porta de entrada. Roda ANTES de qualquer handler existir, entao flood e
+ * senha errada morrem sem custar processamento nem alocar estado.
+ */
+io.use((socket, next) => {
+  const ip = clientIp(socket);
+  socket.data.ip = ip;
 
-function broadcastRoster() {
-  io.to(GUILD).emit("roster", roster());
-}
-
-function leaveVoice(socket, { silent = false } = {}) {
-  const client = clients.get(socket.id);
-  if (!client || !client.voice) return;
-  const channelId = client.voice;
-  const room = voiceChannels.get(channelId);
-  if (room) {
-    room.delete(socket.id);
-    if (room.size === 0) voiceChannels.delete(channelId);
+  if (!limiter.allow(`hs:${ip}`, 60_000, MAX_HANDSHAKES_PER_MIN)) {
+    return next(new Error("muitas tentativas"));
   }
-  socket.leave(`voice:${channelId}`);
-  client.voice = null;
-  client.state = { ...client.state, sharing: false, speaking: false };
-  socket.to(`voice:${channelId}`).emit("voice:peer-left", { id: socket.id, channelId });
-  if (!silent) broadcastRoster();
-}
+  if (registry.countByIp(ip) >= MAX_SOCKETS_PER_IP) {
+    return next(new Error("limite de conexoes"));
+  }
+
+  // Caminho novo: token no handshake, rejeitado antes de abrir o socket.
+  // Caminho antigo (app ja instalado): token vem no evento `hello`.
+  const enviado = socket.handshake.auth?.token;
+  if (TOKEN && typeof enviado === "string" && enviado.length > 0) {
+    if (!safeEqual(enviado, TOKEN)) return next(new Error("nao autorizado"));
+    socket.data.authed = true;
+  }
+
+  next();
+});
 
 io.on("connection", (socket) => {
-  socket.join(GUILD);
-
-  socket.on("hello", (payload = {}, ack) => {
-    if (TOKEN && payload?.token !== TOKEN) {
-      if (typeof ack === "function") ack({ error: "token-invalido" });
-      socket.disconnect(true);
-      return;
-    }
-    const user = {
-      id: String(payload?.user?.id || socket.id).slice(0, 64),
-      name: String(payload?.user?.name || "anon").slice(0, 32),
-      color: String(payload?.user?.color || "#5865F2").slice(0, 9),
-    };
-    clients.set(socket.id, { id: socket.id, user, state: { ...DEFAULT_STATE }, voice: null });
-    if (typeof ack === "function") ack({ selfId: socket.id, roster: roster() });
-    broadcastRoster();
-  });
-
-  // ---- Voz / Tela -------------------------------------------------------
-  socket.on("voice:join", ({ channelId } = {}, ack) => {
-    const client = clients.get(socket.id);
-    if (!client || !channelId) return;
-    if (client.voice === channelId) return;
-    leaveVoice(socket, { silent: true });
-
-    const room = voiceChannels.get(channelId) || new Set();
-    const peers = [...room]
-      .map((id) => clients.get(id))
-      .filter(Boolean)
-      .map((c) => ({ id: c.id, user: c.user, state: c.state }));
-
-    room.add(socket.id);
-    voiceChannels.set(channelId, room);
-    socket.join(`voice:${channelId}`);
-    client.voice = channelId;
-
-    // O novo entrante recebe a lista e e o "impolite" (quem faz a oferta).
-    if (typeof ack === "function") ack({ channelId, peers });
-    socket.to(`voice:${channelId}`).emit("voice:peer-joined", {
-      id: socket.id,
-      user: client.user,
-      state: client.state,
-      channelId,
-    });
-    broadcastRoster();
-  });
-
-  socket.on("voice:leave", () => leaveVoice(socket));
-
-  // Relay puro de SDP/ICE. Servidor nao inspeciona nem armazena.
-  socket.on("signal", ({ to, data } = {}) => {
-    if (!to || !data) return;
-    io.to(to).emit("signal", { from: socket.id, data });
-  });
-
-  socket.on("state", (patch = {}) => {
-    const client = clients.get(socket.id);
-    if (!client) return;
-    client.state = {
-      ...client.state,
-      ...("muted" in patch ? { muted: !!patch.muted } : {}),
-      ...("deafened" in patch ? { deafened: !!patch.deafened } : {}),
-      ...("sharing" in patch ? { sharing: !!patch.sharing } : {}),
-      ...("speaking" in patch ? { speaking: !!patch.speaking } : {}),
-    };
-    io.to(GUILD).emit("peer:state", { id: socket.id, state: client.state });
-  });
-
-  // ---- Chat de texto ----------------------------------------------------
-  socket.on("chat:send", (msg = {}) => {
-    const client = clients.get(socket.id);
-    if (!client || !msg.channelId || !msg.content) return;
-    const out = {
-      id: String(msg.id || `${Date.now()}-${socket.id}`),
-      channelId: String(msg.channelId).slice(0, 64),
-      content: String(msg.content).slice(0, 4000),
-      authorId: client.user.id,
-      authorName: client.user.name,
-      authorColor: client.user.color,
-      createdAt: new Date().toISOString(),
-    };
-    io.to(GUILD).emit("chat:new", out);
-  });
-
-  socket.on("chat:typing", ({ channelId } = {}) => {
-    const client = clients.get(socket.id);
-    if (!client || !channelId) return;
-    socket.to(GUILD).emit("chat:typing", { channelId, name: client.user.name });
-  });
-
-  socket.on("disconnect", () => {
-    leaveVoice(socket, { silent: true });
-    clients.delete(socket.id);
-    broadcastRoster();
-  });
+  registerHandlers({ io, socket, registry, limiter, token: TOKEN, log });
 });
 
+/* ------------------------------ manutencao -------------------------------- */
+
+// O limitador guarda timestamps por chave; sem varredura periodica ele so
+// cresce num processo que fica meses no ar.
+const sweeper = setInterval(() => limiter.sweep(), 60_000);
+sweeper.unref?.();
+
 httpServer.listen(PORT, () => {
-  console.log(`[voxa-signaling] ws://localhost:${PORT}  (health: /health)`);
+  log.info(`ws://localhost:${PORT} (health: /health)`);
+  log.info(`protegido por token: ${TOKEN ? "sim" : "NAO"}`);
 });
 
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
+    clearInterval(sweeper);
     io.close(() => httpServer.close(() => process.exit(0)));
   });
 }
+
+// Uma excecao nao tratada nao pode derrubar a sala inteira. Registramos o tipo
+// e seguimos: o processo continua servindo quem ja esta conectado.
+process.on("uncaughtException", (err) => log.warn("excecao nao tratada:", err?.name));
+process.on("unhandledRejection", (err) => log.warn("promessa rejeitada:", err?.name));
