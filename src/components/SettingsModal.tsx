@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from "react";
-import { Bell, Cpu, Gauge, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, X } from "lucide-react";
+import { Bell, Cpu, Gauge, Keyboard, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, X } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import {
@@ -7,7 +7,9 @@ import {
   listCaptureSources,
   getCaptureSource,
   setCaptureSource,
+  getHotkeyStatus,
   type CaptureSource,
+  type HotkeyStatus,
 } from "../lib/desktop";
 import {
   AUDIO_PRESETS,
@@ -88,11 +90,13 @@ function SettingsModalBase() {
 
   const [sources, setSources] = useState<CaptureSource[]>([]);
   const [source, setSource] = useState("");
+  const [atalhos, setAtalhos] = useState<HotkeyStatus | null>(null);
 
   useEffect(() => {
     if (!open || !isDesktop) return;
     void listCaptureSources().then((list) => setSources(list ?? []));
     void getCaptureSource().then((current) => setSource(current ?? ""));
+    void getHotkeyStatus().then(setAtalhos);
   }, [open]);
 
   const chooseSource = async (title: string) => {
@@ -237,6 +241,33 @@ function SettingsModalBase() {
                 </option>
               ))}
             </select>
+          </Section>
+
+          <Section icon={<Keyboard size={13} />} title="Atalhos globais">
+            <div className="rounded-md bg-base-500/50 p-3 text-xs">
+              {[
+                ["Microfone", atalhos?.mute],
+                ["Ensurdecer", atalhos?.deafen],
+                ["Compartilhar tela", atalhos?.share],
+                ["Falar (push-to-talk)", pushToTalk ? "F8" : null],
+              ].map(([nome, combo]) => (
+                <p key={nome as string} className="flex items-center justify-between py-0.5">
+                  <span className="text-muted">{nome}</span>
+                  {combo ? (
+                    <kbd className="rounded bg-base-700 px-1.5 py-0.5 font-mono text-[11px] text-ink-soft">
+                      {combo}
+                    </kbd>
+                  ) : (
+                    <span className="text-faint">indisponivel</span>
+                  )}
+                </p>
+              ))}
+            </div>
+            <p className="mt-1 text-xs text-faint">
+              Atalho global pertence a um programa so. Se o Discord ja usa
+              Ctrl+Shift+M, o Voxa cai automaticamente para Ctrl+Alt+M — e e essa
+              que aparece acima.
+            </p>
           </Section>
 
           <Section icon={<Bell size={13} />} title="Avisos sonoros">

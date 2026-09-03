@@ -28,15 +28,26 @@ const TextChannel = memo(function TextChannel({
   name: string;
   active: boolean;
 }) {
+  const naoLidas = useApp((s) => s.unread[id] ?? 0);
+
   return (
     <button
       onClick={() => void session.openTextChannel(id)}
       className={`group flex w-full items-center gap-1.5 rounded px-2 py-[6px] text-[15px] transition-colors ${
-        active ? "bg-base-500 text-ink" : "text-muted hover:bg-base-600/60 hover:text-ink-soft"
+        active
+          ? "bg-base-500 text-ink"
+          : naoLidas > 0
+            ? "font-medium text-ink hover:bg-base-600/60"
+            : "text-muted hover:bg-base-600/60 hover:text-ink-soft"
       }`}
     >
       <Hash size={18} className="shrink-0 text-faint" />
       <span className="truncate">{name}</span>
+      {naoLidas > 0 && (
+        <span className="ml-auto min-w-[18px] rounded-full bg-danger px-1.5 text-center text-[11px] font-bold leading-[18px] text-white">
+          {naoLidas > 99 ? "99+" : naoLidas}
+        </span>
+      )}
     </button>
   );
 });

@@ -86,7 +86,13 @@ export default function App() {
     let timer = 0;
     const onVisibility = () => {
       window.clearTimeout(timer);
-      if (document.hidden) timer = window.setTimeout(() => void releaseMemory(), 5000);
+      if (document.hidden) {
+        timer = window.setTimeout(() => void releaseMemory(), 5000);
+        return;
+      }
+      // Voltou a olhar: o canal aberto passa a estar lido de novo.
+      const { activeText, clearUnread } = useApp.getState();
+      clearUnread(activeText);
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {

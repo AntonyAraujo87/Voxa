@@ -18,6 +18,7 @@
     "opener:default",
     "updater:default",
     "process:allow-restart",
-    "process:allow-exit"
+    "process:allow-exit",
+    "core:window:allow-request-user-attention"
   ]
 }

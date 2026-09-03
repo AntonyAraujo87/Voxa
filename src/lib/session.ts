@@ -13,7 +13,7 @@ import { useApp } from "../store/store";
 import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
 import { loadChannels, loadMessages, saveMessage, supabaseEnabled, upsertUser } from "./supabase";
 import { loadPrefs, primePrefsCache, savePrefs } from "./prefs";
-import { checkForUpdate, listenEvent, setPushToTalkNative } from "./desktop";
+import { checkForUpdate, flashTaskbar, listenEvent, setPushToTalkNative } from "./desktop";
 import { playJoin, playLeave, playMute, playUnmute, setSoundsEnabled } from "./sounds";
 
 const app = useApp;
@@ -53,7 +53,15 @@ class Session {
         if (!app.getState().activeVoice) return;
         void this.mesh.handleSignal(from, data);
       },
-      onChat: (msg) => app.getState().pushMessage(msg),
+      onChat: (msg) => {
+        const s = app.getState();
+        s.pushMessage(msg);
+
+        // Escondido na bandeja durante o jogo, o badge de nao lidas nao ajuda:
+        // ninguem esta olhando a janela. O piscar da barra de tarefas e o
+        // unico aviso que atravessa o jogo em tela cheia.
+        if (document.hidden && msg.authorId !== s.me?.id) void flashTaskbar();
+      },
       onTyping: ({ channelId, name }) =>
         app.setState((s) => ({ typing: { ...s.typing, [name + channelId]: Date.now() } })),
 
@@ -200,6 +208,7 @@ class Session {
 
   async openTextChannel(id: string) {
     app.setState({ activeText: id });
+    app.getState().clearUnread(id);
     if (app.getState().messages[id]) return;
     const history = await loadMessages(id);
     app.getState().setMessages(id, history);

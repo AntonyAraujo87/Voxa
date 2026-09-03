@@ -76,6 +76,21 @@ pub fn release_memory() {
     trim_memory();
 }
 
+/// Pisca o icone na barra de tarefas.
+///
+/// Com o app escondido na bandeja durante o jogo, uma mensagem nova nao tinha
+/// como se anunciar: o badge de nao lidas so aparece para quem esta olhando a
+/// janela. Este e o mesmo aviso que o Windows usa para qualquer app que
+/// precisa de atencao — discreto, nativo, e o usuario ja sabe o que significa.
+#[tauri::command]
+pub fn flash_taskbar(app: AppHandle) {
+    use tauri::UserAttentionType;
+    if let Some(window) = app.get_webview_window("main") {
+        // Informational pisca uma vez; Critical fica piscando ate o foco.
+        let _ = window.request_user_attention(Some(UserAttentionType::Informational));
+    }
+}
+
 /// Icone na bandeja com menu de Abrir e Sair.
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     // Sem icone nao ha bandeja — mas isso nao pode derrubar o app inteiro.

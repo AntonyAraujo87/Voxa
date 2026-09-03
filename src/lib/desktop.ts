@@ -51,6 +51,22 @@ export const setPushToTalkNative = (enabled: boolean) => invoke("set_push_to_tal
  */
 export const releaseMemory = () => invoke("release_memory");
 
+/** Pisca o icone na barra de tarefas — aviso nativo, sem plugin nem permissao. */
+export const flashTaskbar = () => invoke("flash_taskbar");
+
+export interface HotkeyStatus {
+  mute: string | null;
+  deafen: string | null;
+  share: string | null;
+}
+
+/**
+ * Combinacoes que realmente ficaram registradas. Atalho global e exclusivo do
+ * sistema: se outro programa ja tiver a combinacao, a nossa nao vale. A
+ * interface precisa mostrar a que funciona, nao a que estava no plano.
+ */
+export const getHotkeyStatus = () => invoke<HotkeyStatus>("hotkey_status");
+
 /* ------------------------------- update ---------------------------------- */
 
 export interface UpdateInfo {

@@ -53,7 +53,9 @@ pub fn run() {
             capture::set_capture_source,
             capture::get_capture_source,
             hotkeys::set_push_to_talk,
-            lifecycle::release_memory
+            hotkeys::hotkey_status,
+            lifecycle::release_memory,
+            lifecycle::flash_taskbar
         ])
         .on_window_event(lifecycle::handle_window_event)
         .setup(|app| {

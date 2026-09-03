@@ -33,6 +33,8 @@ interface AppState {
   /* chat */
   messages: Record<string, ChatMessage[]>;
   typing: Record<string, number>;
+  /** canalId -> mensagens nao lidas desde a ultima visita */
+  unread: Record<string, number>;
 
   /* estado local de midia */
   micReady: boolean;
@@ -67,6 +69,7 @@ interface AppState {
   dropToast: (id: number) => void;
   patchPeerState: (id: string, state: PeerState) => void;
   setVolume: (userId: string, volume: number) => void;
+  clearUnread: (channelId: string) => void;
 }
 
 let toastSeq = 0;
@@ -88,6 +91,7 @@ export const useApp = create<AppState>((set) => ({
 
   messages: {},
   typing: {},
+  unread: {},
 
   micReady: false,
   muted: false,
@@ -116,10 +120,22 @@ export const useApp = create<AppState>((set) => ({
     set((s) => {
       const list = s.messages[msg.channelId] ?? [];
       if (list.some((m) => m.id === msg.id)) return s;
+
+      // Conta como nao lida quando a mensagem nao e minha e o canal nao esta
+      // aberto — ou esta aberto mas a janela nem visivel, que e o caso comum:
+      // o app fica na bandeja durante o jogo.
+      const minha = msg.authorId === s.me?.id;
+      const vendoAgora = s.activeText === msg.channelId && !document.hidden;
+      const unread =
+        minha || vendoAgora
+          ? s.unread
+          : { ...s.unread, [msg.channelId]: (s.unread[msg.channelId] ?? 0) + 1 };
+
       // janela deslizante: 300 mensagens por canal em memoria, o resto vive no
       // Supabase. Evita a lista crescer sem limite numa sessao longa.
       const next = [...list, msg];
       return {
+        unread,
         messages: {
           ...s.messages,
           [msg.channelId]: next.length > 300 ? next.slice(-300) : next,
@@ -149,6 +165,14 @@ export const useApp = create<AppState>((set) => ({
     set((s) => ({
       roster: s.roster.map((r) => (r.id === id ? { ...r, state } : r)),
     })),
+
+  clearUnread: (channelId) =>
+    set((s) => {
+      if (!s.unread[channelId]) return s;
+      const unread = { ...s.unread };
+      delete unread[channelId];
+      return { unread };
+    }),
 
   setVolume: (userId, volume) =>
     set((s) => {
