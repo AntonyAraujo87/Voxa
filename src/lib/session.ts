@@ -11,7 +11,14 @@ import {
 } from "./signaling";
 import { useApp } from "../store/store";
 import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
-import { loadChannels, loadMessages, saveMessage, supabaseEnabled, upsertUser } from "./supabase";
+import {
+  loadChannels,
+  loadMessages,
+  saveMessage,
+  supabaseEnabled,
+  uploadAttachment,
+  upsertUser,
+} from "./supabase";
 import { loadPrefs, primePrefsCache, savePrefs } from "./prefs";
 import { entradaDoBus, setOutputDevice, setOutputMode as aplicarModoSaida } from "./audioOutput";
 import { tocarEfeito } from "./soundboard";
@@ -245,7 +252,7 @@ class Session {
       return;
     }
 
-    const msg: ChatMessage = {
+    this.dispatchChatMessage({
       id: crypto.randomUUID(),
       channelId: s.activeText,
       content: text,
@@ -253,10 +260,63 @@ class Session {
       authorName: s.me.name,
       authorColor: s.me.color,
       createdAt: new Date().toISOString(),
-    };
+    });
+  }
 
-    s.pushMessage(msg); // eco otimista: aparece antes de sair da maquina
-    this.signaling.sendChat({ id: msg.id, channelId: msg.channelId, content: msg.content });
+  /**
+   * Sobe o arquivo pro Storage e manda como mensagem (com legenda opcional).
+   * Sem Supabase configurado o anexo nao tem onde morar — nem tenta, avisa e
+   * volta. `busy` no toast porque upload de imagem/video pode levar alguns
+   * segundos e a pessoa precisa saber que esta acontecendo.
+   */
+  async sendAttachment(file: File, caption = "") {
+    const s = app.getState();
+    if (!s.me) return;
+    if (!this.chatAllowance()) {
+      s.toast("info", "Devagar com o chat — aguarde alguns segundos.");
+      return;
+    }
+
+    if (!supabaseEnabled) {
+      s.toast("error", "Anexo precisa do historico do Supabase configurado — sem ele nao ha onde guardar o arquivo.");
+      return;
+    }
+
+    s.toast("info", `Enviando ${file.name}...`);
+    const anexo = await uploadAttachment(file);
+    if (!anexo) {
+      s.toast("error", `Nao foi possivel enviar ${file.name}.`);
+      return;
+    }
+
+    this.dispatchChatMessage({
+      id: crypto.randomUUID(),
+      channelId: s.activeText,
+      content: caption.trim(),
+      authorId: s.me.id,
+      authorName: s.me.name,
+      authorColor: s.me.color,
+      createdAt: new Date().toISOString(),
+      attachmentUrl: anexo.url,
+      attachmentName: anexo.name,
+      attachmentMime: anexo.mime,
+      attachmentSize: anexo.size,
+    });
+  }
+
+  /** Eco otimista + propagacao em tempo real + persistencia — o mesmo tripé
+   *  pra mensagem de texto e pra anexo, so muda o que vai dentro do objeto. */
+  private dispatchChatMessage(msg: ChatMessage) {
+    app.getState().pushMessage(msg); // aparece antes de sair da maquina
+    this.signaling.sendChat({
+      id: msg.id,
+      channelId: msg.channelId,
+      content: msg.content,
+      attachmentUrl: msg.attachmentUrl,
+      attachmentName: msg.attachmentName,
+      attachmentMime: msg.attachmentMime,
+      attachmentSize: msg.attachmentSize,
+    });
     void saveMessage(msg);
   }
 

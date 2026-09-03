@@ -30,6 +30,10 @@ export interface ChatMessage {
   authorColor: string;
   createdAt: string;
   pending?: boolean;
+  attachmentUrl?: string;
+  attachmentName?: string;
+  attachmentMime?: string;
+  attachmentSize?: number;
 }
 
 export type SignalPayload =
@@ -194,7 +198,15 @@ export class Signaling {
     this.socket.emit("state", patch);
   }
 
-  sendChat(msg: { id: string; channelId: string; content: string }) {
+  sendChat(msg: {
+    id: string;
+    channelId: string;
+    content: string;
+    attachmentUrl?: string;
+    attachmentName?: string;
+    attachmentMime?: string;
+    attachmentSize?: number;
+  }) {
     this.socket.emit("chat:send", msg);
   }
 

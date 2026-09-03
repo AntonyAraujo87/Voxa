@@ -18,8 +18,35 @@ import {
  */
 
 const MAX_CHAT_LENGTH = 2000;
+const MAX_ATTACHMENT_URL_LENGTH = 2048;
+const MAX_ATTACHMENT_NAME_LENGTH = 256;
+const MAX_ATTACHMENT_MIME_LENGTH = 128;
+/** Mesmo teto do bucket de Storage (attachments.sql) — nao ha por que aceitar
+ *  aqui um numero que o upload real ja teria recusado. */
+const MAX_ATTACHMENT_SIZE_BYTES = 8 * 1024 * 1024;
 /** Sockets que conectam e nunca se apresentam sao lixo ocupando memoria. */
 const HELLO_TIMEOUT_MS = 20_000;
+
+/**
+ * Anexo e opcional e so faz sentido como conjunto — url/nome/mime/tamanho
+ * juntos ou nenhum. O servidor nao sabe (nem precisa saber) qual bucket do
+ * Supabase o deploy usa: so garante formato razoavel antes de repassar em
+ * tempo real. Quem decide se o arquivo existe de verdade e a politica de
+ * RLS do Storage, nao esta funcao.
+ */
+function sanitizeAttachment(msg) {
+  const url = sanitizeText(msg?.attachmentUrl, MAX_ATTACHMENT_URL_LENGTH);
+  if (!url || !/^https:\/\//.test(url)) return {};
+
+  const name = sanitizeText(msg?.attachmentName, MAX_ATTACHMENT_NAME_LENGTH);
+  const mime = sanitizeText(msg?.attachmentMime, MAX_ATTACHMENT_MIME_LENGTH);
+  const size = Number(msg?.attachmentSize);
+  if (!name || !mime || !Number.isFinite(size) || size <= 0 || size > MAX_ATTACHMENT_SIZE_BYTES) {
+    return {};
+  }
+
+  return { attachmentUrl: url, attachmentName: name, attachmentMime: mime, attachmentSize: size };
+}
 
 export function registerHandlers({ io, socket, registry, limiter, token, log }) {
   const guard = (evento) => {
@@ -151,7 +178,9 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
     const client = registry.get(socket.id);
     const content = sanitizeText(msg?.content, MAX_CHAT_LENGTH);
     const channelId = sanitizeId(msg?.channelId, 64);
-    if (!content || !channelId) return;
+    const attachment = sanitizeAttachment(msg);
+    // Mensagem so-anexo (sem legenda) e valida; sem conteudo E sem anexo, nao ha o que mandar.
+    if ((!content && !attachment.attachmentUrl) || !channelId) return;
 
     io.to(GUILD).emit("chat:new", {
       id: sanitizeId(msg?.id, 64) || `${Date.now()}-${socket.id}`,
@@ -163,6 +192,7 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
       authorName: client.user.name,
       authorColor: client.user.color,
       createdAt: new Date().toISOString(),
+      ...attachment,
     });
   });
 

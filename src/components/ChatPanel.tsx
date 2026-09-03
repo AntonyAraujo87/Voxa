@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Hash, Send, Users } from "lucide-react";
+import { Download, FileText, Hash, Paperclip, Send, Users } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import { Avatar } from "./Avatar";
@@ -9,6 +9,47 @@ const time = (iso: string) =>
   new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
+
+function tamanhoLegivel(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Imagem inline se o mime bater; senao um card com nome/tamanho e link de download. */
+const Attachment = memo(function Attachment({ msg }: { msg: ChatMessage }) {
+  if (!msg.attachmentUrl) return null;
+
+  if (msg.attachmentMime?.startsWith("image/")) {
+    return (
+      <a href={msg.attachmentUrl} target="_blank" rel="noreferrer" className="mt-1 block">
+        <img
+          src={msg.attachmentUrl}
+          alt={msg.attachmentName ?? "imagem"}
+          className="max-h-80 max-w-sm rounded-lg border border-line object-contain"
+        />
+      </a>
+    );
+  }
+
+  return (
+    <a
+      href={msg.attachmentUrl}
+      target="_blank"
+      rel="noreferrer"
+      className="mt-1 flex max-w-sm items-center gap-2 rounded-lg border border-line bg-base-500/60 px-3 py-2 transition-colors hover:bg-base-500"
+    >
+      <FileText size={20} className="shrink-0 text-faint" />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[13px] text-ink-soft">{msg.attachmentName}</p>
+        {typeof msg.attachmentSize === "number" && (
+          <p className="text-[11px] text-faint">{tamanhoLegivel(msg.attachmentSize)}</p>
+        )}
+      </div>
+      <Download size={16} className="shrink-0 text-faint" />
+    </a>
+  );
+});
 
 const Message = memo(function Message({
   msg,
@@ -23,7 +64,12 @@ const Message = memo(function Message({
         <span className="w-10 shrink-0 pt-0.5 text-right text-[10px] text-faint opacity-0 group-hover:opacity-100">
           {time(msg.createdAt)}
         </span>
-        <p className="min-w-0 whitespace-pre-wrap break-words text-ink-soft">{msg.content}</p>
+        <div className="min-w-0 flex-1">
+          {msg.content && (
+            <p className="whitespace-pre-wrap break-words text-ink-soft">{msg.content}</p>
+          )}
+          <Attachment msg={msg} />
+        </div>
       </div>
     );
   }
@@ -38,7 +84,10 @@ const Message = memo(function Message({
           </span>
           <span className="text-[11px] text-faint">{time(msg.createdAt)}</span>
         </p>
-        <p className="whitespace-pre-wrap break-words text-ink-soft">{msg.content}</p>
+        {msg.content && (
+          <p className="whitespace-pre-wrap break-words text-ink-soft">{msg.content}</p>
+        )}
+        <Attachment msg={msg} />
       </div>
     </div>
   );
@@ -107,15 +156,29 @@ const MessageList = memo(function MessageList({ channelId }: { channelId: string
   );
 });
 
+const TIPOS_ACEITOS =
+  "image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm," +
+  "audio/mpeg,audio/ogg,audio/wav,application/pdf,text/plain,application/zip";
+
 const Composer = memo(function Composer({ channelName }: { channelName: string }) {
   const [text, setText] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const lastTyping = useRef(0);
 
   const submit = () => {
     const value = text.trim();
     if (!value) return;
     session.sendChat(value);
+    setText("");
+    if (ref.current) ref.current.style.height = "auto";
+  };
+
+  const onPickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // sem isso, escolher o MESMO arquivo de novo nao dispara onChange
+    if (!file) return;
+    void session.sendAttachment(file, text);
     setText("");
     if (ref.current) ref.current.style.height = "auto";
   };
@@ -142,6 +205,20 @@ const Composer = memo(function Composer({ channelName }: { channelName: string }
   return (
     <div className="px-4 pb-5 pt-1">
       <div className="flex items-end gap-2 rounded-lg bg-base-500 px-4 py-2.5">
+        <input
+          ref={fileRef}
+          type="file"
+          accept={TIPOS_ACEITOS}
+          onChange={onPickFile}
+          className="hidden"
+        />
+        <button
+          onClick={() => fileRef.current?.click()}
+          title="Anexar imagem ou arquivo"
+          className="grid size-8 shrink-0 place-items-center rounded text-muted transition-colors hover:bg-base-400 hover:text-ink"
+        >
+          <Paperclip size={18} />
+        </button>
         <textarea
           ref={ref}
           rows={1}

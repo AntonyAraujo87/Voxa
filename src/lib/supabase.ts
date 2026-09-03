@@ -133,7 +133,9 @@ export async function loadMessages(
     // ou seja: continua sujeita as politicas de quem consulta.
     let query = sb
       .from("messages_with_author")
-      .select("id,content,author_id,author_name,author_color,created_at")
+      .select(
+        "id,content,author_id,author_name,author_color,created_at,attachment_url,attachment_name,attachment_mime,attachment_size"
+      )
       .eq("room_id", uuid)
       .order("created_at", { ascending: false })
       .limit(limit);
@@ -153,6 +155,10 @@ export async function loadMessages(
         authorName: m.author_name as string,
         authorColor: m.author_color as string,
         createdAt: m.created_at as string,
+        attachmentUrl: (m.attachment_url as string) ?? undefined,
+        attachmentName: (m.attachment_name as string) ?? undefined,
+        attachmentMime: (m.attachment_mime as string) ?? undefined,
+        attachmentSize: (m.attachment_size as number) ?? undefined,
       }))
       .reverse();
   } catch {
@@ -175,10 +181,63 @@ export async function saveMessage(msg: ChatMessage) {
       room_id: uuid,
       author_id: userId,
       content: msg.content,
+      attachment_url: msg.attachmentUrl ?? null,
+      attachment_name: msg.attachmentName ?? null,
+      attachment_mime: msg.attachmentMime ?? null,
+      attachment_size: msg.attachmentSize ?? null,
     });
   } catch {
     // Offline ou limite de flood: a mensagem ja foi entregue em tempo real,
     // apenas nao vira historico.
+  }
+}
+
+/* -------------------------------- anexos ----------------------------------- */
+
+export interface UploadedAttachment {
+  url: string;
+  name: string;
+  mime: string;
+  size: number;
+}
+
+const TAMANHO_MAX_ANEXO = 8 * 1024 * 1024; // mesmo teto do bucket, attachments.sql
+
+/**
+ * Sobe um arquivo pro bucket `chat-attachments` e devolve a URL publica.
+ * `null` quando o Supabase nao esta configurado (modo efemero nao tem onde
+ * guardar arquivo) ou quando o upload falha por qualquer motivo — rede,
+ * politica de RLS, tipo/tamanho recusado pelo bucket.
+ */
+export async function uploadAttachment(file: File): Promise<UploadedAttachment | null> {
+  const sb = await db();
+  if (!sb) return null;
+  if (file.size > TAMANHO_MAX_ANEXO) return null;
+
+  try {
+    const userId = await currentUserId(sb);
+    if (!userId) return null;
+
+    // Path comeca com o proprio uid: e exatamente o que a politica de INSERT
+    // do bucket exige, e evita duas pessoas colidirem no mesmo nome de arquivo.
+    const extensao = file.name.includes(".") ? file.name.split(".").pop() : "";
+    const caminho = `${userId}/${crypto.randomUUID()}${extensao ? "." + extensao : ""}`;
+
+    const { error } = await sb.storage.from("chat-attachments").upload(caminho, file, {
+      contentType: file.type || "application/octet-stream",
+      upsert: false,
+    });
+    if (error) return null;
+
+    const { data } = sb.storage.from("chat-attachments").getPublicUrl(caminho);
+    return {
+      url: data.publicUrl,
+      name: file.name,
+      mime: file.type || "application/octet-stream",
+      size: file.size,
+    };
+  } catch {
+    return null;
   }
 }
 
