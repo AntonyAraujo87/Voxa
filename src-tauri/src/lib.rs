@@ -64,6 +64,9 @@ pub fn run() {
             lifecycle::release_memory,
             lifecycle::flash_taskbar,
             overlay::set_overlay_enabled,
+            overlay::overlay_set_movable,
+            overlay::overlay_drag,
+            overlay::overlay_position,
             diagnostico::read_panic_log,
             sysaudio::start_system_audio,
             sysaudio::stop_system_audio

@@ -7,17 +7,19 @@ import { Chat } from "./chat";
 import { useApp } from "../store/store";
 import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
 import { loadChannels, setGuildToken, supabaseEnabled, upsertUser } from "./supabase";
-import { loadPrefs, primePrefsCache, savePrefs } from "./prefs";
+import { currentPrefs, loadPrefs, primePrefsCache, savePrefs } from "./prefs";
 import { entradaDoBus, setOutputDevice, setOutputMode as aplicarModoSaida } from "./audioOutput";
 import { tocarEfeito } from "./soundboard";
 import { iniciarAudioDoSistema, pararAudioDoSistema } from "./sysaudio";
 import {
   checkForUpdate,
+  emitEvent,
   flashTaskbar,
   focusWindow,
   isDesktop,
   listenEvent,
   rebindHotkey as rebindHotkeyNative,
+  setOverlayMovable,
   setOverlayWindowEnabled,
   setPushToTalkNative,
   type HotkeyStatus,
@@ -175,7 +177,23 @@ class Session {
     if (prefs.outputDeviceId && prefs.outputDeviceId !== "default") {
       void setOutputDevice(prefs.outputDeviceId);
     }
-    if (prefs.overlayEnabled) void setOverlayWindowEnabled(true);
+    if (prefs.overlayEnabled) void setOverlayWindowEnabled(true, prefs.overlayPos);
+
+    // A janela do overlay e quem sabe onde ela mesma parou depois do
+    // arrasto; ela avisa aqui, porque as preferencias moram nesta janela.
+    void listenEvent<{ x: number; y: number } | null>("overlay:posicionado", (pos) => {
+      app.setState({ overlayMoving: false });
+      if (pos) savePrefs({ overlayPos: pos });
+    });
+
+    // `startOverlayMove` liga o overlay se estiver desligado, e o
+    // "overlay:posicionar" sairia antes da janela nova terminar de montar —
+    // ela abriria capturando clique sem mostrar o que fazer. Quando ela
+    // avisa que esta pronta, o estado e reenviado.
+    void listenEvent("overlay:pronto", () => {
+      if (app.getState().overlayMoving) void emitEvent("overlay:posicionar", true);
+    });
+
     return prefs;
   }
 
@@ -436,9 +454,22 @@ class Session {
   /** Cria/fecha a janela flutuante (overlay.rs). Sem efeito fora do app
    *  instalado — no navegador (dev/teste) so fica marcado no estado. */
   async setOverlayEnabled(on: boolean) {
-    app.setState({ overlayEnabled: on });
+    // Desligar cancela o modo posicionar junto: a janela deixa de existir,
+    // e um estado de "posicionando" preso deixaria o botao das Configuracoes
+    // mentindo sobre o que esta acontecendo.
+    app.setState({ overlayEnabled: on, overlayMoving: on ? app.getState().overlayMoving : false });
     savePrefs({ overlayEnabled: on });
-    await setOverlayWindowEnabled(on);
+    await setOverlayWindowEnabled(on, currentPrefs().overlayPos);
+  }
+
+  /** Modo posicionar: destrava o clique do overlay pra ele poder ser
+   *  arrastado. Liga o overlay antes se estiver desligado — pedir pra
+   *  posicionar uma janela que nao existe nao faria nada e pareceria bug. */
+  async startOverlayMove() {
+    if (!app.getState().overlayEnabled) await this.setOverlayEnabled(true);
+    app.setState({ overlayMoving: true });
+    await setOverlayMovable(true);
+    await emitEvent("overlay:posicionar", true);
   }
 
   /* ---------------------------- push-to-talk ---------------------------- */

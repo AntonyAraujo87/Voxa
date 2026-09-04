@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from "react";
-import { Bell, Camera, Cpu, Gamepad2, Gauge, LifeBuoy, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, Volume2, X } from "lucide-react";
+import { Bell, Camera, Cpu, Gamepad2, Gauge, LifeBuoy, Mic, MonitorPlay, MonitorSmartphone, Move, RadioTower, RefreshCw, Volume2, X } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import { outputSupport } from "../lib/audioOutput";
@@ -48,6 +48,7 @@ function SettingsModalBase() {
   const outputMode = useApp((s) => s.outputMode);
   const pushToTalk = useApp((s) => s.pushToTalk);
   const overlayEnabled = useApp((s) => s.overlayEnabled);
+  const overlayMoving = useApp((s) => s.overlayMoving);
   const sounds = useApp((s) => s.sounds);
   const updateVersion = useApp((s) => s.updateVersion);
   const updateBusy = useApp((s) => s.updateBusy);
@@ -225,6 +226,24 @@ function SettingsModalBase() {
                 Janela flutuante mostrando quem esta falando, por cima de outros
                 programas. So em janela/borderless — fullscreen exclusivo cobre ela.
               </p>
+            </button>
+
+            <button
+              onClick={() => void session.startOverlayMove()}
+              disabled={!isDesktop || overlayMoving}
+              className="mt-2 flex w-full items-center gap-2 rounded-md bg-base-500/60 px-3 py-2 text-left text-muted transition-colors hover:bg-base-500 disabled:opacity-50"
+            >
+              <Move size={13} className="shrink-0" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">
+                  {overlayMoving ? "Arraste o overlay e clique em Fixar" : "Posicionar"}
+                </span>
+                <span className="block text-xs text-faint">
+                  {overlayMoving
+                    ? "Enquanto isso o overlay recebe clique. Esc tambem fixa."
+                    : "Escolher onde ele fica na tela. Liga o overlay se estiver desligado."}
+                </span>
+              </span>
             </button>
           </Section>
 

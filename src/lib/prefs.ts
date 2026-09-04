@@ -41,6 +41,9 @@ export interface Prefs {
   sounds: boolean;
   hotkeys: HotkeyPrefs;
   overlayEnabled: boolean;
+  /** Canto superior esquerdo do overlay, em coordenadas LOGICAS (ver
+   *  overlay.rs). `null` = nunca foi movido, nasce no canto padrao. */
+  overlayPos: { x: number; y: number } | null;
 }
 
 const DEFAULTS: Prefs = {
@@ -63,6 +66,7 @@ const DEFAULTS: Prefs = {
   sounds: true,
   hotkeys: {},
   overlayEnabled: false,
+  overlayPos: null,
 };
 
 export function loadPrefs(): Prefs {
@@ -103,4 +107,12 @@ export function savePrefs(patch: Partial<Prefs>) {
 
 export function primePrefsCache(prefs: Prefs) {
   cache = prefs;
+}
+
+/** Preferencias como estao AGORA, incluindo o que `savePrefs` ainda nao
+ *  gravou. `loadPrefs` le o localStorage, que fica ate 400ms atrasado por
+ *  causa do debounce: ler de la logo depois de salvar devolve o valor
+ *  antigo. Use isto sempre que gravar e reler no mesmo gesto do usuario. */
+export function currentPrefs(): Prefs {
+  return cache;
 }

@@ -14,7 +14,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useApp, type AppState } from "./store/store";
 import { session } from "./lib/session";
 import { savePrefs } from "./lib/prefs";
-import { emitEvent, releaseMemory } from "./lib/desktop";
+import { emitEvent, listenEvent, releaseMemory } from "./lib/desktop";
 import { iniciarDiagnostico } from "./lib/diagnostico";
 import type { OverlayPeer } from "./components/Overlay";
 
@@ -112,7 +112,23 @@ export default function App() {
     };
 
     emitir(useApp.getState());
-    return useApp.subscribe(emitir);
+    const parar = useApp.subscribe(emitir);
+
+    // A janela do overlay avisa quando terminou de montar: como `emitir`
+    // ignora repeticao, sem isto ela nasceria vazia e so se preencheria na
+    // proxima mudanca de roster.
+    let dispose: (() => void) | undefined;
+    void listenEvent("overlay:pronto", () => {
+      ultimo = "";
+      emitir(useApp.getState());
+    }).then((off) => {
+      dispose = off;
+    });
+
+    return () => {
+      parar();
+      dispose?.();
+    };
   }, []);
 
   // O app passa horas em segundo plano enquanto o jogo roda. Alguns segundos

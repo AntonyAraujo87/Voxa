@@ -66,6 +66,9 @@ export interface AppState {
   sounds: boolean;
   /** janela flutuante de quem esta falando, por cima do jogo */
   overlayEnabled: boolean;
+  /** modo posicionar ligado: o overlay esta recebendo clique pra ser
+   *  arrastado, entao esta no caminho do mouse */
+  overlayMoving: boolean;
 
   /* atualizacao automatica */
   updateVersion: string | null;
@@ -136,6 +139,7 @@ export const useApp = create<AppState>((set) => ({
   talking: false,
   sounds: true,
   overlayEnabled: false,
+  overlayMoving: false,
 
   updateVersion: null,
   updateBusy: false,

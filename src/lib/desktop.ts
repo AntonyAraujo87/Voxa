@@ -163,5 +163,17 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
 
 /* -------------------------------- overlay --------------------------------- */
 
-/** Cria/fecha a janela flutuante de quem esta falando, por cima do jogo. */
-export const setOverlayWindowEnabled = (on: boolean) => invoke("set_overlay_enabled", { on });
+/** Cria/fecha a janela flutuante de quem esta falando, por cima do jogo.
+ *  `pos` e a posicao logica salva; sem ela o overlay nasce no canto padrao. */
+export const setOverlayWindowEnabled = (on: boolean, pos?: { x: number; y: number } | null) =>
+  invoke("set_overlay_enabled", { on, x: pos?.x, y: pos?.y });
+
+/** Modo posicionar: com `on`, o overlay volta a receber clique pra ser
+ *  arrastado. Enquanto valer, ele fica no caminho do mouse. */
+export const setOverlayMovable = (on: boolean) => invoke("overlay_set_movable", { on });
+
+/** Arrasta a janela do overlay junto com o mouse (chamado no pointerdown). */
+export const dragOverlay = () => invoke("overlay_drag");
+
+/** Posicao logica atual do overlay, pra guardar nas preferencias. */
+export const getOverlayPosition = () => invoke<[number, number]>("overlay_position");
