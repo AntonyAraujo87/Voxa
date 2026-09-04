@@ -15,6 +15,7 @@ import { useApp, type AppState } from "./store/store";
 import { session } from "./lib/session";
 import { savePrefs } from "./lib/prefs";
 import { emitEvent, releaseMemory } from "./lib/desktop";
+import { iniciarDiagnostico } from "./lib/diagnostico";
 import type { OverlayPeer } from "./components/Overlay";
 
 export default function App() {
@@ -24,6 +25,7 @@ export default function App() {
 
   // Preferencias salvas entram ANTES do primeiro render util.
   useEffect(() => {
+    iniciarDiagnostico();
     session.hydrate();
   }, []);
 

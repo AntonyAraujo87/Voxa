@@ -10,9 +10,11 @@
 //   hotkeys.rs   atalhos globais e push-to-talk
 //   lifecycle.rs bandeja do sistema e liberacao de memoria
 //   overlay.rs   janela flutuante de quem esta falando, por cima do jogo
+//   diagnostico.rs registro de panic em arquivo, para o usuario reportar
 // ---------------------------------------------------------------------------
 
 mod capture;
+mod diagnostico;
 mod hotkeys;
 mod lifecycle;
 mod overlay;
@@ -59,10 +61,13 @@ pub fn run() {
             hotkeys::rebind_hotkey,
             lifecycle::release_memory,
             lifecycle::flash_taskbar,
-            overlay::set_overlay_enabled
+            overlay::set_overlay_enabled,
+            diagnostico::read_panic_log
         ])
         .on_window_event(lifecycle::handle_window_event)
         .setup(|app| {
+            diagnostico::setup(app.handle());
+
             #[cfg(desktop)]
             if let Err(err) = hotkeys::setup(app.handle()) {
                 eprintln!("[voxa] atalhos globais indisponiveis: {err}");

@@ -20,6 +20,10 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
+  // Os .test.ts rodam no Node (`node --test`, que executa TypeScript direto),
+  // nao no bundle do app — checa-los aqui exigiria @types/node como dependencia
+  // do frontend so por causa de `node:test`.
   "include": ["src"],
+  "exclude": ["src/**/*.test.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

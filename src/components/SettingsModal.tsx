@@ -1,10 +1,11 @@
 import { memo, useEffect, useState } from "react";
-import { Bell, Camera, Cpu, Gamepad2, Gauge, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, Volume2, X } from "lucide-react";
+import { Bell, Camera, Cpu, Gamepad2, Gauge, LifeBuoy, Mic, MonitorPlay, MonitorSmartphone, RadioTower, RefreshCw, Volume2, X } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import { outputSupport } from "../lib/audioOutput";
 import { Section, Option } from "./settings/Primitives";
 import { HotkeysSection } from "./settings/HotkeysSection";
+import { copiarTexto, montarRelatorio } from "../lib/diagnostico";
 import {
   isDesktop,
   listCaptureSources,
@@ -50,6 +51,7 @@ function SettingsModalBase() {
   const updateVersion = useApp((s) => s.updateVersion);
   const updateBusy = useApp((s) => s.updateBusy);
 
+  const [copiado, setCopiado] = useState(false);
   const [sources, setSources] = useState<CaptureSource[]>([]);
   const [source, setSource] = useState("");
 
@@ -58,6 +60,16 @@ function SettingsModalBase() {
     void listCaptureSources().then((list) => setSources(list ?? []));
     void getCaptureSource().then((current) => setSource(current ?? ""));
   }, [open]);
+
+  const copiarDiagnostico = async () => {
+    const ok = await copiarTexto(await montarRelatorio());
+    if (!ok) {
+      useApp.getState().toast("error", "Nao foi possivel copiar.");
+      return;
+    }
+    setCopiado(true);
+    window.setTimeout(() => setCopiado(false), 2500);
+  };
 
   const chooseSource = async (title: string) => {
     setSource(title);
@@ -318,6 +330,21 @@ function SettingsModalBase() {
               <p className="text-xs text-faint">
                 Tons curtos quando alguem entra ou sai do canal, e ao ligar ou desligar
                 o proprio microfone — util com o jogo em tela cheia.
+              </p>
+            </button>
+          </Section>
+
+          <Section icon={<LifeBuoy size={13} />} title="Diagnostico">
+            <button
+              onClick={() => void copiarDiagnostico()}
+              className="w-full rounded-md bg-base-500/60 px-3 py-2 text-left text-muted transition-colors hover:bg-base-500"
+            >
+              <p className="text-sm font-medium">
+                {copiado ? "Copiado — cole onde for pedir ajuda" : "Copiar diagnostico"}
+              </p>
+              <p className="text-xs text-faint">
+                Versao, sistema, erros desta sessao e falhas do processo nativo. Fica
+                so na area de transferencia — nao e enviado para lugar nenhum.
               </p>
             </button>
           </Section>

@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangle, RotateCcw } from "lucide-react";
+import { registrarErro } from "../lib/diagnostico";
 
 /* ---------------------------------------------------------------------------
    Isola falhas de render.
@@ -34,6 +35,9 @@ export class ErrorBoundary extends Component<Props, State> {
   componentDidCatch(error: Error, info: ErrorInfo) {
     // Fica no console do app; nao vai para servidor nenhum.
     console.error(`[ui:${this.props.area}]`, error, info.componentStack);
+    // E tambem no buffer de diagnostico, que a pessoa consegue copiar em
+    // Configuracoes — o console do WebView2 vive atras de um menu escondido.
+    registrarErro(`ui:${this.props.area}`, error, info.componentStack?.split("\n").slice(1, 4).join("\n"));
   }
 
   private retry = () => this.setState({ error: null });
