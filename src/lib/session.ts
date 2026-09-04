@@ -315,13 +315,18 @@ class Session {
     this.mesh.clear();
     for (const r of app.getState().roster) clearPeerMedia(r.id);
     this.signaling.leaveVoice();
-    app.setState({
+    app.setState((s) => ({
       activeVoice: null,
       focusPeer: null,
       watchingLive: false,
       stats: {},
       connState: {},
-    });
+      // Sair do canal com a tecla de falar ainda pressionada (o keyup se perde
+      // quando a janela deixa de ter foco) deixava `talking` preso em true. No
+      // canal seguinte o microfone abria sozinho, sem ninguem segurar nada.
+      talking: false,
+      muted: s.pushToTalk ? true : s.muted,
+    }));
     if (!keepMic) this.closeMic();
   }
 
