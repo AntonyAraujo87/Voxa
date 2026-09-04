@@ -47,25 +47,44 @@ pub fn tune() {
     let source = capture_source_title();
     eprintln!("[voxa] fonte de captura automatica: \"{source}\"");
 
-    let flags = [
-        // --- captura de tela ---
+    let seguro = crate::capture::read_config().modo_seguro;
+    if seguro {
+        eprintln!("[voxa] modo de compatibilidade: flags de GPU e audio desligadas");
+    }
+
+    // Sempre ligadas: nao mexem em GPU nem em isolamento de processo.
+    let mut flags = vec![
         // WGC (Windows Graphics Capture) e o caminho moderno: a composicao ja
         // acontece na GPU, sem GDI BitBlt. Custa uma fracao da CPU e captura
         // janelas aceleradas por hardware (jogos) sem tela preta.
         "--enable-features=WebRtcAllowWgcDesktopCapturer,WebRtcAllowWgcScreenCapturer,WebRtcAllowWgcWindowCapturer,MediaFoundationD3D11VideoCapture".to_string(),
         format!("--auto-select-desktop-capture-source={source}"),
-        // --- GPU ---
-        "--ignore-gpu-blocklist".to_string(),
-        "--enable-gpu-rasterization".to_string(),
-        "--enable-zero-copy".to_string(),
-        "--disable-frame-rate-limit".to_string(),
-        // --- audio/video ---
         "--autoplay-policy=no-user-gesture-required".to_string(),
-        // O "audio service" fora de processo adiciona um hop de IPC em cada
-        // buffer; em processo corta latencia do microfone.
-        "--disable-features=AudioServiceOutOfProcess,msWebOOUI,msPdfOOUI".to_string(),
-    ]
-    .join(" ");
+    ];
+
+    // As de baixo sao ganho de performance na maioria das maquinas e risco de
+    // travar a interface em algumas — por isso saem no modo de compatibilidade.
+    //
+    // `--ignore-gpu-blocklist` e a mais delicada: aquela lista existe porque o
+    // Chromium ja sabe quais combinacoes de placa e driver travam. Ignora-la
+    // ganha desempenho onde da certo e congela a janela onde nao da — com o
+    // processo vivo, sem erro nenhum, so a tela parada.
+    //
+    // O servico de audio dentro do processo corta um hop de IPC por buffer
+    // (menos latencia no microfone), mas troca isolamento por velocidade: um
+    // driver de audio problematico leva a interface junto.
+    if !seguro {
+        flags.push("--ignore-gpu-blocklist".to_string());
+        flags.push("--enable-gpu-rasterization".to_string());
+        flags.push("--enable-zero-copy".to_string());
+        flags.push("--disable-frame-rate-limit".to_string());
+        flags.push("--disable-features=AudioServiceOutOfProcess,msWebOOUI,msPdfOOUI".to_string());
+    } else {
+        // Mantem so o que nao envolve GPU nem audio em processo.
+        flags.push("--disable-features=msWebOOUI,msPdfOOUI".to_string());
+    }
+
+    let flags = flags.join(" ");
 
     // Respeita override manual do usuario, se existir.
     if std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_err() {

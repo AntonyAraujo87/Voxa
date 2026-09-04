@@ -8,6 +8,8 @@ import { HotkeysSection } from "./settings/HotkeysSection";
 import { copiarTexto, montarRelatorio } from "../lib/diagnostico";
 import {
   isDesktop,
+  getSafeMode,
+  setSafeMode,
   listCaptureSources,
   getCaptureSource,
   setCaptureSource,
@@ -54,6 +56,21 @@ function SettingsModalBase() {
   const updateBusy = useApp((s) => s.updateBusy);
 
   const [copiado, setCopiado] = useState(false);
+  const [modoSeguro, setModoSeguro] = useState(false);
+  /** Ja mexeu no botao nesta sessao: as flags so mudam no proximo boot, entao
+   *  o aviso de reiniciar so faz sentido depois de trocar. */
+  const [modoSeguroPendente, setModoSeguroPendente] = useState(false);
+
+  useEffect(() => {
+    void getSafeMode().then((v) => setModoSeguro(!!v));
+  }, []);
+
+  const alternarModoSeguro = async () => {
+    const novo = !modoSeguro;
+    setModoSeguro(novo);
+    setModoSeguroPendente(true);
+    await setSafeMode(novo);
+  };
   const [sources, setSources] = useState<CaptureSource[]>([]);
   const [source, setSource] = useState("");
 
@@ -384,6 +401,31 @@ function SettingsModalBase() {
               <p className="text-xs text-faint">
                 Versao, sistema, erros desta sessao e falhas do processo nativo. Fica
                 so na area de transferencia — nao e enviado para lugar nenhum.
+              </p>
+            </button>
+
+            <button
+              onClick={() => void alternarModoSeguro()}
+              disabled={!isDesktop}
+              className={`mt-2 w-full rounded-md border px-3 py-2 text-left transition-colors disabled:opacity-50 ${
+                modoSeguro
+                  ? "border-brand bg-brand/15 text-ink"
+                  : "border-transparent bg-base-500/60 text-muted hover:bg-base-500"
+              }`}
+            >
+              <p className="text-sm font-medium">
+                Modo de compatibilidade {modoSeguro ? "ligado" : "desligado"}
+              </p>
+              <p className="text-xs text-faint">
+                Ligue se o Voxa congelar, piscar ou parar de responder. Desliga os
+                ajustes de placa de video que deixam a captura mais rapida, mas
+                travam a janela em algumas maquinas. A transmissao continua
+                funcionando, so usa menos aceleracao.
+                {modoSeguroPendente && (
+                  <span className="mt-1 block font-medium text-ink-soft">
+                    Feche e abra o Voxa para valer.
+                  </span>
+                )}
               </p>
             </button>
           </Section>

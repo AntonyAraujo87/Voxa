@@ -13,6 +13,19 @@ pub struct BootConfig {
     /// Vazio = detecta pelo idioma do sistema e pega o monitor.
     #[serde(default)]
     pub capture_source: String,
+
+    /// Desliga as flags agressivas de GPU e audio do WebView2.
+    ///
+    /// Existe porque as flags que deixam a captura rapida na maioria das
+    /// maquinas travam a interface em algumas: `--ignore-gpu-blocklist`
+    /// obriga a usar a GPU justamente onde o Chromium sabe que o driver da
+    /// problema, e o servico de audio dentro do processo troca isolamento por
+    /// latencia. O sintoma e a janela congelar inteira, com o processo vivo.
+    ///
+    /// Fica aqui, e nao no localStorage, porque precisa ser lido ANTES do
+    /// WebView existir — quando o localStorage ainda nao pode ser consultado.
+    #[serde(default)]
+    pub modo_seguro: bool,
 }
 
 fn config_path() -> PathBuf {
@@ -150,12 +163,31 @@ pub fn list_capture_sources() -> Vec<CaptureSource> {
 /// Grava a fonte escolhida. So vale no proximo boot — ver o comentario do topo.
 #[tauri::command]
 pub fn set_capture_source(title: String) -> Result<(), String> {
+    // Le antes de gravar: escrever a struct do zero apagaria `modo_seguro`,
+    // e a pessoa que ligou o modo de compatibilidade o perderia ao trocar a
+    // fonte de captura — sem nenhum aviso, e o congelamento voltaria.
     write_config(&BootConfig {
         capture_source: title,
+        ..read_config()
     })
 }
 
 #[tauri::command]
 pub fn get_capture_source() -> String {
     read_config().capture_source
+}
+
+/// Liga/desliga o modo de compatibilidade. So vale no proximo boot: as flags
+/// sao lidas antes do WebView2 nascer e nao podem ser trocadas com ele vivo.
+#[tauri::command]
+pub fn set_safe_mode(on: bool) -> Result<(), String> {
+    write_config(&BootConfig {
+        modo_seguro: on,
+        ..read_config()
+    })
+}
+
+#[tauri::command]
+pub fn get_safe_mode() -> bool {
+    read_config().modo_seguro
 }

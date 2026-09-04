@@ -52,6 +52,12 @@ export interface CaptureSource {
 }
 
 export const listCaptureSources = () => invoke<CaptureSource[]>("list_capture_sources");
+
+/** Modo de compatibilidade: desliga as flags de GPU e audio que aceleram a
+ *  captura na maioria das maquinas e travam a interface em algumas. So vale
+ *  no proximo boot — as flags sao lidas antes do WebView2 nascer. */
+export const setSafeMode = (on: boolean) => invoke("set_safe_mode", { on });
+export const getSafeMode = () => invoke<boolean>("get_safe_mode");
 export const getCaptureSource = () => invoke<string>("get_capture_source");
 export const setCaptureSource = (title: string) => invoke("set_capture_source", { title });
 
