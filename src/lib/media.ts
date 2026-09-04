@@ -149,17 +149,35 @@ export async function captureWebcam(deviceId?: string): Promise<WebcamCaptureRes
     ...(deviceId && deviceId !== "default" ? { deviceId: { exact: deviceId } } : {}),
   };
 
+  // Um stream de video sem track de video existe de verdade: camera virtual
+  // mal-comportada, driver que aceita o pedido e nao entrega nada. Sem esta
+  // checagem, `track.contentHint` lancava TypeError e — pior — o caminho de
+  // fallback devolvia `undefined` como se fosse um track. Quem chamou parava
+  // no meio, mas o stream ja tinha sido guardado: a camera ficava "ligada"
+  // por dentro e desligada na tela, e o clique seguinte no botao DESLIGAVA em
+  // vez de ligar.
+  const primeiroTrack = (stream: MediaStream) => {
+    const track = stream.getVideoTracks()[0];
+    if (!track) {
+      stream.getTracks().forEach((t) => t.stop());
+      throw new MediaError("A camera abriu sem enviar imagem.");
+    }
+    track.contentHint = "motion";
+    return track;
+  };
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
-    const track = stream.getVideoTracks()[0];
-    track.contentHint = "motion";
-    return { stream, video: track };
+    return { stream, video: primeiroTrack(stream) };
   } catch (err) {
+    // Constraint exotica pode ter derrubado; tenta o basico antes de desistir.
+    // Mas se o proprio erro ja foi "abriu sem imagem", insistir nao ajuda.
+    if (err instanceof MediaError) throw err;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      return { stream, video: stream.getVideoTracks()[0] };
-    } catch {
-      throw new MediaError(describe(err), err);
+      return { stream, video: primeiroTrack(stream) };
+    } catch (fallbackErr) {
+      throw fallbackErr instanceof MediaError ? fallbackErr : new MediaError(describe(err), err);
     }
   }
 }

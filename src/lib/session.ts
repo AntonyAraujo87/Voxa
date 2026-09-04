@@ -136,8 +136,12 @@ class Session {
     const { peers } = await this.signaling.joinVoice(canal);
     for (const peer of peers) this.mesh.addPeer(peer.id, true);
 
-    const { muted, deafened, sharing } = app.getState();
-    this.signaling.setState({ muted, deafened, sharing });
+    // `sharingKind` junto de `sharing`: o servidor recria o estado do zero na
+    // reconexao (o socket tem id novo), entao o que nao for reenviado volta no
+    // padrao. Sem ele, quem estava transmitindo reaparecia para os outros como
+    // "ao vivo" generico, e a camera virava icone de monitor no tile.
+    const { muted, deafened, sharing, sharingKind } = app.getState();
+    this.signaling.setState({ muted, deafened, sharing, sharingKind });
     app.getState().toast("ok", "Reconectado ao canal");
   }
 
