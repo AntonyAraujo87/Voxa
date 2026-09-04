@@ -25,6 +25,45 @@ export const supabaseEnabled = Boolean(URL && KEY);
 
 let clientPromise: Promise<SupabaseClient | null> | null = null;
 
+/* ------------------------- entrada nas salas ------------------------------ */
+
+/**
+ * Senha da sala, a MESMA que o usuario digita para entrar no servidor de
+ * sinalizacao. Guardada aqui so em memoria, para provar ao banco que quem
+ * assinou anonimamente e alguem convidado.
+ *
+ * Por que isso existe: a chave `anon` vai dentro do binario distribuido — ela
+ * e publica por definicao, qualquer um extrai do instalador. Com sign-in
+ * anonimo livre e salas publicas, isso bastava para baixar o historico
+ * inteiro do chat. Agora as salas sao privadas e so entra em `room_members`
+ * quem provar, via `join_guild`, que conhece a senha.
+ */
+let guildToken = "";
+
+export function setGuildToken(token: string) {
+  guildToken = token;
+}
+
+/**
+ * Pede ao banco para inscrever este usuario nas salas, provando conhecer a
+ * senha. Idempotente: roda a cada boot sem duplicar nada.
+ *
+ * Falha em silencio de proposito. Se a funcao ainda nao existe (o SQL de
+ * hardening nao foi aplicado), o app continua funcionando exatamente como
+ * antes — e o que permite publicar o app ANTES de mexer no banco, sem uma
+ * janela em que uma ponta quebra esperando a outra.
+ */
+async function joinGuild(client: SupabaseClient) {
+  try {
+    const { error } = await client.rpc("join_guild", { p_token: guildToken });
+    if (error && !/function .* does not exist|schema cache/i.test(error.message)) {
+      console.info("[supabase] join_guild recusou:", error.message);
+    }
+  } catch {
+    /* rede oscilando: a proxima abertura tenta de novo */
+  }
+}
+
 /** Cliente ja autenticado, ou null se o Supabase nao estiver configurado. */
 function db(): Promise<SupabaseClient | null> {
   if (!supabaseEnabled) return Promise.resolve(null);
@@ -54,6 +93,10 @@ function db(): Promise<SupabaseClient | null> {
           );
           return null;
         }
+
+        // Antes de qualquer consulta: sem ser membro das salas, as politicas
+        // de RLS devolvem lista vazia e o chat abriria em branco.
+        await joinGuild(client);
         return client;
       } catch {
         return null;

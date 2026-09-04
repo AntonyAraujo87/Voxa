@@ -6,7 +6,7 @@ import { Signaling, pingSignaling, type PeerUser, type RosterEntry } from "./sig
 import { Chat } from "./chat";
 import { useApp } from "../store/store";
 import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
-import { loadChannels, supabaseEnabled, upsertUser } from "./supabase";
+import { loadChannels, setGuildToken, supabaseEnabled, upsertUser } from "./supabase";
 import { loadPrefs, primePrefsCache, savePrefs } from "./prefs";
 import { entradaDoBus, setOutputDevice, setOutputMode as aplicarModoSaida } from "./audioOutput";
 import { tocarEfeito } from "./soundboard";
@@ -186,6 +186,11 @@ class Session {
     // continuam apontando pra mesma identidade depois de reiniciar.
     const user: PeerUser = { id: prefs.userId, name, color };
     app.setState({ me: user });
+
+    // Antes de QUALQUER consulta ao banco: a mesma senha que abre o servidor
+    // de sinalizacao e o que prova ao Supabase que este anonimo foi convidado.
+    // `upsertUser` logo abaixo ja e a primeira chamada que abre o cliente.
+    setGuildToken(token);
 
     if (supabaseEnabled) {
       const stored = await upsertUser(name, color);
