@@ -1,6 +1,10 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { AlertTriangle, KeyRound, Pencil } from "lucide-react";
 import { VoxaMark } from "./VoxaMark";
+
+/** Quanto esperar antes de explicar a demora. Abaixo disso a conexao e
+ *  normal e um aviso so assustaria. */
+const ATRASO_AVISO_S = 4;
 import { Avatar } from "./Avatar";
 import { ColorWheel } from "./ColorWheel";
 import { USER_COLORS, hasTurn } from "../lib/config";
@@ -97,6 +101,24 @@ function ServerCode({ name, color, onEditProfile, onDone }: ServerCodeProps) {
   );
   const [busy, setBusy] = useState(false);
   const [erro, setErro] = useState("");
+  /** Segundos esperando. So vira aviso depois de um tempo — ver abaixo. */
+  const [esperando, setEsperando] = useState(0);
+
+  // O plano gratuito do Render hiberna apos ~15 min sem trafego, e a primeira
+  // conexao do dia pode levar quase um minuto. Sem contador, a tela fica
+  // parada em "Conectando..." e a pessoa conclui que travou e fecha o app —
+  // justamente quando faltavam poucos segundos.
+  //
+  // O aviso so aparece depois de ATRASO_AVISO_S: mostrar de cara faria toda
+  // conexao parecer lenta, inclusive as instantaneas, que sao a maioria.
+  useEffect(() => {
+    if (!busy) {
+      setEsperando(0);
+      return;
+    }
+    const t = window.setInterval(() => setEsperando((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [busy]);
 
   const enter = async () => {
     if (busy) return;
@@ -159,9 +181,9 @@ function ServerCode({ name, color, onEditProfile, onDone }: ServerCodeProps) {
         {busy ? "Conectando..." : "Entrar"}
       </button>
 
-      {busy && (
+      {busy && esperando >= ATRASO_AVISO_S && (
         <p className="mt-2 text-center text-[11px] text-faint">
-          o servidor pode levar até 30s para acordar
+          o servidor estava dormindo e está acordando — pode levar até 1 minuto ({esperando}s)
         </p>
       )}
 

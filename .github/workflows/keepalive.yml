@@ -1,0 +1,47 @@
+name: keepalive
+
+# Mantem o servidor de sinalizacao acordado no horario de uso.
+#
+# O plano gratuito do Render hiberna depois de ~15 minutos sem trafego, e o
+# proprio painel avisa: "can delay requests by 50 seconds or more". Na
+# pratica, a primeira pessoa a abrir o Voxa no dia fica quase um minuto na
+# tela de "conectando" sem nenhuma explicacao — e conclui que o app quebrou.
+#
+# POR QUE NAO 24 HORAS: o plano gratuito da 750 horas de instancia por mes e
+# o mes tem ~730. Manter acordado o tempo todo consumiria quase a cota
+# inteira, e estourar suspende o servico ate o mes virar — o remedio seria
+# pior que a doenca. A janela abaixo cobre tarde, noite e madrugada (que e
+# quando se joga) e gasta ~360h/mes, menos da metade da cota.
+#
+# Fora dessa janela o servidor ainda funciona: so leva os 50s do primeiro
+# acesso. A tela de entrada avisa quando isso acontece.
+
+on:
+  schedule:
+    # A cada 10 min, das 19:00 as 07:00 UTC = 16:00 as 04:00 no horario de
+    # Brasilia. O cron do GitHub usa UTC e nao entende fuso.
+    - cron: "*/10 19-23,0-7 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Acordar o signaling
+        shell: bash
+        run: |
+          # --max-time generoso de proposito: quando o servidor ESTA
+          # hibernando, essa e exatamente a requisicao lenta que o acorda.
+          # Falhar aqui nao pode quebrar nada: e so um ping.
+          codigo=$(curl -s -o /tmp/resposta.txt -w "%{http_code}" \
+                     --max-time 90 \
+                     https://voxa-signaling.onrender.com/health || echo "000")
+          echo "HTTP $codigo"
+          head -c 200 /tmp/resposta.txt || true
+          echo
+          if [ "$codigo" != "200" ]; then
+            echo "::warning::Signaling respondeu $codigo — se repetir, conferir o servico no Render."
+          fi
