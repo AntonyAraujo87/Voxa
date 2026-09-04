@@ -14,7 +14,6 @@
 //! crus, sem passar por JSON) e vira um MediaStreamTrack no frontend.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// 20 ms a 48 kHz — mesmo tamanho de quadro que o Opus usa, entao o caminho
@@ -44,9 +43,7 @@ pub fn start_system_audio(canal: Channel<InvokeResponseBody>) -> Result<(), Stri
             return Ok(()); // ja esta capturando
         }
 
-        let ativo = Arc::new(());
         std::thread::spawn(move || {
-            let _guarda = ativo;
             if let Err(e) = capturar(canal) {
                 eprintln!("[voxa] audio do sistema parou: {e}");
             }
@@ -60,9 +57,7 @@ pub fn start_system_audio(canal: Channel<InvokeResponseBody>) -> Result<(), Stri
 #[cfg(target_os = "windows")]
 fn capturar(canal: Channel<InvokeResponseBody>) -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::VecDeque;
-    use wasapi::{
-        initialize_mta, Direction, DeviceEnumerator, SampleType, StreamMode, WaveFormat,
-    };
+    use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
     // COM precisa ser inicializado NESTA thread — a captura roda fora da thread
     // principal de propósito, pra nao competir com a interface.
@@ -96,6 +91,11 @@ fn capturar(canal: Channel<InvokeResponseBody>) -> Result<(), Box<dyn std::error
 
     let bytes_por_bloco = blockalign * FRAMES_POR_BLOCO;
 
+    // A partir daqui o stream esta ABERTO: qualquer saida precisa passar por
+    // stop_stream, senao o dispositivo fica preso ate o processo morrer. Por
+    // isso o laco guarda o erro em vez de propagar com `?`.
+    let mut falha: Option<Box<dyn std::error::Error>> = None;
+
     while RODANDO.load(Ordering::Relaxed) {
         while fila.len() >= bytes_por_bloco {
             let bloco: Vec<u8> = fila.drain(..bytes_por_bloco).collect();
@@ -106,7 +106,10 @@ fn capturar(canal: Channel<InvokeResponseBody>) -> Result<(), Box<dyn std::error
             }
         }
 
-        capture.read_from_device_to_deque(&mut fila)?;
+        if let Err(e) = capture.read_from_device_to_deque(&mut fila) {
+            falha = Some(Box::new(e));
+            break;
+        }
 
         // Espera o proximo periodo do dispositivo. O timeout evita a thread
         // ficar presa pra sempre se o dispositivo for removido no meio.
@@ -115,6 +118,9 @@ fn capturar(canal: Channel<InvokeResponseBody>) -> Result<(), Box<dyn std::error
         }
     }
 
-    client.stop_stream()?;
-    Ok(())
+    let _ = client.stop_stream();
+    match falha {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }

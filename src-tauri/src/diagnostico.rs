@@ -33,7 +33,11 @@ pub fn setup(app: &AppHandle) {
 
     std::panic::set_hook(Box::new(move |info| {
         // Se o arquivo passou do teto, recomeca: interessa a falha recente.
-        if arquivo.metadata().map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
+        if arquivo
+            .metadata()
+            .map(|m| m.len() > MAX_BYTES)
+            .unwrap_or(false)
+        {
             let _ = std::fs::remove_file(&arquivo);
         }
 
@@ -43,7 +47,10 @@ pub fn setup(app: &AppHandle) {
                 f,
                 "[{}] {} em {}:{}",
                 agora(),
-                info.payload().downcast_ref::<&str>().copied().unwrap_or("panic"),
+                info.payload()
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .unwrap_or("panic"),
                 local.map(|l| l.file()).unwrap_or("?"),
                 local.map(|l| l.line()).unwrap_or(0),
             );

@@ -1,7 +1,7 @@
 {
   "name": "voxa",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,7 @@
     "app": "tauri dev",
     "app:build": "tauri build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test server/test/security.test.js server/test/handshake.test.js src/lib/rtc/nucleo.test.ts",
+    "test": "node --test server/test/security.test.js server/test/handshake.test.js src/lib/rtc/nucleo.test.ts src/lib/filaPcm.test.ts",
     "verify": "tsc --noEmit && npm test"
   },
   "dependencies": {

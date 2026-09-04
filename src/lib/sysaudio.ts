@@ -1,4 +1,5 @@
 import { audioContext } from "./media";
+import { FilaPCM } from "./filaPcm";
 import { isDesktop } from "./desktop";
 
 /* ---------------------------------------------------------------------------
@@ -18,63 +19,27 @@ import { isDesktop } from "./desktop";
    quando passa de 400 ms — atrasar meio segundo e pior que perder um pedaco.
 --------------------------------------------------------------------------- */
 
+/**
+ * Codigo do worklet. O AudioWorklet roda num escopo isolado que nao aceita
+ * `import`, entao a classe da fila entra aqui pelo `toString()` — mesma fonte
+ * que os testes usam, em vez de uma copia que envelhece sozinha.
+ */
 const WORKLET = `
-class FilaPCM extends AudioWorkletProcessor {
+${FilaPCM.toString()}
+
+class ProcessadorPCM extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.blocos = [];
-    this.amostrasNaFila = 0;
-    this.pronto = false;
-    // 128 quadros por chamada, 48k => ~2,7 ms. 60 ms de folga antes de comecar.
-    this.minimoParaIniciar = 48000 * 0.06;
-    this.maximo = 48000 * 0.4;
-    this.port.onmessage = (e) => {
-      const bloco = new Float32Array(e.data);
-      this.blocos.push(bloco);
-      this.amostrasNaFila += bloco.length / 2;
-      // Atrasou demais (a janela ficou escondida, o IPC engasgou): joga fora o
-      // passado e volta a tocar perto do agora.
-      while (this.amostrasNaFila > this.maximo && this.blocos.length > 1) {
-        this.amostrasNaFila -= this.blocos.shift().length / 2;
-      }
-    };
+    this.fila = new FilaPCM();
+    this.port.onmessage = (e) => this.fila.push(new Float32Array(e.data));
   }
-
   process(_inputs, outputs) {
     const saida = outputs[0];
-    const esq = saida[0];
-    const dir = saida[1] ?? saida[0];
-
-    if (!this.pronto) {
-      if (this.amostrasNaFila < this.minimoParaIniciar) return true;
-      this.pronto = true;
-    }
-
-    for (let i = 0; i < esq.length; i++) {
-      const bloco = this.blocos[0];
-      if (!bloco || bloco.__pos >= bloco.length) {
-        if (bloco) this.blocos.shift();
-        if (this.blocos.length === 0) {
-          // Fila secou: silencio ate juntar folga de novo, senao entra em
-          // ciclo de estalos.
-          esq[i] = 0;
-          dir[i] = 0;
-          this.pronto = false;
-          continue;
-        }
-      }
-      const atual = this.blocos[0];
-      if (atual.__pos === undefined) atual.__pos = 0;
-      esq[i] = atual[atual.__pos] ?? 0;
-      dir[i] = atual[atual.__pos + 1] ?? 0;
-      atual.__pos += 2;
-      this.amostrasNaFila--;
-      if (atual.__pos >= atual.length) this.blocos.shift();
-    }
+    this.fila.pull(saida[0], saida[1] ?? saida[0]);
     return true;
   }
 }
-registerProcessor("fila-pcm", FilaPCM);
+registerProcessor("fila-pcm", ProcessadorPCM);
 `;
 
 let workletCarregado = false;
