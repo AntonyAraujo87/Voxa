@@ -25,7 +25,19 @@
 -- atualizar. Nada e apagado em momento nenhum.
 -- =============================================================================
 
-create extension if not exists "pgcrypto";
+-- O hash usa `sha256()`, que e do proprio Postgres (pg_catalog) — de proposito,
+-- e nao o `digest()` do pgcrypto.
+--
+-- Motivo: no Supabase o pgcrypto e instalado no schema `extensions`, e
+-- `join_guild` declara `set search_path = public`. Dentro dela `digest()`
+-- simplesmente NAO EXISTE, e a funcao estoura a cada chamada. O erro diz
+-- "function digest(text, unknown) does not exist" — que casa com o filtro que
+-- o cliente usa para ignorar "a funcao ainda nao foi criada". Ou seja: a
+-- falha seria engolida em silencio, ninguem entraria em `room_members`, e
+-- TODO MUNDO ficaria sem historico sem uma unica mensagem de erro.
+--
+-- `sha256(convert_to(texto, 'UTF8'))` da exatamente o mesmo hexadecimal
+-- (verificado, inclusive com acentos) e nao depende de search_path nenhum.
 
 -- ---- 1. onde mora o hash da senha -------------------------------------------
 create table if not exists public.guild_secret (
@@ -42,7 +54,7 @@ revoke all on public.guild_secret from anon, authenticated;
 -- Use exatamente o mesmo valor de VOXA_TOKEN do servidor de sinalizacao
 -- (Render > voxa-signaling > Environment), que e o que o usuario digita.
 insert into public.guild_secret (id, hash)
-values (1, encode(digest('COLE-AQUI-O-VOXA-TOKEN', 'sha256'), 'hex'))
+values (1, encode(sha256(convert_to('COLE-AQUI-O-VOXA-TOKEN', 'UTF8')), 'hex'))
 on conflict (id) do update set hash = excluded.hash;
 -- >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
@@ -78,7 +90,7 @@ begin
     return false;
   end if;
 
-  select (hash = encode(digest(p_token, 'sha256'), 'hex')) into confere
+  select (hash = encode(sha256(convert_to(p_token, 'UTF8')), 'hex')) into confere
   from public.guild_secret
   where id = 1;
 

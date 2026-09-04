@@ -56,12 +56,33 @@ export function setGuildToken(token: string) {
  */
 async function joinGuild(client: SupabaseClient) {
   try {
-    const { error } = await client.rpc("join_guild", { p_token: guildToken });
-    if (error && !/function .* does not exist|schema cache/i.test(error.message)) {
-      console.info("[supabase] join_guild recusou:", error.message);
+    const { data, error } = await client.rpc("join_guild", { p_token: guildToken });
+
+    if (error) {
+      // Antes do SQL de hardening rodar a funcao nao existe, e isso e
+      // ESPERADO: o app segue como antes. O PostgREST marca esse caso
+      // especifico com PGRST202 ("could not find the function ... in the
+      // schema cache").
+      //
+      // Qualquer OUTRO erro e problema de verdade e precisa aparecer. O
+      // filtro largo que estava aqui (`/function .* does not exist/`) quase
+      // custou caro: um erro de DENTRO da funcao — "function digest(text,
+      // unknown) does not exist", que acontecia porque o pgcrypto mora no
+      // schema `extensions` — casava com ele. A falha seria engolida,
+      // ninguem entraria em `room_members`, e o historico de todo mundo
+      // sumiria sem uma unica linha de aviso.
+      const aindaNaoExiste = error.code === "PGRST202" || /schema cache/i.test(error.message);
+      if (!aindaNaoExiste) registrarErro("supabase:join_guild", error.message);
+      return;
     }
-  } catch {
-    /* rede oscilando: a proxima abertura tenta de novo */
+
+    // Sem erro, mas recusado: senha diferente da do servidor de sinalizacao,
+    // ou sessao anonima que nao subiu. Nao quebra o app (o chat ao vivo nao
+    // depende disso), mas explica um historico vazio.
+    if (data === false) registrarErro("supabase:join_guild", "recusado (token ou sessao)");
+  } catch (err) {
+    // Rede oscilando: a proxima abertura tenta de novo.
+    registrarErro("supabase:join_guild", err);
   }
 }
 

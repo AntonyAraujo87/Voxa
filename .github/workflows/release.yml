@@ -69,3 +69,31 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
+
+      # O updater le /releases/latest/download/latest.json, e quem decide o que
+      # e "latest" e o GitHub: por padrao, a ULTIMA release publicada — nao a de
+      # maior versao. Publicando duas tags quase juntas, a que terminar de
+      # compilar depois rouba o rotulo, e todo mundo fica preso na versao
+      # antiga sem nenhum sinal de que algo deu errado. Foi o que aconteceu com
+      # a v0.5.4: a v0.5.3 terminou 2 minutos depois e virou a "latest".
+      #
+      # A comparacao com `sort -V` existe para o caso inverso: se uma release
+      # MAIS NOVA ja estiver publicada, esta aqui nao rebaixa ela.
+      - name: Garantir que a maior versao e a "latest"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          atual="${GITHUB_REF_NAME#v}"
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+          latest="${latest#v}"
+          maior=$( { echo "$atual"; echo "$latest"; } | sort -V | tail -1 )
+
+          if [ -n "$latest" ] && [ "$maior" != "$atual" ]; then
+            echo "v$latest e mais nova que v$atual — mantendo como latest."
+            exit 0
+          fi
+
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq .id)
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -f make_latest=true >/dev/null
+          echo "v$atual marcada como latest."
