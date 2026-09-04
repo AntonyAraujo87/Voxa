@@ -1,6 +1,6 @@
 # Voxa — revisão completa
 
-Da v0.4.0 até a **v0.5.4**. Onze versões publicadas no dia.
+Da v0.4.0 até a **v0.5.5**. Doze versões publicadas.
 
 ---
 
@@ -8,12 +8,18 @@ Da v0.4.0 até a **v0.5.4**. Onze versões publicadas no dia.
 
 ### 1. Rodar dois SQL no Supabase (nesta ordem)
 
+Os dois **foram testados de verdade** num projeto Supabase descartável, com o mesmo schema da produção — não são mais "revisados no papel". O teste achou um erro que teria sido grave; está descrito embaixo.
+
 **Agora — `supabase/hardening.sql`.** Não muda comportamento nenhum. Contém uma correção importante: hoje **imagem enviada sem legenda some do histórico** (o banco exige texto com pelo menos 1 caractere e recusa em silêncio).
 
-**Depois que todo mundo estiver na v0.5.4 — `supabase/fechar-historico.sql`.** Troque `COLE-AQUI-O-VOXA-TOKEN` pelo token real do Render antes de rodar. Quem estiver desatualizado nesse momento perde só o *histórico* (o chat ao vivo continua) e recupera ao atualizar. Nada é apagado.
+*Verificado:* o bug foi reproduzido antes e sumiu depois. Mensagem só-anexo passa a ser aceita, vazia sem anexo continua recusada, e o teto de 2000 caracteres continua valendo — 6 casos, 6 corretos.
+
+**Depois que todo mundo estiver na v0.5.5 — `supabase/fechar-historico.sql`.** Troque `COLE-AQUI-O-VOXA-TOKEN` pelo token real do Render antes de rodar. Quem estiver desatualizado nesse momento perde só o *histórico* (o chat ao vivo continua) e recupera ao atualizar. Nada é apagado.
+
+*Verificado:* `join_guild` acerta os 8 casos (token certo, errado, freio de força bruta, sessão ausente, chamada repetida). Lendo como o app lê — role `authenticated`, JWT real, RLS ligada — quem não é membro vê **0 salas e 0 mensagens**, e passa a ver as 6 salas depois de entrar com a senha certa. Tentar ler o hash da senha por fora dá `permission denied`.
 
 ### 2. Apagar o projeto `voxa-teste-migration` no Supabase
-Travou em `COMING_UP` e ocupa 1 dos 2 slots grátis. Com ele fora, dá para validar SQL de verdade antes de aplicar em produção.
+Ele voltou a responder e serviu para validar os dois SQL acima. Já está limpo e pausado — pode apagar pelo painel quando quiser, para liberar 1 dos 2 slots grátis.
 
 ### 3. Testar no app instalado o que só o app instalado confirma
 - **Overlay** — ligue, abra um jogo em borderless. E teste desligar e religar (era justamente o que estava quebrado).
@@ -58,6 +64,10 @@ Continua sendo **a maior melhoria disponível** e não depende de código: 10–
 **Leak de listener no seletor de cor** — `pointercancel` não era tratado, e gesto cancelado pelo sistema nunca dispara `pointerup`. *(v0.4.1)*
 
 ### Infraestrutura
+
+**Ninguém estava recebendo a v0.5.4.** O auto-update lê `/releases/latest/download/latest.json`, e quem decide o que é "latest" é o GitHub: por padrão a **última release publicada**, não a de maior versão. As tags v0.5.3 e v0.5.4 subiram quase juntas, a v0.5.3 terminou de compilar 2 minutos depois e ficou com o rótulo. Todo mundo travado na 0.5.3 — justamente sem o fix do microfone que abria sozinho — e sem nenhum sinal de erro em lugar nenhum. O workflow agora promove a release no fim, comparando versões para não rebaixar uma mais nova. *(v0.5.5)*
+
+**`join_guild` estouraria a cada chamada, calado.** `fechar-historico.sql` usava `digest()` do pgcrypto dentro de uma função com `set search_path = public` — e no Supabase o pgcrypto mora no schema `extensions`, então ali dentro a função não existe. Pior: a mensagem de erro (`function digest(text, unknown) does not exist`) casava com o filtro do cliente para "a função ainda não foi criada", e o cliente só olhava a mensagem. Ninguém entraria em `room_members` e o histórico de todo mundo sumiria sem uma linha de aviso. Agora usa `sha256()`, que é do próprio Postgres e não depende de `search_path`, e o cliente só ignora o erro quando ele é de fato `PGRST202`. *(v0.5.5)*
 
 **CI estava quebrado** e passou despercebido porque o workflow de release não roda testes: faltou `cargo fmt`, e os testes em TypeScript não rodavam no Node 20 do CI. Ambos os workflows foram para Node 24. *(v0.5.1)*
 
@@ -117,6 +127,5 @@ Coisas que **não** consegui verificar daqui, e que só o app instalado ou o amb
 - **WASAPI loopback** — precisa de placa de som tocando de verdade. Rust compila e passa clippy, a fila de áudio tem 8 testes, mas o caminho completo é seu para testar.
 - **Janela do overlay** — transparência, always-on-top e clique-através são nativos.
 - **Copiar diagnóstico** — exige foco de janela real; no navegador automatizado o clipboard recusa.
-- **Os dois SQL** — o projeto Supabase descartável travou em `COMING_UP` e o limite de 2 projetos grátis impediu criar outro. Revisei contra o schema (PK composta de `room_members`, `pgcrypto` já declarado, `auth.uid()` dentro de `SECURITY DEFINER`), mas rode num teste antes da produção.
 - **Supabase de produção** — sem acesso ao projeto do Antony; auditei o `schema.sql` do repositório.
 - **Render / firewall** — sem acesso ao painel. O `wss://` é garantido pelo Render, que termina TLS.
