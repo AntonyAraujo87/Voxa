@@ -26,6 +26,30 @@ export const supabaseEnabled = Boolean(URL && KEY);
 
 let clientPromise: Promise<SupabaseClient | null> | null = null;
 
+/**
+ * Quanto esperar antes de tentar de novo depois de uma falha.
+ *
+ * `clientPromise` guarda o resultado da primeira tentativa, inclusive quando
+ * ela falha — e sem isto o `null` ficava guardado para sempre: uma unica
+ * falha no boot (rede ainda subindo, projeto Supabase acordando, sign-in
+ * anonimo desligado no painel) desligava o historico ate a pessoa FECHAR e
+ * abrir o app, sem nada na tela dizendo isso.
+ *
+ * Aconteceu de verdade: o sign-in anonimo estava desligado no projeto, foi
+ * ligado com o app aberto, e o app continuou sem gravar nada — porque ja
+ * tinha desistido no boot.
+ *
+ * A espera existe para o retry nao virar martelo: sem ela, cada mensagem
+ * enviada tentaria criar cliente e autenticar de novo.
+ */
+const ESPERA_PARA_TENTAR_DE_NOVO = 30_000;
+
+function esquecerDepois() {
+  setTimeout(() => {
+    clientPromise = null;
+  }, ESPERA_PARA_TENTAR_DE_NOVO);
+}
+
 /* ------------------------- entrada nas salas ------------------------------ */
 
 /**
@@ -54,7 +78,7 @@ export function setGuildToken(token: string) {
  * antes — e o que permite publicar o app ANTES de mexer no banco, sem uma
  * janela em que uma ponta quebra esperando a outra.
  */
-async function joinGuild(client: SupabaseClient) {
+async function joinGuild(client: SupabaseClient): Promise<boolean> {
   try {
     const { data, error } = await client.rpc("join_guild", { p_token: guildToken });
 
@@ -73,16 +97,23 @@ async function joinGuild(client: SupabaseClient) {
       // sumiria sem uma unica linha de aviso.
       const aindaNaoExiste = error.code === "PGRST202" || /schema cache/i.test(error.message);
       if (!aindaNaoExiste) registrarErro("supabase:join_guild", error.message);
-      return;
+      // Antes do SQL rodar as salas ainda sao publicas, entao nao ser membro
+      // nao impede nada: e sucesso do ponto de vista de quem chamou.
+      return aindaNaoExiste;
     }
 
     // Sem erro, mas recusado: senha diferente da do servidor de sinalizacao,
     // ou sessao anonima que nao subiu. Nao quebra o app (o chat ao vivo nao
     // depende disso), mas explica um historico vazio.
-    if (data === false) registrarErro("supabase:join_guild", "recusado (token ou sessao)");
+    if (data === false) {
+      registrarErro("supabase:join_guild", "recusado (token ou sessao)");
+      return false;
+    }
+    return true;
   } catch (err) {
     // Rede oscilando: a proxima abertura tenta de novo.
     registrarErro("supabase:join_guild", err);
+    return false;
   }
 }
 
@@ -108,19 +139,25 @@ function db(): Promise<SupabaseClient | null> {
 
         const session = await ensureSession(client);
         if (!session) {
-          console.info(
-            "[supabase] sign-in anonimo indisponivel — habilite em " +
-              "Authentication > Providers > Anonymous sign-ins. " +
-              "Seguindo sem historico."
+          registrarErro(
+            "supabase:sessao",
+            "sign-in anonimo indisponivel — habilite em Authentication > " +
+              "Providers > Anonymous sign-ins. Seguindo sem historico."
           );
+          esquecerDepois();
           return null;
         }
 
         // Antes de qualquer consulta: sem ser membro das salas, as politicas
         // de RLS devolvem lista vazia e o chat abriria em branco.
-        await joinGuild(client);
+        //
+        // Nao entrar tambem merece nova tentativa: pode ser o SQL de
+        // hardening que acabou de rodar, ou o banco que estava fora do ar
+        // neste instante. Sem isso, o historico so voltaria no proximo boot.
+        if (!(await joinGuild(client))) esquecerDepois();
         return client;
       } catch {
+        esquecerDepois();
         return null;
       }
     })();
