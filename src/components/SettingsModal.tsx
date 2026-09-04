@@ -40,6 +40,7 @@ function SettingsModalBase() {
   const mics = useApp((s) => s.mics);
   const micDeviceId = useApp((s) => s.micDeviceId);
   const noiseSuppression = useApp((s) => s.noiseSuppression);
+  const systemAudio = useApp((s) => s.systemAudio);
   const cameras = useApp((s) => s.cameras);
   const camDeviceId = useApp((s) => s.camDeviceId);
   const speakers = useApp((s) => s.speakers);
@@ -166,6 +167,25 @@ function SettingsModalBase() {
               de linha de comando, lido uma unica vez quando o processo nasce. Por isso a
               troca so vale no proximo boot.
             </p>
+
+            <button
+              onClick={() => session.setSystemAudio(!systemAudio)}
+              disabled={!isDesktop}
+              className={`mt-2 w-full rounded-md border px-3 py-2 text-left transition-colors disabled:opacity-50 ${
+                systemAudio
+                  ? "border-brand bg-brand/15 text-ink"
+                  : "border-transparent bg-base-500/60 text-muted hover:bg-base-500"
+              }`}
+            >
+              <p className="text-sm font-medium">
+                Audio do sistema {systemAudio ? "— ligado" : "— desligado"}
+              </p>
+              <p className="text-xs text-faint">
+                Captura o que a placa de som esta tocando, em vez do audio que o
+                WebView2 entrega junto da tela — que com jogo em tela cheia costuma
+                vir vazio. Vale no proximo compartilhamento.
+              </p>
+            </button>
           </Section>
 
           <Section icon={<Camera size={13} />} title="Webcam">

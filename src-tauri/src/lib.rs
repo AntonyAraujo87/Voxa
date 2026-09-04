@@ -11,6 +11,7 @@
 //   lifecycle.rs bandeja do sistema e liberacao de memoria
 //   overlay.rs   janela flutuante de quem esta falando, por cima do jogo
 //   diagnostico.rs registro de panic em arquivo, para o usuario reportar
+//   sysaudio.rs  captura do audio do sistema (WASAPI loopback)
 // ---------------------------------------------------------------------------
 
 mod capture;
@@ -18,6 +19,7 @@ mod diagnostico;
 mod hotkeys;
 mod lifecycle;
 mod overlay;
+mod sysaudio;
 mod webview;
 
 use tauri::Manager;
@@ -62,7 +64,9 @@ pub fn run() {
             lifecycle::release_memory,
             lifecycle::flash_taskbar,
             overlay::set_overlay_enabled,
-            diagnostico::read_panic_log
+            diagnostico::read_panic_log,
+            sysaudio::start_system_audio,
+            sysaudio::stop_system_audio
         ])
         .on_window_event(lifecycle::handle_window_event)
         .setup(|app| {

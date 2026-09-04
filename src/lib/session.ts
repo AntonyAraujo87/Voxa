@@ -10,6 +10,7 @@ import { loadChannels, setGuildToken, supabaseEnabled, upsertUser } from "./supa
 import { loadPrefs, primePrefsCache, savePrefs } from "./prefs";
 import { entradaDoBus, setOutputDevice, setOutputMode as aplicarModoSaida } from "./audioOutput";
 import { tocarEfeito } from "./soundboard";
+import { iniciarAudioDoSistema, pararAudioDoSistema } from "./sysaudio";
 import {
   checkForUpdate,
   flashTaskbar,
@@ -155,6 +156,7 @@ class Session {
       tuning: prefs.tuning,
       micDeviceId: prefs.micDeviceId,
       noiseSuppression: prefs.noiseSuppression,
+      systemAudio: prefs.systemAudio,
       camDeviceId: prefs.camDeviceId,
       outputDeviceId: prefs.outputDeviceId,
       outputMode: prefs.outputMode,
@@ -419,6 +421,13 @@ class Session {
     await this.openMic();
   }
 
+  /** Troca a fonte do audio da transmissao. Vale no proximo compartilhamento:
+   *  trocar no meio exigiria renegociar o track com todos os pares. */
+  setSystemAudio(on: boolean) {
+    app.setState({ systemAudio: on });
+    savePrefs({ systemAudio: on });
+  }
+
   /** Cria/fecha a janela flutuante (overlay.rs). Sem efeito fora do app
    *  instalado — no navegador (dev/teste) so fica marcado no estado. */
   async setOverlayEnabled(on: boolean) {
@@ -552,7 +561,21 @@ class Session {
     try {
       const { stream, video, audio } = await this.media.openScreen(s.tuning.video, s.tuning.content);
       setLocalScreen(stream);
-      await this.mesh.setScreen(video, audio);
+
+      // O audio do getDisplayMedia costuma vir vazio com jogo em tela cheia — e
+      // o WebView2 nem sempre entrega alguma coisa. Com a opcao ligada, pega
+      // direto o que a placa de som esta tocando (WASAPI loopback).
+      let trilhaAudio = audio;
+      if (s.systemAudio) {
+        try {
+          trilhaAudio = (await iniciarAudioDoSistema()) ?? audio;
+        } catch (err) {
+          // Falhar aqui nao pode cancelar a transmissao: segue com o audio que
+          // o navegador deu (mesmo que seja nenhum) e avisa.
+          s.toast("info", `Audio do sistema indisponivel: ${(err as Error).message}`);
+        }
+      }
+      await this.mesh.setScreen(video, trilhaAudio);
 
       app.setState({ sharing: true, sharingKind: "tela", focusPeer: s.selfSocketId });
       this.signaling.setState({ sharing: true, sharingKind: "tela" });
@@ -561,6 +584,7 @@ class Session {
       s.toast("ok", `Compartilhando ${preset.width}x${preset.height} @ ${preset.fps}fps`);
     } catch (err) {
       this.media.closeScreen();
+      pararAudioDoSistema();
       setLocalScreen(null);
       s.toast("error", (err as Error).message);
     } finally {
@@ -572,6 +596,7 @@ class Session {
     if (!this.media.isSharing) return;
     void this.mesh.setScreen(null, null);
     this.media.closeScreen();
+    pararAudioDoSistema();
     setLocalScreen(null);
 
     const selfId = app.getState().selfSocketId;

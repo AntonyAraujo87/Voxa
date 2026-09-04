@@ -1,6 +1,6 @@
 [package]
 name = "voxa"
-version = "0.4.5"
+version = "0.5.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -40,3 +40,6 @@ windows = { version = "0.61", features = [
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_Graphics_Dwm",
 ] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wasapi = "0.24"
