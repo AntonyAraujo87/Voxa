@@ -93,49 +93,62 @@ export function ColorWheel({ value, onChange }: { value: string; onChange: (hex:
     forceUpdate((n) => n + 1);
   };
 
-  const arrastarRoda = (e: React.PointerEvent) => {
-    const el = wheelRef.current;
+  /**
+   * Arrasto continuo sobre um elemento: aplica `ler` na descida e a cada
+   * movimento, e larga os listeners no fim.
+   *
+   * `pointercancel` importa tanto quanto `pointerup`: o sistema cancela o
+   * gesto sozinho (janela perde foco, toque virou scroll, dispositivo
+   * sumiu) e nesse caso o `pointerup` NUNCA chega — sem ouvir o cancel, o
+   * par de listeners ficava presente pra sempre, mais um par a cada arrasto
+   * interrompido.
+   */
+  const arrastar = (
+    e: React.PointerEvent,
+    ref: React.RefObject<HTMLDivElement | null>,
+    ler: (ev: { clientX: number; clientY: number }, rect: DOMRect) => void
+  ) => {
+    const el = ref.current;
     if (!el) return;
-    el.setPointerCapture(e.pointerId);
-    const mover = (ev: PointerEvent | React.PointerEvent) => {
-      const rect = el.getBoundingClientRect();
-      const dx = ev.clientX - (rect.left + rect.width / 2);
-      const dy = ev.clientY - (rect.top + rect.height / 2);
-      const raio = rect.width / 2;
-      const dist = Math.min(1, Math.hypot(dx, dy) / raio);
-      const angulo = ((Math.atan2(dy, dx) * 180) / Math.PI + 90 + 360) % 360;
-      hsvRef.current = [angulo, dist, hsvRef.current[2]];
+    // Alguns estados recusam a captura; sem o try o resto do arrasto (que
+    // funciona bem sem ela) nem chegava a ser registrado.
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {
+      /* segue sem captura */
+    }
+
+    const mover = (ev: { clientX: number; clientY: number }) => {
+      ler(ev, el.getBoundingClientRect());
       emitir();
     };
     mover(e);
+
     const onMove = (ev: PointerEvent) => mover(ev);
-    const onUp = () => {
+    const soltar = () => {
       el.removeEventListener("pointermove", onMove);
-      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointerup", soltar);
+      el.removeEventListener("pointercancel", soltar);
     };
     el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointerup", soltar);
+    el.addEventListener("pointercancel", soltar);
   };
 
-  const arrastarBarra = (e: React.PointerEvent) => {
-    const el = barRef.current;
-    if (!el) return;
-    el.setPointerCapture(e.pointerId);
-    const mover = (ev: PointerEvent | React.PointerEvent) => {
-      const rect = el.getBoundingClientRect();
+  const arrastarRoda = (e: React.PointerEvent) =>
+    arrastar(e, wheelRef, (ev, rect) => {
+      const dx = ev.clientX - (rect.left + rect.width / 2);
+      const dy = ev.clientY - (rect.top + rect.height / 2);
+      const dist = Math.min(1, Math.hypot(dx, dy) / (rect.width / 2));
+      const angulo = ((Math.atan2(dy, dx) * 180) / Math.PI + 90 + 360) % 360;
+      hsvRef.current = [angulo, dist, hsvRef.current[2]];
+    });
+
+  const arrastarBarra = (e: React.PointerEvent) =>
+    arrastar(e, barRef, (ev, rect) => {
       const y = Math.min(rect.height, Math.max(0, ev.clientY - rect.top));
       hsvRef.current = [hsvRef.current[0], hsvRef.current[1], 1 - y / rect.height];
-      emitir();
-    };
-    mover(e);
-    const onMove = (ev: PointerEvent) => mover(ev);
-    const onUp = () => {
-      el.removeEventListener("pointermove", onMove);
-      el.removeEventListener("pointerup", onUp);
-    };
-    el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerup", onUp);
-  };
+    });
 
   const [hueAtual, satAtual, valAtual] = hsvRef.current;
   const anguloRad = ((hueAtual - 90) * Math.PI) / 180;

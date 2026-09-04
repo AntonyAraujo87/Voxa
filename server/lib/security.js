@@ -30,14 +30,33 @@ export const MAX_HANDSHAKES_PER_MIN = 60;
  * Em PaaS (Render, Fly, Railway) o trafego chega por um proxy e o endereco do
  * socket e sempre o do proxy. Sem ler o x-forwarded-for, TODOS os usuarios
  * contariam como um unico IP e o limitador derrubaria a sala inteira.
+ *
+ * Mas o header e texto que o CLIENTE manda: quem alcanca o processo por fora
+ * do proxy forja um IP diferente a cada conexao e o limite por IP deixa de
+ * existir — cada tentativa parece vir de alguem novo.
+ *
+ * A regra: so acredita no header quando a conexao chegou de um endereco
+ * PRIVADO, que e como todo PaaS entrega (o proxy fala com o processo por rede
+ * interna). Vindo de um IP publico, a conexao e direta e o header e chute do
+ * proprio cliente — ignora. Assim o limite continua certo no Render e nao ha
+ * variavel de ambiente pra alguem esquecer de configurar; `TRUST_PROXY=0`
+ * existe so pra desligar a mao.
  */
+const PRIVADO =
+  /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|::ffff:(10\.|127\.|192\.168\.)|f[cd])/i;
+
 export function clientIp(socket) {
-  const fwd = socket.handshake.headers["x-forwarded-for"];
-  if (typeof fwd === "string" && fwd.length) {
-    const first = fwd.split(",")[0].trim();
-    if (first) return first;
+  const direto = socket.handshake.address || "desconhecido";
+  const atrasDeProxy = PRIVADO.test(direto) && process.env.TRUST_PROXY !== "0";
+
+  if (atrasDeProxy) {
+    const fwd = socket.handshake.headers["x-forwarded-for"];
+    if (typeof fwd === "string" && fwd.length) {
+      const first = fwd.split(",")[0].trim();
+      if (first) return first;
+    }
   }
-  return socket.handshake.address || "desconhecido";
+  return direto;
 }
 
 /* -------------------------- limitador por janela -------------------------- */

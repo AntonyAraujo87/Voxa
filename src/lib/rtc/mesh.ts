@@ -20,6 +20,8 @@ const SPEAKING_THRESHOLD = 0.012;
 
 export class Mesh {
   private peers = new Map<string, Peer>();
+  /** peerId -> ultimo sinal em processamento, para serializar por par */
+  private filas = new Map<string, Promise<void>>();
   private tracks: LocalTracks = { ...NO_TRACKS };
   private timers: number[] = [];
   private adaptive = new AdaptiveQuality();
@@ -82,6 +84,9 @@ export class Mesh {
 
     peer.close();
     this.peers.delete(id);
+    // Sem isso a fila do par que saiu ficaria no mapa pra sempre, segurando
+    // a referencia do Peer fechado junto.
+    this.filas.delete(id);
 
     this.opts.onTrack(id, "mic", null);
     this.opts.onTrack(id, "screen", null);
@@ -103,9 +108,30 @@ export class Mesh {
 
   /* ------------------------------ signaling ----------------------------- */
 
+  /**
+   * Sinais do MESMO par sao processados um de cada vez.
+   *
+   * ICE chega em rajada e quem chama nao espera (`void mesh.handleSignal`),
+   * entao duas chamadas seguidas rodavam concorrentes: um `addIceCandidate`
+   * podia comecar antes de o `setRemoteDescription` do sinal anterior ter
+   * terminado, e o candidato era descartado com "remote description is null".
+   * Cada candidato perdido e um caminho de conexao a menos — em rede boa nao
+   * se nota, em rede ruim e a diferenca entre conectar e nao conectar.
+   *
+   * A fila e POR PAR: sinais de pessoas diferentes continuam em paralelo,
+   * que e o que faz a entrada numa sala cheia ser rapida.
+   */
   async handleSignal(from: string, data: SignalPayload) {
     const peer = this.peers.get(from) ?? this.addPeer(from, false);
-    await peer.handleSignal(data, this.tracks, this.targets());
+
+    const anterior = this.filas.get(from) ?? Promise.resolve();
+    const atual = anterior
+      // Um sinal que falhou nao pode travar os seguintes.
+      .catch(() => {})
+      .then(() => peer.handleSignal(data, this.tracks, this.targets()));
+
+    this.filas.set(from, atual);
+    await atual;
   }
 
   /* ---------------------------- tracks locais --------------------------- */
@@ -197,7 +223,17 @@ export class Mesh {
   private detectSpeaking() {
     // O anel de "falando" e puramente visual: com a janela escondida, medir
     // seria trabalho jogado fora 6 vezes por segundo.
-    if (document.hidden) return;
+    if (document.hidden) {
+      // Mas quem estava falando no instante em que a janela sumiu ficava
+      // marcado como falando pra sempre — o anel voltava aceso quando a
+      // janela reaparecia, e so apagava se a pessoa falasse de novo.
+      for (const peer of this.peers.values()) {
+        if (!peer.speaking) continue;
+        peer.speaking = false;
+        this.opts.onSpeaking(peer.id, false);
+      }
+      return;
+    }
 
     for (const peer of this.peers.values()) {
       const speaking = peer.audioLevel() > SPEAKING_THRESHOLD;

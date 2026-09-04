@@ -57,7 +57,12 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
 
   const identificado = () => registry.get(socket.id) !== undefined;
 
-  socket.join(GUILD);
+  // A entrada em GUILD acontece no `hello`, DEPOIS de conferir o token — nunca
+  // aqui. Estar na sala e o que faz o socket receber `roster` e `chat:new`:
+  // entrar antes da conferencia deixava quem so abrisse a conexao e ficasse
+  // calado escutando o chat inteiro ate o timeout de identificacao expirar, e
+  // repetindo a conexao a escuta virava continua, sem nunca provar que sabe a
+  // senha da sala.
 
   const helloTimer = setTimeout(() => {
     if (!identificado()) socket.disconnect(true);
@@ -90,6 +95,7 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
 
     clearTimeout(helloTimer);
     registry.add(socket.id, user, socket.data.ip);
+    socket.join(GUILD);
 
     if (typeof ack === "function") ack({ selfId: socket.id, roster: registry.roster() });
     broadcastRoster();

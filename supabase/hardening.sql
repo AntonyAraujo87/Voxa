@@ -1,0 +1,118 @@
+-- =============================================================================
+-- VOXA — Hardening de RLS (auditoria)
+--
+-- Rode DEPOIS do schema.sql e do attachments.sql. Idempotente.
+--
+-- PARTE 1 e segura e nao muda comportamento nenhum do app: fecha superficie
+-- que estava aberta sem necessidade.
+--
+-- PARTE 2 esta COMENTADA de proposito — fecha o furo serio (historico legivel
+-- por qualquer um que extraia a anon key), mas muda o modelo de acesso e
+-- precisa da alteracao correspondente no cliente. Leia antes de descomentar.
+-- =============================================================================
+
+-- =============================================================================
+-- PARTE 1 — hardening sem efeito colateral
+-- =============================================================================
+
+-- `enforce_message_rate` e uma funcao de TRIGGER: o Postgres a executa como
+-- dona da tabela, ninguem precisa de EXECUTE pra que ela rode. Mas por estar
+-- no schema `public`, o PostgREST a expunha em /rest/v1/rpc/enforce_message_rate
+-- pra qualquer um chamar. Nao ha exploracao obvia (fora de trigger ela erra em
+-- `new`), mas funcao SECURITY DEFINER exposta sem motivo e superficie de graca.
+revoke all on function public.enforce_message_rate() from public, anon, authenticated;
+
+-- `can_read_room` PRECISA continuar executavel por `authenticated`: ela e
+-- avaliada dentro das policies, no contexto de quem consulta. Mas `anon` (a
+-- chave crua, sem sign-in) nao tem o que fazer com ela.
+revoke all on function public.can_read_room(uuid) from anon;
+
+-- Storage: o bucket de anexos e publico para LEITURA de proposito (a imagem
+-- precisa carregar direto no <img>), mas ninguem alem do dono deveria poder
+-- sobrescrever ou apagar o arquivo de outro. O schema de anexos ja nao cria
+-- policy de update/delete; estas linhas garantem que nenhuma sobra de teste
+-- tenha ficado para tras.
+drop policy if exists chat_attachments_update on storage.objects;
+drop policy if exists chat_attachments_delete on storage.objects;
+
+-- =============================================================================
+-- PARTE 2 — fechar o historico (NAO descomente sem ler)
+-- =============================================================================
+--
+-- O problema: `rooms.is_private = false` nas salas padrao significa que
+-- QUALQUER sessao autenticada le todas as mensagens. Como o sign-in e anonimo
+-- e livre, e a anon key esta dentro do binario distribuido (por definicao —
+-- ela e publica), basta extrair a chave do instalador, chamar
+-- signInAnonymously e baixar o historico inteiro do chat. O token do
+-- servidor de sinalizacao nao protege nada disso: o Supabase nunca o ve.
+--
+-- A correcao guarda um HASH do token no banco (nunca o token), numa tabela que
+-- cliente nenhum le, e so inscreve em `room_members` quem provar que conhece o
+-- token. As salas passam a ser privadas, e a policy que ja existe
+-- (`can_read_room`) cuida do resto — sem escrever politica nova.
+--
+-- ANTES DE DESCOMENTAR, o cliente precisa chamar `join_guild(token)` logo apos
+-- o sign-in anonimo (src/lib/supabase.ts, dentro de `db()`), com o mesmo token
+-- que o usuario ja digita na tela de entrada. Sem isso, o chat abre VAZIO para
+-- todo mundo, porque ninguem sera membro de sala nenhuma.
+--
+-- create table if not exists public.guild_secret (
+--   id   int primary key default 1,
+--   hash text not null,
+--   constraint guild_secret_linha_unica check (id = 1)
+-- );
+-- alter table public.guild_secret enable row level security;
+-- revoke all on public.guild_secret from anon, authenticated;
+-- -- Sem nenhuma policy: nem com sessao valida da pra ler o hash pelo cliente.
+--
+-- -- Guarda o hash do token atual (troque 'SEU-TOKEN-AQUI' pelo VOXA_TOKEN real):
+-- insert into public.guild_secret (id, hash)
+-- values (1, encode(digest('SEU-TOKEN-AQUI', 'sha256'), 'hex'))
+-- on conflict (id) do update set hash = excluded.hash;
+--
+-- -- Uma tentativa errada por segundo por usuario: forca bruta pela API vira
+-- -- inviavel sem precisar de infraestrutura de rate limit externa.
+-- create table if not exists public.join_attempts (
+--   user_id uuid primary key references auth.users(id) on delete cascade,
+--   last_try timestamptz not null default now()
+-- );
+-- alter table public.join_attempts enable row level security;
+-- revoke all on public.join_attempts from anon, authenticated;
+--
+-- create or replace function public.join_guild(p_token text)
+-- returns boolean
+-- language plpgsql
+-- security definer
+-- set search_path = public
+-- as $$
+-- declare
+--   confere boolean;
+--   ultima  timestamptz;
+-- begin
+--   if auth.uid() is null then return false; end if;
+--
+--   select last_try into ultima from public.join_attempts where user_id = auth.uid();
+--   if ultima is not null and now() - ultima < interval '1 second' then
+--     return false;
+--   end if;
+--   insert into public.join_attempts (user_id, last_try) values (auth.uid(), now())
+--     on conflict (user_id) do update set last_try = now();
+--
+--   select (hash = encode(digest(p_token, 'sha256'), 'hex')) into confere
+--   from public.guild_secret where id = 1;
+--
+--   if not coalesce(confere, false) then return false; end if;
+--
+--   insert into public.room_members (room_id, user_id)
+--   select r.id, auth.uid() from public.rooms r
+--   on conflict (room_id, user_id) do nothing;
+--
+--   return true;
+-- end;
+-- $$;
+--
+-- revoke all on function public.join_guild(text) from public, anon;
+-- grant execute on function public.join_guild(text) to authenticated;
+--
+-- -- So depois que o cliente ja chama join_guild: fecha as salas.
+-- update public.rooms set is_private = true;
