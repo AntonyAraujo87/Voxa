@@ -2,23 +2,11 @@ import { AUDIO_PRESETS, VIDEO_PRESETS, type Channel } from "./config";
 import { LocalMedia } from "./localMedia";
 import { listDevices } from "./media";
 import { Mesh, type TuningState } from "./rtc";
-import {
-  Signaling,
-  pingSignaling,
-  type ChatMessage,
-  type PeerUser,
-  type RosterEntry,
-} from "./signaling";
+import { Signaling, pingSignaling, type PeerUser, type RosterEntry } from "./signaling";
+import { Chat } from "./chat";
 import { useApp } from "../store/store";
 import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
-import {
-  loadChannels,
-  loadMessages,
-  saveMessage,
-  supabaseEnabled,
-  uploadAttachment,
-  upsertUser,
-} from "./supabase";
+import { loadChannels, supabaseEnabled, upsertUser } from "./supabase";
 import { loadPrefs, primePrefsCache, savePrefs } from "./prefs";
 import { entradaDoBus, setOutputDevice, setOutputMode as aplicarModoSaida } from "./audioOutput";
 import { tocarEfeito } from "./soundboard";
@@ -51,6 +39,7 @@ class Session {
   private signaling: Signaling;
   private mesh: Mesh;
   private media: LocalMedia;
+  private chat: Chat;
 
   private started = false;
   private mutedBeforeDeafen = false;
@@ -125,6 +114,8 @@ class Session {
       onScreenEnded: () => this.stopShare(),
       onWebcamEnded: () => this.stopWebcam(),
     });
+
+    this.chat = new Chat(this.signaling);
   }
 
   /**
@@ -239,137 +230,28 @@ class Session {
 
   /* -------------------------------- texto ------------------------------- */
 
-  async openTextChannel(id: string) {
-    app.setState({ activeText: id });
-    app.getState().clearUnread(id);
-    if (app.getState().messages[id]) return;
-    const history = await loadMessages(id);
-    app.getState().setMessages(id, history);
+  // A regra de chat mora em chat.ts — ela nao depende de midia nenhuma. Estes
+  // metodos ficam como fachada porque a UI ja chama `session.sendChat(...)`
+  // em varios lugares; mudar isso seria churn sem ganho.
+
+  openTextChannel(id: string) {
+    return this.chat.openChannel(id);
   }
 
   sendChat(content: string) {
-    const s = app.getState();
-    const text = content.trim();
-    if (!text || !s.me) return;
-
-    // O servidor tambem limita, mas ali a mensagem excedente e descartada em
-    // silencio. Barrando aqui, quem digitou entende o que aconteceu.
-    if (!this.chatAllowance()) {
-      s.toast("info", "Devagar com o chat — aguarde alguns segundos.");
-      return;
-    }
-
-    this.dispatchChatMessage({
-      id: crypto.randomUUID(),
-      channelId: s.activeText,
-      content: text,
-      authorId: s.me.id,
-      authorName: s.me.name,
-      authorColor: s.me.color,
-      createdAt: new Date().toISOString(),
-    });
+    this.chat.send(content);
   }
 
-  /**
-   * Sobe o arquivo pro Storage e manda como mensagem (com legenda opcional).
-   * Sem Supabase configurado o anexo nao tem onde morar — nem tenta, avisa e
-   * volta. `busy` no toast porque upload de imagem/video pode levar alguns
-   * segundos e a pessoa precisa saber que esta acontecendo.
-   */
-  async sendAttachment(file: File, caption = "") {
-    const s = app.getState();
-    if (!s.me) return;
-    if (!this.chatAllowance()) {
-      s.toast("info", "Devagar com o chat — aguarde alguns segundos.");
-      return;
-    }
-
-    if (!supabaseEnabled) {
-      s.toast("error", "Anexo precisa do historico do Supabase configurado — sem ele nao ha onde guardar o arquivo.");
-      return;
-    }
-
-    s.toast("info", `Enviando ${file.name}...`);
-    const anexo = await uploadAttachment(file);
-    if (!anexo) {
-      s.toast("error", `Nao foi possivel enviar ${file.name}.`);
-      return;
-    }
-
-    this.dispatchChatMessage({
-      id: crypto.randomUUID(),
-      channelId: s.activeText,
-      content: caption.trim(),
-      authorId: s.me.id,
-      authorName: s.me.name,
-      authorColor: s.me.color,
-      createdAt: new Date().toISOString(),
-      attachmentUrl: anexo.url,
-      attachmentName: anexo.name,
-      attachmentMime: anexo.mime,
-      attachmentSize: anexo.size,
-    });
-  }
-
-  /** Eco otimista + propagacao em tempo real + persistencia — o mesmo tripé
-   *  pra mensagem de texto e pra anexo, so muda o que vai dentro do objeto. */
-  private dispatchChatMessage(msg: ChatMessage) {
-    app.getState().pushMessage(msg); // aparece antes de sair da maquina
-    this.signaling.sendChat({
-      id: msg.id,
-      channelId: msg.channelId,
-      content: msg.content,
-      attachmentUrl: msg.attachmentUrl,
-      attachmentName: msg.attachmentName,
-      attachmentMime: msg.attachmentMime,
-      attachmentSize: msg.attachmentSize,
-    });
-    void saveMessage(msg);
+  sendAttachment(file: File, caption = "") {
+    return this.chat.sendAttachment(file, caption);
   }
 
   typing() {
-    this.signaling.typing(app.getState().activeText);
+    this.chat.typing();
   }
 
-  /** canais que ja chegaram ao inicio do historico — evita consultas inuteis */
-  private historicoCompleto = new Set<string>();
-  private carregandoHistorico = false;
-
-  /**
-   * Carrega a pagina anterior do historico quando o usuario rola ao topo.
-   * @returns quantas mensagens novas entraram
-   */
-  async loadOlderMessages(channelId: string): Promise<number> {
-    if (this.carregandoHistorico || this.historicoCompleto.has(channelId)) return 0;
-
-    const atuais = app.getState().messages[channelId] ?? [];
-    if (atuais.length === 0) return 0;
-
-    this.carregandoHistorico = true;
-    try {
-      const anteriores = await loadMessages(channelId, 40, atuais[0].createdAt);
-      // Nada mais atras: marca o canal para nao consultar de novo a cada
-      // rolagem ate o topo.
-      if (anteriores.length === 0) {
-        this.historicoCompleto.add(channelId);
-        return 0;
-      }
-      app.getState().prependMessages(channelId, anteriores);
-      return anteriores.length;
-    } finally {
-      this.carregandoHistorico = false;
-    }
-  }
-
-  /** Mesma janela usada pelo servidor: 8 mensagens a cada 5 segundos. */
-  private chatTimestamps: number[] = [];
-
-  private chatAllowance(): boolean {
-    const agora = Date.now();
-    this.chatTimestamps = this.chatTimestamps.filter((t) => agora - t < 5000);
-    if (this.chatTimestamps.length >= 8) return false;
-    this.chatTimestamps.push(agora);
-    return true;
+  loadOlderMessages(channelId: string) {
+    return this.chat.loadOlder(channelId);
   }
 
   /* --------------------------------- voz -------------------------------- */
