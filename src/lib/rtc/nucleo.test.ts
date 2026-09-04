@@ -207,3 +207,77 @@ describe("AdaptiveQuality", () => {
     assert.equal(a.evaluate([stat({ lossPct: 90 })]).changed, false, "deveria estar aquecendo");
   });
 });
+
+describe("AdaptiveQuality x numero de espectadores", () => {
+  test("poucos espectadores nao mexem na qualidade", () => {
+    const a = new AdaptiveQuality();
+    a.reset();
+    assert.equal(a.setViewers(2).changed, false);
+    assert.equal(a.current, DEGRADE_STEPS[0], "com 2 assistindo deve ficar nativo");
+  });
+
+  test("comeca num degrau seguro quando muita gente entra", () => {
+    // O ponto do ajuste: numa malha, 5 espectadores = 5 encodes da mesma
+    // imagem. Esperar a metrica reagir custa 4s de aquecimento + 3 amostras
+    // ruins, e nesse meio tempo o jogo de quem transmite trava.
+    const a = new AdaptiveQuality();
+    a.reset();
+
+    const tres = a.setViewers(3);
+    assert.equal(tres.changed, true);
+    assert.equal(a.current, DEGRADE_STEPS[1]);
+
+    const cinco = a.setViewers(5);
+    assert.equal(cinco.changed, true);
+    assert.equal(a.current, DEGRADE_STEPS[2]);
+    assert.match(cinco.reason, /5 pessoas/);
+  });
+
+  test("gente saindo nao devolve qualidade na hora", () => {
+    // Devolver na hora faria a resolucao pular a cada pessoa entrando e
+    // saindo. Quem decide subir de volta e o `evaluate`, com metrica real.
+    const a = new AdaptiveQuality();
+    a.reset();
+    a.setViewers(5);
+    const nivel = a.current;
+
+    assert.equal(a.setViewers(1).changed, false);
+    assert.equal(a.current, nivel, "sair nao pode mudar o degrau sozinho");
+  });
+
+  test("o piso e ponto de partida, nao teto: metrica boa recupera", () => {
+    const a = new AdaptiveQuality();
+    a.reset();
+    a.setViewers(5);
+    assert.equal(a.current, DEGRADE_STEPS[2]);
+
+    // Sem isto o piso viraria um teto permanente, e uma maquina que aguenta
+    // ficaria presa em meia resolucao pra sempre.
+    (a as unknown as { iniciadoEm: number }).iniciadoEm = Date.now() - 60_000;
+    for (let i = 0; i < 15; i++) a.evaluate([stat({ lossPct: 0 })]);
+    assert.equal(a.current, DEGRADE_STEPS[1], "deveria ter subido um degrau");
+  });
+
+  test("nao rebaixa quem ja esta pior que o piso", () => {
+    const a = aquecido();
+    for (let i = 0; i < 3; i++) a.evaluate([stat({ limitation: "cpu" })]);
+    for (let i = 0; i < 3; i++) a.evaluate([stat({ limitation: "cpu" })]);
+    const ruim = a.current;
+    assert.equal(ruim, DEGRADE_STEPS[2]);
+
+    // Piso de 3 espectadores e o degrau 1, mais leve que o atual: nao pode
+    // "melhorar" a qualidade de quem ja esta com a CPU no talo.
+    assert.equal(a.setViewers(3).changed, false);
+    assert.equal(a.current, ruim);
+  });
+
+  test("reset guarda quantos estao assistindo", () => {
+    // Trocar de captura chama reset(); se ele voltasse pro nativo ignorando
+    // que ha 5 pessoas na sala, o colapso de CPU voltaria a cada troca.
+    const a = new AdaptiveQuality();
+    a.reset();
+    a.setViewers(5);
+    a.reset();
+    assert.equal(a.current, DEGRADE_STEPS[2], "reset deve respeitar o piso");
+  });
+});

@@ -177,7 +177,15 @@ export class Mesh {
 
   /** Redistribui o teto de upload — chamado quando alguem entra ou sai. */
   private rebalance() {
+    // Numa malha, cada espectador a mais e um encode a mais da MESMA imagem.
+    // O bitrate ja e dividido em `budgetPerPeer`, mas a CPU nao: avisar a
+    // adaptacao permite ela comecar num degrau seguro em vez de esperar o
+    // encoder atolar pra so entao reagir.
+    const decisao = this.adaptive.setViewers(this.peers.size);
     void this.applyToAll();
+    if (decisao.changed && this.tracks.screen) {
+      this.opts.onQuality?.(decisao.step.label, decisao.reason);
+    }
   }
 
   private async applyToAll() {

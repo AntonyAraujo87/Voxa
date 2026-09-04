@@ -38,6 +38,29 @@ const AMOSTRAS_PARA_MELHORAR = 15;
 const PERDA_RUIM_PCT = 5;
 const PERDA_BOA_PCT = 1;
 
+/**
+ * Degrau em que uma transmissao COMECA, conforme quanta gente vai receber.
+ *
+ * Numa malha full mesh nao existe um encode reaproveitado: a mesma imagem e
+ * codificada uma vez para CADA espectador. Com 5 pessoas assistindo sao 5
+ * encodes simultaneos, e ai o gargalo vira CPU — o bitrate ja e dividido por
+ * espectador (`budgetPerPeer`), a CPU nao e.
+ *
+ * A adaptacao reativa sozinha chega tarde nesse caso: sao 4s de aquecimento
+ * mais 3 amostras ruins antes do primeiro degrau, e nesse intervalo quem
+ * esta transmitindo sente o proprio jogo travar — que e justamente o momento
+ * em que a pessoa desiste e desliga.
+ *
+ * Isto NAO e um teto: e so o ponto de partida. Se as metricas ficarem boas o
+ * bastante por tempo suficiente, `evaluate` continua livre para descer
+ * abaixo do piso — a maquina provou que aguenta, entao ela pode.
+ */
+function pisoPorEspectadores(n: number): number {
+  if (n >= 5) return 2;
+  if (n >= 3) return 1;
+  return 0;
+}
+
 export interface AdaptiveDecision {
   step: DegradeStep;
   changed: boolean;
@@ -59,16 +82,40 @@ export class AdaptiveQuality {
   private ruins = 0;
   private boas = 0;
   private iniciadoEm = 0;
+  private espectadores = 0;
 
   get current(): DegradeStep {
     return DEGRADE_STEPS[this.level];
   }
 
   reset() {
-    this.level = 0;
+    this.level = pisoPorEspectadores(this.espectadores);
     this.ruins = 0;
     this.boas = 0;
     this.iniciadoEm = Date.now();
+  }
+
+  /**
+   * Quantas pessoas vao receber esta transmissao. Chamado quando alguem
+   * entra ou sai do canal.
+   *
+   * So sobe o degrau, nunca desce: quem saiu nao devolve qualidade na hora —
+   * isso e trabalho do `evaluate`, que decide olhando metrica de verdade em
+   * vez de palpite. Sem essa assimetria, alguem entrando e saindo em
+   * sequencia ficaria empurrando a resolucao pra cima e pra baixo.
+   */
+  setViewers(n: number): AdaptiveDecision {
+    const antes = this.espectadores;
+    this.espectadores = n;
+    if (n <= antes) return { step: this.current, changed: false, reason: "" };
+
+    const piso = pisoPorEspectadores(n);
+    if (piso <= this.level) return { step: this.current, changed: false, reason: "" };
+
+    this.level = piso;
+    this.ruins = 0;
+    this.boas = 0;
+    return { step: this.current, changed: true, reason: `${n} pessoas recebendo` };
   }
 
   /**
