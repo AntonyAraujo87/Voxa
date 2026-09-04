@@ -32,6 +32,19 @@ function nota(freq: number, inicio: number, duracao: number, volume: number) {
   ganho.connect(ctx.destination);
   osc.start(t);
   osc.stop(t + duracao + 0.02);
+
+  // O oscilador some sozinho quando termina, mas o ganho continua ligado ao
+  // destino — e o que esta ligado ao destino nao e coletado. Sem soltar aqui,
+  // cada aviso (e eles tocam a cada pessoa que entra ou sai) deixava um node
+  // pendurado no grafo pelo resto da sessao.
+  osc.onended = () => {
+    try {
+      osc.disconnect();
+      ganho.disconnect();
+    } catch {
+      /* contexto ja fechou */
+    }
+  };
 }
 
 function tocar(sequencia: [freq: number, atraso: number, dur: number][], volume = 0.06) {

@@ -164,6 +164,16 @@ fn trim_memory_debounced() {
 
 /// Fechar esconde na bandeja em vez de encerrar; a chamada de voz continua.
 pub fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
+    // SO a janela principal. Este handler roda para TODAS as janelas do app, e
+    // o overlay tambem passa por aqui: como ele e fechado de propria vontade
+    // (`win.close()` quando o usuario desliga a opcao), o `prevent_close`
+    // abaixo apenas o escondia. A janela continuava existindo, o
+    // `get_webview_window("overlay")` seguia encontrando ela, e religar o
+    // overlay nao fazia mais nada — quebrado ate reiniciar o app.
+    if window.label() != "main" {
+        return;
+    }
+
     match event {
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();

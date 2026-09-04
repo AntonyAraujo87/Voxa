@@ -51,6 +51,26 @@ function tom(
   for (const d of destinos) ganho.connect(d);
   osc.start(t);
   osc.stop(t + duracao + 0.02);
+  soltarNoFim(osc, ganho);
+}
+
+/**
+ * Solta os nodes quando o som acaba.
+ *
+ * O source some sozinho ao terminar, mas o ganho continua ligado aos destinos
+ * — e o que esta ligado ao destino nao e coletado. Cada efeito aqui cria de 4
+ * a 14 nodes; sem isto, uma noite de soundboard deixa centenas pendurados no
+ * grafo, todos sendo processados a cada bloco de audio.
+ */
+function soltarNoFim(fonte: AudioScheduledSourceNode, ganho: GainNode) {
+  fonte.onended = () => {
+    try {
+      fonte.disconnect();
+      ganho.disconnect();
+    } catch {
+      /* contexto ja fechou */
+    }
+  };
 }
 
 /** Rajada de ruido branco com envelope — base de aplausos/estatica. */
@@ -72,6 +92,7 @@ function ruido(ctx: AudioContext, destinos: Destino[], inicio: number, duracao: 
   fonte.connect(ganho);
   for (const d of destinos) ganho.connect(d);
   fonte.start(t);
+  soltarNoFim(fonte, ganho);
 }
 
 const RECEITAS: Record<string, (ctx: AudioContext, destinos: Destino[]) => void> = {

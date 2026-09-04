@@ -720,6 +720,10 @@ class Session {
 
   destroy() {
     this.leaveVoice();
+    // `leaveVoice` ja passa por `stopShare`, mas se a captura de tela nunca
+    // chegou a abrir (erro no meio) a thread do WASAPI podia continuar viva
+    // sozinha do lado do Rust, sem ninguem consumindo.
+    pararAudioDoSistema();
     this.mesh.destroy();
     this.media.destroy();
     this.signaling.destroy();
