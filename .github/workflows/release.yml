@@ -45,6 +45,41 @@ jobs:
       - name: Dependencias
         run: npm ci
 
+      # As variaveis VITE_* sao gravadas DENTRO do bundle no momento do build.
+      # Se um secret estiver vazio, o Vite injeta string vazia e o app se
+      # comporta como se aquilo nao existisse — sem erro, sem log, sem nada.
+      #
+      # Foi assim que o historico do chat ficou quebrado desde sempre: o
+      # secret do Supabase estava vazio, `supabaseEnabled` virava false, e o
+      # app simplesmente nunca falava com o banco. Levou uma investigacao
+      # inteira pra descobrir, porque nao havia sintoma nenhum alem de o
+      # historico estar vazio.
+      #
+      # Nao imprime valor nenhum: so o nome do que faltou.
+      - name: Conferir variaveis do build
+        shell: bash
+        env:
+          VITE_SIGNALING_URL: ${{ secrets.VITE_SIGNALING_URL }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$VITE_SIGNALING_URL" ]; then
+            echo "::error::VITE_SIGNALING_URL vazio — o app cairia em localhost e ninguem se conectaria."
+            exit 1
+          fi
+
+          faltando=""
+          [ -n "$VITE_SUPABASE_URL" ]      || faltando="$faltando VITE_SUPABASE_URL"
+          [ -n "$VITE_SUPABASE_ANON_KEY" ] || faltando="$faltando VITE_SUPABASE_ANON_KEY"
+
+          if [ -n "$faltando" ]; then
+            # Aviso, nao erro: o Supabase e opcional por design — sem ele o
+            # chat funciona em tempo real, so nao guarda historico.
+            echo "::warning::Supabase incompleto ($faltando ). Esta versao vai SEM historico de chat."
+          else
+            echo "Todas as variaveis do build estao presentes."
+          fi
+
       - name: Build e publicacao
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:

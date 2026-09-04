@@ -1,4 +1,5 @@
 import { invoke, isDesktop } from "./desktop";
+import { SIGNALING_URL } from "./config";
 
 /* ---------------------------------------------------------------------------
    Diagnostico para quando algo quebra na maquina de outra pessoa.
@@ -90,10 +91,27 @@ export async function montarRelatorio(): Promise<string> {
 
   const panics = isDesktop ? await invoke<string>("read_panic_log") : null;
 
+  // O que esta LIGADO nesta instalacao, e nao so o que deu errado.
+  //
+  // As variaveis VITE_* entram no bundle na hora do build; secret vazio vira
+  // string vazia e o recurso se desliga sozinho, sem erro nenhum. Foi assim
+  // que o historico do chat ficou quebrado sem ninguem notar: o unico
+  // sintoma era o historico estar vazio, que parece "ainda nao usamos".
+  // Sem esta linha, descobrir isso exige investigar o build inteiro.
+  // Lido direto do env, e nao importado de `supabase.ts`: aquele modulo
+  // importa `registrarErro` daqui, e o ciclo entre os dois arriscaria ler a
+  // constante antes de ela existir.
+  const temSupabase = Boolean(
+    import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY
+  );
+  const supabase = temSupabase ? "configurado" : "NAO configurado (sem historico de chat)";
+
   const linhas = [
     "=== Voxa — diagnostico ===",
     `versao: ${info?.version ?? "(navegador)"}`,
     `sistema: ${info ? `${info.os} ${info.arch}` : navigator.userAgent}`,
+    `historico: ${supabase}`,
+    `signaling: ${SIGNALING_URL}`,
     `gerado: ${new Date().toISOString()}`,
     "",
   ];
