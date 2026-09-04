@@ -24,6 +24,34 @@ const KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
 export const supabaseEnabled = Boolean(URL && KEY);
 
+/**
+ * O historico esta realmente funcionando NESTE momento?
+ *
+ * `supabaseEnabled` so diz que ha URL e chave no bundle — nao que o banco
+ * respondeu. A diferenca custou uma investigacao inteira: o app tinha as duas
+ * coisas configuradas, o sign-in anonimo estava desligado no painel, e o
+ * historico simplesmente nao existia. Nenhuma tela dizia isso; o unico
+ * sintoma era o chat abrir vazio, o que parece "ainda nao conversamos".
+ *
+ * `null` = ainda tentando (nao acusar problema cedo demais).
+ */
+export type EstadoHistorico = "ok" | "indisponivel" | null;
+
+let estado: EstadoHistorico = supabaseEnabled ? null : "indisponivel";
+let avisar: ((e: EstadoHistorico) => void) | null = null;
+
+function definirEstado(novo: EstadoHistorico) {
+  if (estado === novo) return;
+  estado = novo;
+  avisar?.(novo);
+}
+
+/** Registra quem quer saber quando o historico cai ou volta. */
+export function observarHistorico(fn: (e: EstadoHistorico) => void) {
+  avisar = fn;
+  fn(estado);
+}
+
 let clientPromise: Promise<SupabaseClient | null> | null = null;
 
 /**
@@ -144,6 +172,7 @@ function db(): Promise<SupabaseClient | null> {
             "sign-in anonimo indisponivel — habilite em Authentication > " +
               "Providers > Anonymous sign-ins. Seguindo sem historico."
           );
+          definirEstado("indisponivel");
           esquecerDepois();
           return null;
         }
@@ -154,9 +183,16 @@ function db(): Promise<SupabaseClient | null> {
         // Nao entrar tambem merece nova tentativa: pode ser o SQL de
         // hardening que acabou de rodar, ou o banco que estava fora do ar
         // neste instante. Sem isso, o historico so voltaria no proximo boot.
-        if (!(await joinGuild(client))) esquecerDepois();
+        if (await joinGuild(client)) definirEstado("ok");
+        else {
+          // Sessao existe mas nao entrou nas salas: as politicas devolvem
+          // lista vazia, entao na pratica nao ha historico.
+          definirEstado("indisponivel");
+          esquecerDepois();
+        }
         return client;
       } catch {
+        definirEstado("indisponivel");
         esquecerDepois();
         return null;
       }

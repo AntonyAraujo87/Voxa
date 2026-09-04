@@ -145,6 +145,7 @@ const MessageList = memo(function MessageList({ channelId }: { channelId: string
   const messages = useApp((s) => s.messages[channelId]);
   const roster = useApp((s) => s.roster);
   const meuNome = useApp((s) => s.me?.name ?? "");
+  const historico = useApp((s) => s.historico);
   // Derivado aqui, uma vez por lista: um seletor que fizesse `.map()` dentro
   // do Zustand devolveria array novo a cada leitura e re-renderizaria a
   // conversa inteira a cada tick de estado.
@@ -191,6 +192,17 @@ const MessageList = memo(function MessageList({ channelId }: { channelId: string
     >
       {carregando && (
         <p className="py-2 text-center text-[11px] text-faint">carregando historico...</p>
+      )}
+
+      {/* Aviso discreto, e nao toast: nao e um erro que acabou de acontecer,
+          e uma condicao que vale enquanto durar. Sem ele, chat sem historico
+          e indistinguivel de chat onde ninguem falou ainda — foi exatamente
+          essa duvida que escondeu o Supabase mal configurado por semanas. */}
+      {historico === "indisponivel" && (
+        <p className="mx-4 mt-3 rounded-md bg-base-500/60 px-3 py-2 text-[12px] text-muted">
+          Sem histórico agora — o que for escrito aparece para quem está online,
+          mas some ao fechar o app.
+        </p>
       )}
       {items.length === 0 && (
         <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">

@@ -35,6 +35,8 @@ export interface AppState {
   messages: Record<string, ChatMessage[]>;
   typing: Record<string, number>;
   /** canalId -> mensagens nao lidas desde a ultima visita */
+  /** historico de chat funcionando agora: null enquanto ainda tenta */
+  historico: "ok" | "indisponivel" | null;
   unread: Record<string, number>;
   /** canais onde alguem chamou VOCE por @mencao e voce ainda nao leu.
    *  Separado de `unread` porque merece destaque proprio: 40 mensagens sem
@@ -121,6 +123,7 @@ export const useApp = create<AppState>((set) => ({
 
   messages: {},
   typing: {},
+  historico: null,
   unread: {},
   mentions: {},
 

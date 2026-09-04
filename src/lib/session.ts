@@ -7,7 +7,7 @@ import { Chat } from "./chat";
 import { Transmissao } from "./transmissao";
 import { useApp } from "../store/store";
 import { clearPeerMedia, setPeerStream } from "../store/mediaStore";
-import { loadChannels, setGuildToken, supabaseEnabled, upsertUser } from "./supabase";
+import { loadChannels, observarHistorico, setGuildToken, supabaseEnabled, upsertUser } from "./supabase";
 import { currentPrefs, loadPrefs, primePrefsCache, savePrefs } from "./prefs";
 import { entradaDoBus, setOutputDevice, setOutputMode as aplicarModoSaida } from "./audioOutput";
 import { tocarEfeito } from "./soundboard";
@@ -165,6 +165,7 @@ class Session {
   hydrate() {
     const prefs = loadPrefs();
     primePrefsCache(prefs);
+    observarHistorico((estado) => app.setState({ historico: estado }));
     app.setState({
       tuning: prefs.tuning,
       micDeviceId: prefs.micDeviceId,
