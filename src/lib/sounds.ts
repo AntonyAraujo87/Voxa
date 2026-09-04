@@ -75,3 +75,22 @@ export const playMute = () => tocar([[392.0, 0, 0.09]], 0.05);
 
 /** Proprio microfone abriu. */
 export const playUnmute = () => tocar([[587.33, 0, 0.09]], 0.05);
+
+/**
+ * Alguem citou voce no chat: tres notas subindo, mais alto que os avisos de
+ * entrada e saida.
+ *
+ * Deliberadamente distinto: entrada/saida acontecem o tempo todo e viram
+ * ruido de fundo que o ouvido aprende a ignorar. Uma mencao e a unica coisa
+ * no app que pede acao de quem esta jogando, entao precisa soar diferente
+ * das outras — senao chega junto com o resto e passa batido.
+ */
+export const playMention = () =>
+  tocar(
+    [
+      [659.25, 0, 0.1],
+      [830.61, 0.08, 0.1],
+      [987.77, 0.16, 0.2],
+    ],
+    0.075
+  );

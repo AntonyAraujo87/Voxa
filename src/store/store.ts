@@ -3,6 +3,7 @@ import { DEFAULT_CHANNELS, type Channel } from "../lib/config";
 import type { PeerStats, TuningState } from "../lib/rtc";
 import type { ChatMessage, PeerState, PeerUser, RosterEntry } from "../lib/signaling";
 import { savePrefs } from "../lib/prefs";
+import { mencionaVoce } from "../lib/mencao";
 
 export type ConnStatus = "connecting" | "online" | "offline";
 
@@ -35,6 +36,10 @@ export interface AppState {
   typing: Record<string, number>;
   /** canalId -> mensagens nao lidas desde a ultima visita */
   unread: Record<string, number>;
+  /** canais onde alguem chamou VOCE por @mencao e voce ainda nao leu.
+   *  Separado de `unread` porque merece destaque proprio: 40 mensagens sem
+   *  ler e ruido, uma citando seu nome nao e. */
+  mentions: Record<string, number>;
 
   /* estado local de midia */
   micReady: boolean;
@@ -117,6 +122,7 @@ export const useApp = create<AppState>((set) => ({
   messages: {},
   typing: {},
   unread: {},
+  mentions: {},
 
   micReady: false,
   muted: false,
@@ -169,11 +175,24 @@ export const useApp = create<AppState>((set) => ({
           ? s.unread
           : { ...s.unread, [msg.channelId]: (s.unread[msg.channelId] ?? 0) + 1 };
 
+      const chamou =
+        !minha &&
+        !vendoAgora &&
+        mencionaVoce(
+          msg.content,
+          s.me?.name ?? "",
+          s.roster.map((r) => r.user.name)
+        );
+      const mentions = chamou
+        ? { ...s.mentions, [msg.channelId]: (s.mentions[msg.channelId] ?? 0) + 1 }
+        : s.mentions;
+
       // janela deslizante: 300 mensagens por canal em memoria, o resto vive no
       // Supabase. Evita a lista crescer sem limite numa sessao longa.
       const next = [...list, msg];
       return {
         unread,
+        mentions,
         messages: {
           ...s.messages,
           [msg.channelId]: next.length > 300 ? next.slice(-300) : next,
@@ -206,10 +225,12 @@ export const useApp = create<AppState>((set) => ({
 
   clearUnread: (channelId) =>
     set((s) => {
-      if (!s.unread[channelId]) return s;
+      if (!s.unread[channelId] && !s.mentions[channelId]) return s;
       const unread = { ...s.unread };
+      const mentions = { ...s.mentions };
       delete unread[channelId];
-      return { unread };
+      delete mentions[channelId];
+      return { unread, mentions };
     }),
 
   setVolume: (userId, volume) =>

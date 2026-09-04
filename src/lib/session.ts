@@ -25,7 +25,7 @@ import {
   type HotkeyStatus,
   type RebindCombo,
 } from "./desktop";
-import { playJoin, playLeave, playMute, playUnmute, setSoundsEnabled } from "./sounds";
+import { playJoin, playLeave, playMention, playMute, playUnmute, setSoundsEnabled } from "./sounds";
 
 const app = useApp;
 
@@ -74,6 +74,19 @@ class Session {
         // ninguem esta olhando a janela. O piscar da barra de tarefas e o
         // unico aviso que atravessa o jogo em tela cheia.
         if (document.hidden && msg.authorId !== s.me?.id) void flashTaskbar();
+
+        // Mencao e a unica coisa no chat que pede acao de quem esta jogando.
+        // Avisa mesmo com a janela aberta em outro canal — o badge sozinho
+        // so seria visto por quem ja estivesse olhando pra barra lateral.
+        // `pushMessage` acima ja decidiu se conta como mencao; reusar o
+        // estado evita a lista de nomes divergir entre os dois lugares.
+        const depois = app.getState();
+        if (
+          (depois.mentions[msg.channelId] ?? 0) > (s.mentions[msg.channelId] ?? 0)
+        ) {
+          playMention();
+          if (!document.hidden) void flashTaskbar();
+        }
       },
       onTyping: ({ channelId, name }) =>
         app.setState((s) => ({ typing: { ...s.typing, [name + channelId]: Date.now() } })),

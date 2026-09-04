@@ -93,6 +93,17 @@ export function Overlay() {
     return () => window.removeEventListener("keydown", onKey);
   }, [posicionando, fixar]);
 
+  // Ultima rede de seguranca. Enquanto o modo posicionar vale, o overlay
+  // come os cliques que iriam pro jogo — e o Esc so funciona com a janela
+  // em foco, que e justamente o que se perde ao voltar pro jogo. Nenhum
+  // posicionamento honesto leva tres minutos, entao passado esse tempo ele
+  // se fixa sozinho em vez de ficar no caminho pra sempre.
+  useEffect(() => {
+    if (!posicionando) return;
+    const t = window.setTimeout(() => void fixar(), 180_000);
+    return () => window.clearTimeout(t);
+  }, [posicionando, fixar]);
+
   // So em dev: fora do app empacotado nao ha janela Tauri de verdade pra
   // emitir o evento, entao nao ha como ver o overlay sem isso.
   useEffect(() => {

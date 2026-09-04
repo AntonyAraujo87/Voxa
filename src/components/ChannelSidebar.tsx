@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
 import {
+  AtSign,
   Camera,
   ChevronDown,
   Hash,
@@ -32,6 +33,7 @@ const TextChannel = memo(function TextChannel({
   active: boolean;
 }) {
   const naoLidas = useApp((s) => s.unread[id] ?? 0);
+  const chamadas = useApp((s) => s.mentions[id] ?? 0);
 
   return (
     <button
@@ -46,7 +48,15 @@ const TextChannel = memo(function TextChannel({
     >
       <Hash size={18} className="shrink-0 text-faint" />
       <span className="truncate">{name}</span>
-      {naoLidas > 0 && (
+      {/* Ser citado tem peso diferente de ter mensagem por ler: mostra "@"
+          junto do numero pra dar pra distinguir sem abrir o canal. */}
+      {chamadas > 0 && (
+        <span className="ml-auto flex items-center gap-0.5 rounded-full bg-brand px-1.5 text-center text-[11px] font-bold leading-[18px] text-white">
+          <AtSign size={10} strokeWidth={3} />
+          {chamadas > 99 ? "99+" : chamadas}
+        </span>
+      )}
+      {chamadas === 0 && naoLidas > 0 && (
         <span className="ml-auto min-w-[18px] rounded-full bg-danger px-1.5 text-center text-[11px] font-bold leading-[18px] text-white">
           {naoLidas > 99 ? "99+" : naoLidas}
         </span>

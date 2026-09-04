@@ -1,9 +1,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Download, FileText, Hash, Paperclip, Send, Users } from "lucide-react";
+import { AtSign, Download, FileText, Hash, Paperclip, Send, Users } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import { Avatar } from "./Avatar";
 import type { ChatMessage } from "../lib/signaling";
+import { MENCAO_TODOS, mencionaVoce, partirPorMencao, sugerir, trechoDeMencao } from "../lib/mencao";
 
 const time = (iso: string) =>
   new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
@@ -51,23 +52,72 @@ const Attachment = memo(function Attachment({ msg }: { msg: ChatMessage }) {
   );
 });
 
+/**
+ * Texto da mensagem com as mencoes destacadas.
+ *
+ * Feito por partes em vez de `innerHTML` com regex: o conteudo vem de outra
+ * pessoa, e montar HTML a partir dele seria abrir XSS num app que hoje nao
+ * tem nenhum. Cada pedaco vira um nó de texto que o React escapa sozinho.
+ */
+const Texto = memo(function Texto({
+  conteudo,
+  nomes,
+  meuNome,
+}: {
+  conteudo: string;
+  nomes: string[];
+  meuNome: string;
+}) {
+  const partes = useMemo(() => partirPorMencao(conteudo, nomes), [conteudo, nomes]);
+
+  return (
+    <p className="whitespace-pre-wrap break-words text-ink-soft">
+      {partes.map((parte, i) =>
+        parte.tipo === "texto" ? (
+          parte.texto
+        ) : (
+          <span
+            key={i}
+            className={`rounded px-0.5 font-medium ${
+              parte.alvo.toLowerCase() === meuNome.toLowerCase() || parte.alvo === MENCAO_TODOS
+                ? "bg-brand/30 text-ink"
+                : "bg-brand/15 text-brand"
+            }`}
+          >
+            {parte.texto}
+          </span>
+        )
+      )}
+    </p>
+  );
+});
+
 const Message = memo(function Message({
   msg,
   grouped,
+  nomes,
+  meuNome,
 }: {
   msg: ChatMessage;
   grouped: boolean;
+  nomes: string[];
+  meuNome: string;
 }) {
+  const chama = useMemo(
+    () => mencionaVoce(msg.content, meuNome, nomes),
+    [msg.content, meuNome, nomes]
+  );
+  // Barra na lateral em vez de fundo colorido na linha toda: some no meio de
+  // uma conversa longa e continua legivel com a mensagem selecionada.
+  const realce = chama ? "border-l-2 border-brand bg-brand/[0.07]" : "";
   if (grouped) {
     return (
-      <div className="group flex gap-4 px-4 py-[1px] hover:bg-base-500/25">
+      <div className={`group flex gap-4 px-4 py-[1px] hover:bg-base-500/25 ${realce}`}>
         <span className="w-10 shrink-0 pt-0.5 text-right text-[10px] text-faint opacity-0 group-hover:opacity-100">
           {time(msg.createdAt)}
         </span>
         <div className="min-w-0 flex-1">
-          {msg.content && (
-            <p className="whitespace-pre-wrap break-words text-ink-soft">{msg.content}</p>
-          )}
+          {msg.content && <Texto conteudo={msg.content} nomes={nomes} meuNome={meuNome} />}
           <Attachment msg={msg} />
         </div>
       </div>
@@ -75,7 +125,7 @@ const Message = memo(function Message({
   }
 
   return (
-    <div className="group mt-3 flex gap-3 px-4 py-[1px] hover:bg-base-500/25">
+    <div className={`group mt-3 flex gap-3 px-4 py-[1px] hover:bg-base-500/25 ${realce}`}>
       <Avatar name={msg.authorName} color={msg.authorColor} size={40} />
       <div className="min-w-0 flex-1">
         <p className="flex items-baseline gap-2">
@@ -84,9 +134,7 @@ const Message = memo(function Message({
           </span>
           <span className="text-[11px] text-faint">{time(msg.createdAt)}</span>
         </p>
-        {msg.content && (
-          <p className="whitespace-pre-wrap break-words text-ink-soft">{msg.content}</p>
-        )}
+        {msg.content && <Texto conteudo={msg.content} nomes={nomes} meuNome={meuNome} />}
         <Attachment msg={msg} />
       </div>
     </div>
@@ -95,6 +143,12 @@ const Message = memo(function Message({
 
 const MessageList = memo(function MessageList({ channelId }: { channelId: string }) {
   const messages = useApp((s) => s.messages[channelId]);
+  const roster = useApp((s) => s.roster);
+  const meuNome = useApp((s) => s.me?.name ?? "");
+  // Derivado aqui, uma vez por lista: um seletor que fizesse `.map()` dentro
+  // do Zustand devolveria array novo a cada leitura e re-renderizaria a
+  // conversa inteira a cada tick de estado.
+  const nomes = useMemo(() => roster.map((r) => r.user.name), [roster]);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const [carregando, setCarregando] = useState(false);
@@ -150,7 +204,9 @@ const MessageList = memo(function MessageList({ channelId }: { channelId: string
           !!prev &&
           prev.authorId === m.authorId &&
           new Date(m.createdAt).getTime() - new Date(prev.createdAt).getTime() < GROUP_WINDOW_MS;
-        return <Message key={m.id} msg={m} grouped={grouped} />;
+        return (
+          <Message key={m.id} msg={m} grouped={grouped} nomes={nomes} meuNome={meuNome} />
+        );
       })}
     </div>
   );
@@ -166,11 +222,43 @@ const Composer = memo(function Composer({ channelName }: { channelName: string }
   const fileRef = useRef<HTMLInputElement>(null);
   const lastTyping = useRef(0);
 
+  const roster = useApp((s) => s.roster);
+  const nomes = useMemo(() => roster.map((r) => r.user.name), [roster]);
+
+  /** Autocomplete de @mencao: sem ele so acerta quem digita o nome exato,
+   *  com acento e maiuscula iguais — e nome errado nao avisa ninguem. */
+  const [mencao, setMencao] = useState<{ inicio: number; termo: string } | null>(null);
+  const [escolhido, setEscolhido] = useState(0);
+  const sugestoes = useMemo(
+    () => (mencao ? sugerir(mencao.termo, nomes) : []),
+    [mencao, nomes]
+  );
+  const listaAberta = sugestoes.length > 0;
+
+  const aplicarSugestao = (nome: string) => {
+    const el = ref.current;
+    if (!mencao || !el) return;
+    const antes = text.slice(0, mencao.inicio);
+    const depois = text.slice(el.selectionStart ?? text.length);
+    const novo = `${antes}@${nome} ${depois}`;
+    setText(novo);
+    setMencao(null);
+    // O cursor precisa ir pro fim do nome inserido; sem isto ele voltaria
+    // pro fim do texto todo e escrever depois de uma mencao no meio da
+    // frase ficaria impossivel.
+    const cursor = antes.length + nome.length + 2;
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(cursor, cursor);
+    });
+  };
+
   const submit = () => {
     const value = text.trim();
     if (!value) return;
     session.sendChat(value);
     setText("");
+    setMencao(null);
     if (ref.current) ref.current.style.height = "auto";
   };
 
@@ -184,6 +272,31 @@ const Composer = memo(function Composer({ channelName }: { channelName: string }
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Com a lista aberta, as setas e o Enter pertencem a ela — senao o Enter
+    // mandaria a mensagem no meio da escolha do nome.
+    if (listaAberta) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setEscolhido((i) => (i + 1) % sugestoes.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setEscolhido((i) => (i - 1 + sugestoes.length) % sugestoes.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        aplicarSugestao(sugestoes[escolhido] ?? sugestoes[0]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMencao(null);
+        return;
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
@@ -195,6 +308,10 @@ const Composer = memo(function Composer({ channelName }: { channelName: string }
     const el = e.target;
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 200) + "px";
+
+    const trecho = trechoDeMencao(el.value, el.selectionStart ?? el.value.length);
+    setMencao(trecho);
+    setEscolhido(0);
     const now = Date.now();
     if (now - lastTyping.current > 2500) {
       lastTyping.current = now;
@@ -203,7 +320,36 @@ const Composer = memo(function Composer({ channelName }: { channelName: string }
   };
 
   return (
-    <div className="px-4 pb-5 pt-1">
+    <div className="relative px-4 pb-5 pt-1">
+      {listaAberta && (
+        <div className="absolute bottom-full left-4 right-4 mb-1 overflow-hidden rounded-lg border border-line bg-base-600 shadow-lg">
+          <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
+            Mencionar
+          </p>
+          {sugestoes.map((nome, i) => (
+            <button
+              key={nome}
+              // onMouseDown em vez de onClick: o clique tira o foco do
+              // textarea antes do onClick disparar, e ai a posicao do cursor
+              // usada pra montar o texto ja se perdeu.
+              onMouseDown={(e) => {
+                e.preventDefault();
+                aplicarSugestao(nome);
+              }}
+              onMouseEnter={() => setEscolhido(i)}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${
+                i === escolhido ? "bg-brand text-white" : "text-ink-soft hover:bg-base-500"
+              }`}
+            >
+              <AtSign size={13} className="shrink-0 opacity-70" />
+              <span className="truncate">{nome}</span>
+              {nome === MENCAO_TODOS && (
+                <span className="ml-auto text-[10px] opacity-70">avisa todo mundo</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="flex items-end gap-2 rounded-lg bg-base-500 px-4 py-2.5">
         <input
           ref={fileRef}
