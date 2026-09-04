@@ -1,22 +1,21 @@
-import { AUDIO_PRESETS, VIDEO_PRESETS, type Channel } from "./config";
+import { AUDIO_PRESETS, type Channel } from "./config";
 import { LocalMedia } from "./localMedia";
 import { listDevices } from "./media";
 import { Mesh, type TuningState } from "./rtc";
 import { Signaling, pingSignaling, type PeerUser, type RosterEntry } from "./signaling";
 import { Chat } from "./chat";
+import { Transmissao } from "./transmissao";
 import { useApp } from "../store/store";
-import { clearPeerMedia, setLocalScreen, setPeerStream } from "../store/mediaStore";
+import { clearPeerMedia, setPeerStream } from "../store/mediaStore";
 import { loadChannels, setGuildToken, supabaseEnabled, upsertUser } from "./supabase";
 import { currentPrefs, loadPrefs, primePrefsCache, savePrefs } from "./prefs";
 import { entradaDoBus, setOutputDevice, setOutputMode as aplicarModoSaida } from "./audioOutput";
 import { tocarEfeito } from "./soundboard";
-import { iniciarAudioDoSistema, pararAudioDoSistema } from "./sysaudio";
+import { pararAudioDoSistema } from "./sysaudio";
 import {
   checkForUpdate,
   emitEvent,
   flashTaskbar,
-  focusWindow,
-  isDesktop,
   listenEvent,
   rebindHotkey as rebindHotkeyNative,
   setOverlayMovable,
@@ -43,13 +42,11 @@ class Session {
   private mesh: Mesh;
   private media: LocalMedia;
   private chat: Chat;
+  private video: Transmissao;
 
   private started = false;
   private mutedBeforeDeafen = false;
   private pendingUpdate: (() => Promise<void>) | null = null;
-  /** trava contra duplo clique / atalho repetido durante o await da captura */
-  private sharePending = false;
-  private webcamPending = false;
   /** serializa entradas em canal: dois cliques rapidos criavam duas malhas */
   private joinPending: Promise<void> | null = null;
 
@@ -132,6 +129,7 @@ class Session {
     });
 
     this.chat = new Chat(this.signaling);
+    this.video = new Transmissao(this.media, this.mesh, this.signaling);
   }
 
   /**
@@ -587,156 +585,31 @@ class Session {
     }
   }
 
-  /* ------------------------------ tela / jogo --------------------------- */
+  /* --------------------------- tela / jogo / camera ---------------------- */
+  /* Regra e implementacao em `lib/transmissao.ts`: tela e camera dividem o
+     mesmo canal de video, e a limpeza de estado das duas e a mesma. Aqui
+     ficam so os nomes que a UI e os atalhos globais ja chamam. */
 
-  async startShare() {
-    const s = app.getState();
-    // A captura e assincrona: sem esta trava, dois cliques rapidos (ou o
-    // atalho global repetido) abririam duas capturas e vazariam um stream.
-    // `sharingKind === "tela"` (nao so `s.sharing`) porque a camera tambem
-    // deixa `sharing: true` — senao trocar de camera pra tela nunca saia do
-    // lugar, ja achando que "ja esta compartilhando".
-    if (s.sharingKind === "tela" || this.sharePending) return;
-    if (!s.activeVoice) {
-      s.toast("info", "Entre num canal de voz antes de compartilhar.");
-      return;
-    }
-    // Tela e camera vao pro mesmo transceiver de video da malha — so uma
-    // por vez. Trocar de uma pra outra e so desligar a que estava e ligar a
-    // nova, sem exigir dois cliques.
-    if (this.media.isWebcamOn) this.stopWebcam();
-
-    this.sharePending = true;
-    try {
-      const { stream, video, audio } = await this.media.openScreen(s.tuning.video, s.tuning.content);
-      setLocalScreen(stream);
-
-      // O audio do getDisplayMedia costuma vir vazio com jogo em tela cheia — e
-      // o WebView2 nem sempre entrega alguma coisa. Com a opcao ligada, pega
-      // direto o que a placa de som esta tocando (WASAPI loopback).
-      let trilhaAudio = audio;
-      if (s.systemAudio) {
-        try {
-          trilhaAudio = (await iniciarAudioDoSistema()) ?? audio;
-        } catch (err) {
-          // Falhar aqui nao pode cancelar a transmissao: segue com o audio que
-          // o navegador deu (mesmo que seja nenhum) e avisa.
-          s.toast("info", `Audio do sistema indisponivel: ${(err as Error).message}`);
-        }
-      }
-      await this.mesh.setScreen(video, trilhaAudio);
-
-      app.setState({ sharing: true, sharingKind: "tela", focusPeer: s.selfSocketId });
-      this.signaling.setState({ sharing: true, sharingKind: "tela" });
-
-      const preset = VIDEO_PRESETS[s.tuning.video];
-      s.toast("ok", `Compartilhando ${preset.width}x${preset.height} @ ${preset.fps}fps`);
-    } catch (err) {
-      this.media.closeScreen();
-      pararAudioDoSistema();
-      setLocalScreen(null);
-      s.toast("error", (err as Error).message);
-    } finally {
-      this.sharePending = false;
-    }
+  startShare() {
+    return this.video.iniciarTela();
   }
-
   stopShare() {
-    if (!this.media.isSharing) return;
-    void this.mesh.setScreen(null, null);
-    this.media.closeScreen();
-    pararAudioDoSistema();
-    setLocalScreen(null);
-
-    const selfId = app.getState().selfSocketId;
-    app.setState((s) => ({
-      sharing: false,
-      sharingKind: null,
-      focusPeer: s.focusPeer === selfId ? null : s.focusPeer,
-    }));
-    this.signaling.setState({ sharing: false, sharingKind: null });
+    this.video.pararTela();
   }
-
-  /**
-   * Abre o seletor de fonte antes de compartilhar — como todo mundo espera,
-   * ao estilo Discord. No navegador (dev/teste) nao precisa de seletor
-   * proprio: getDisplayMedia() ja mostra o seletor nativo do Chrome sozinho.
-   * No app empacotado, o WebView2 nao tem esse seletor embutido — por isso
-   * existe o SharePicker, que escolhe ANTES de chamar getDisplayMedia().
-   */
-  async toggleShare() {
-    // `sharingKind`, nao `sharing` puro — a camera tambem deixa `sharing:
-    // true`, e um toggle "parar" nela nao teria nada pra parar (stopShare
-    // so mexe no que a PROPRIA tela abriu).
-    if (app.getState().sharingKind === "tela") {
-      this.stopShare();
-      return;
-    }
-    if (!isDesktop) {
-      await this.startShare();
-      return;
-    }
-    // O atalho global pode disparar com a janela escondida na bandeja; o
-    // seletor precisa estar visivel para poder escolher.
-    await focusWindow();
-    app.setState({ showSharePicker: true });
+  toggleShare() {
+    return this.video.alternarTela();
   }
-
-  /* ------------------------------- webcam --------------------------------- */
-
-  async startWebcam() {
-    const s = app.getState();
-    if (this.media.isWebcamOn || this.webcamPending) return;
-    if (!s.activeVoice) {
-      s.toast("info", "Entre num canal de voz antes de ligar a camera.");
-      return;
-    }
-    if (s.sharing) this.stopShare();
-
-    this.webcamPending = true;
-    try {
-      const track = await this.media.openWebcam(s.camDeviceId);
-      if (!track) return;
-      setLocalScreen(new MediaStream([track]));
-      await this.mesh.setScreen(track, null);
-
-      app.setState({ sharing: true, sharingKind: "camera", focusPeer: s.selfSocketId });
-      this.signaling.setState({ sharing: true, sharingKind: "camera" });
-    } catch (err) {
-      this.media.closeWebcam();
-      setLocalScreen(null);
-      s.toast("error", (err as Error).message);
-    } finally {
-      this.webcamPending = false;
-    }
+  startWebcam() {
+    return this.video.iniciarCamera();
   }
-
   stopWebcam() {
-    if (!this.media.isWebcamOn) return;
-    void this.mesh.setScreen(null, null);
-    this.media.closeWebcam();
-    setLocalScreen(null);
-
-    const selfId = app.getState().selfSocketId;
-    app.setState((s) => ({
-      sharing: false,
-      sharingKind: null,
-      focusPeer: s.focusPeer === selfId ? null : s.focusPeer,
-    }));
-    this.signaling.setState({ sharing: false, sharingKind: null });
+    this.video.pararCamera();
   }
-
   toggleWebcam() {
-    if (this.media.isWebcamOn) this.stopWebcam();
-    else void this.startWebcam();
+    this.video.alternarCamera();
   }
-
-  async setCamDevice(deviceId: string) {
-    app.setState({ camDeviceId: deviceId });
-    savePrefs({ camDeviceId: deviceId });
-    if (!this.media.isWebcamOn) return;
-    this.stopWebcam();
-    await this.startWebcam();
+  setCamDevice(deviceId: string) {
+    return this.video.trocarCamera(deviceId);
   }
 
   /* ------------------------------- qualidade ---------------------------- */
