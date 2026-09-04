@@ -27,6 +27,21 @@ revoke all on function public.can_read_room(uuid) from anon;
 drop policy if exists chat_attachments_update on storage.objects;
 drop policy if exists chat_attachments_delete on storage.objects;
 
+-- ---- mensagem so-anexo (sem legenda) ---------------------------------------
+-- O schema exigia `char_length(content) between 1 and 2000`, mas o app deixa
+-- mandar imagem sem escrever nada junto. A mensagem aparecia em tempo real
+-- (o servidor de sinalizacao aceita) e depois SUMIA do historico: o insert no
+-- banco falhava contra este check, e a falha e engolida de proposito para nao
+-- atrapalhar quem esta conversando. Resultado: "mandei a foto e no dia
+-- seguinte nao estava mais la".
+--
+-- Agora o texto pode ser vazio, desde que haja anexo.
+alter table public.messages drop constraint if exists messages_content_check;
+alter table public.messages add constraint messages_content_check check (
+  char_length(content) <= 2000
+  and (char_length(content) >= 1 or attachment_url is not null)
+);
+
 -- A PARTE 2 (fechar o historico do chat) virou arquivo proprio:
 --   supabase/fechar-historico.sql
 -- Ela muda o modelo de acesso e tem ordem de aplicacao propria — leia o

@@ -1,4 +1,5 @@
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
+import { registrarErro } from "./diagnostico";
 import { DEFAULT_CHANNELS, type Channel } from "./config";
 import type { ChatMessage } from "./signaling";
 
@@ -220,7 +221,7 @@ export async function saveMessage(msg: ChatMessage) {
 
     // author_id vem da sessao, nunca do objeto da UI. A politica de RLS exige
     // que ele seja igual a auth.uid(), entao nem adiantaria mentir aqui.
-    await sb.from("messages").insert({
+    const { error } = await sb.from("messages").insert({
       room_id: uuid,
       author_id: userId,
       content: msg.content,
@@ -229,9 +230,17 @@ export async function saveMessage(msg: ChatMessage) {
       attachment_mime: msg.attachmentMime ?? null,
       attachment_size: msg.attachmentSize ?? null,
     });
-  } catch {
+
+    // O supabase-js NAO lanca quando o banco recusa: devolve `error` e segue.
+    // Sem olhar aqui, a mensagem sumia do historico sem deixar rastro nenhum
+    // — foi assim que "imagem sem legenda desaparece no dia seguinte" passou
+    // despercebido. Nao vira toast (falha de rede e comum e a mensagem ja foi
+    // entregue ao vivo), mas fica no diagnostico.
+    if (error) registrarErro("supabase:saveMessage", error.message);
+  } catch (err) {
     // Offline ou limite de flood: a mensagem ja foi entregue em tempo real,
     // apenas nao vira historico.
+    registrarErro("supabase:saveMessage", err);
   }
 }
 
