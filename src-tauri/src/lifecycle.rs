@@ -71,9 +71,12 @@ pub fn trim_memory() {
 pub fn trim_memory() {}
 
 /// Libera memoria sob demanda, chamado pelo frontend quando a janela some.
+///
+/// Tambem em outra thread: o comando volta na hora e a varredura acontece por
+/// fora, sem segurar quem chamou.
 #[tauri::command]
 pub fn release_memory() {
-    trim_memory();
+    std::thread::spawn(trim_memory);
 }
 
 /// Pisca o icone na barra de tarefas.
@@ -148,6 +151,21 @@ const INTERVALO_MINIMO_S: u64 = 20;
 /// `Resized` dispara em rajada durante a animacao de minimizar. Sem esta
 /// travar, EmptyWorkingSet rodaria dezenas de vezes seguidas, varrendo a lista
 /// de processos filhos a cada uma — trabalho puro para nenhum ganho extra.
+///
+/// O trabalho vai para OUTRA THREAD de proposito. Isto aqui e chamado de
+/// dentro do handler de eventos de janela, que roda na thread de interface: e
+/// a mesma thread que processa clique, arrasto e o botao de fechar. E o
+/// trabalho nao e barato — varre a lista de processos do sistema inteiro e,
+/// pior, `EmptyWorkingSet` empurra as paginas do app para o arquivo de
+/// paginacao. Num PC com disco mecanico ou pouca RAM, trazer tudo de volta
+/// leva segundos.
+///
+/// Segurando a thread de interface, o Windows marca a janela como "nao
+/// respondendo": os botoes de fechar e minimizar, que sao desenhados pelo
+/// proprio app, param de responder, e ate "Fechar janela" pela barra de
+/// tarefas deixa de funcionar — so o Gerenciador de Tarefas encerra. Enquanto
+/// isso a chamada de voz continua normalmente, porque o audio nao depende
+/// dessa thread. E exatamente o sintoma de "congelou mas continua rodando".
 fn trim_memory_debounced() {
     let agora = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -159,7 +177,7 @@ fn trim_memory_debounced() {
         return;
     }
     ULTIMO_TRIM.store(agora, Ordering::Relaxed);
-    trim_memory();
+    std::thread::spawn(trim_memory);
 }
 
 /// Fechar esconde na bandeja em vez de encerrar; a chamada de voz continua.
