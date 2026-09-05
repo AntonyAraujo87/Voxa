@@ -1,5 +1,6 @@
 import { invoke, isDesktop } from "./desktop";
 import { SIGNALING_URL } from "./config";
+import { saidaTocando } from "./audioOutput";
 
 /* ---------------------------------------------------------------------------
    Diagnostico para quando algo quebra na maquina de outra pessoa.
@@ -112,6 +113,10 @@ export async function montarRelatorio(): Promise<string> {
     `sistema: ${info ? `${info.os} ${info.arch}` : navigator.userAgent}`,
     `historico: ${supabase}`,
     `signaling: ${SIGNALING_URL}`,
+    // O caminho por onde TODO o audio remoto sai. Se estiver parado, a
+    // chamada fica muda com tudo o mais parecendo certo — conexao boa, anel
+    // de "falando" aceso, video normal.
+    `saida de audio: ${saidaTocando() ? "tocando" : "PARADA (voce nao ouve ninguem)"}`,
     `gerado: ${new Date().toISOString()}`,
     "",
   ];

@@ -1,4 +1,5 @@
 import { audioContext } from "./media";
+import { registrarErro } from "./diagnostico";
 
 /* ---------------------------------------------------------------------------
    Bus de saida compartilhado. Todo audio remoto (voz + som de transmissao,
@@ -34,9 +35,50 @@ function garantirGrafo() {
   elemento = new Audio();
   elemento.autoplay = true;
   elemento.srcObject = destino.stream;
-  void elemento.play().catch(() => {
-    /* politica de autoplay: o destravamento global em audioContext() cobre isso */
-  });
+
+  // No DOM de proposito. Um `new Audio()` solto reproduz na maioria dos
+  // casos, mas e o unico caminho por onde TODO o audio remoto sai — nao vale
+  // depender de um detalhe de implementacao do navegador.
+  elemento.style.display = "none";
+  document.body.appendChild(elemento);
+
+  tocar();
+}
+
+/**
+ * Tenta dar play e, se o navegador recusar, tenta de novo ao primeiro toque
+ * da pessoa.
+ *
+ * Isto ja falhou calado uma vez e custou caro: o `catch` vazio dizia que "o
+ * destravamento global em audioContext() cobre isso", e nao cobria — aquele
+ * destravamento so chama `ctx.resume()`, que acorda o PROCESSADOR de audio,
+ * nao este elemento. Com o play recusado, o grafo processava normalmente e o
+ * som simplesmente nunca chegava na caixa: chamada muda, com o video
+ * funcionando do lado (porque o <video> e outro elemento, montado pelo
+ * React). O sintoma relatado foi "a imagem aparece, so fica sem som".
+ */
+function tocar() {
+  const alvo = elemento;
+  if (!alvo) return;
+
+  alvo
+    .play()
+    .then(() => {
+      document.removeEventListener("click", tocar, true);
+      document.removeEventListener("keydown", tocar, true);
+    })
+    .catch((err) => {
+      registrarErro("audio:saida", err);
+      // `true` para pegar o evento na captura: um clique em botao que chama
+      // stopPropagation ainda destrava o audio.
+      document.addEventListener("click", tocar, true);
+      document.addEventListener("keydown", tocar, true);
+    });
+}
+
+/** O audio remoto esta realmente saindo? Usado pelo diagnostico. */
+export function saidaTocando(): boolean {
+  return !!elemento && !elemento.paused;
 }
 
 /** Ponto de entrada de cada peer: conecte o GainNode individual aqui, nao no destination. */
