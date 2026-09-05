@@ -131,6 +131,21 @@ export async function montarRelatorio(): Promise<string> {
   // saindo daqui? o audio do outro esta chegando? a conexao fechou direto ou
   // esta em relay?
   const s = useApp.getState();
+
+  // Estado do proprio microfone. Sem isto, "enviado=NADA" tem varias causas
+  // possiveis e nenhuma delas aparece: mudo, ensurdecido, push-to-talk sem a
+  // tecla apertada, ou microfone que nem abriu. Cada uma pede uma acao
+  // diferente, e a pessoa costuma nem saber que apertou algo.
+  const micEstado = s.semMicrofone
+    ? "NAO ABRIU (ninguem te ouve)"
+    : s.muted
+      ? "MUDO (ninguem te ouve)"
+      : "ativo";
+  linhas.push(
+    `microfone: ${micEstado} | push-to-talk: ${s.pushToTalk ? "LIGADO (so envia com a tecla apertada)" : "desligado"} | ensurdecido: ${s.deafened ? "SIM" : "nao"}`,
+    ""
+  );
+
   const pares = Object.entries(s.stats);
   if (pares.length) {
     linhas.push(`--- ${pares.length} conexao(oes) ---`);
