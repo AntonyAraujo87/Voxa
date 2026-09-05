@@ -189,6 +189,7 @@ export class Peer {
     this.videoTx = this.pc.addTransceiver("video", { direction: "sendrecv" });
     this.screenAudioTx = this.pc.addTransceiver("audio", { direction: "sendrecv" });
     this.ready = true;
+    this.aplicarPendentes();
 
     applyCodecPreferences(this.videoTx, this.tuning().codec);
     this.attachTracks(tracks);
@@ -216,14 +217,37 @@ export class Peer {
 
     this.ready = true;
     applyCodecPreferences(this.videoTx, this.tuning().codec);
-    this.attachTracks(tracks);
+    // O que chegou mais recente ganha: se a malha ja tentou anexar o
+    // microfone enquanto este peer se preparava, `ultimasTracks` esta mais
+    // atual que o argumento recebido no comeco da negociacao.
+    this.attachTracks(this.ultimasTracks ?? tracks);
   }
 
+  /**
+   * Ultimas trilhas que a malha mandou anexar. Guardadas mesmo quando o peer
+   * ainda nao esta pronto.
+   *
+   * Antes isto era um `if (!this.ready) return` seco, e a trilha ia embora:
+   * quem tentasse anexar o microfone antes de a negociacao terminar
+   * simplesmente nunca o enviava para aquela pessoa — para sempre, porque
+   * nada tentava de novo. Receber continuava funcionando, entao o sintoma era
+   * o pior possivel: "eu ouco ele, ele nao me ouve", com a conexao dizendo
+   * "connected" e sem erro nenhum. Numa sala de tres, dava para funcionar com
+   * um e falhar com outro ao mesmo tempo.
+   */
+  private ultimasTracks: LocalTracks | null = null;
+
   attachTracks(tracks: LocalTracks) {
+    this.ultimasTracks = tracks;
     if (!this.ready) return;
     void this.micTx?.sender.replaceTrack(tracks.mic);
     void this.videoTx?.sender.replaceTrack(tracks.screen);
     void this.screenAudioTx?.sender.replaceTrack(tracks.screenAudio);
+  }
+
+  /** Aplica o que ficou pendente enquanto o peer nao estava pronto. */
+  private aplicarPendentes() {
+    if (this.ultimasTracks) this.attachTracks(this.ultimasTracks);
   }
 
   close() {
