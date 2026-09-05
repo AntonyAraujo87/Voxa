@@ -369,8 +369,16 @@ export class Peer {
 
   async applyEncoding(targets: EncodingTargets) {
     if (!this.ready || !this.videoTx || !this.micTx || !this.screenAudioTx) return;
-    await applyVideoEncoding(this.videoTx.sender, this.tuning(), targets);
-    await applyAudioEncoding(this.micTx.sender, this.screenAudioTx.sender, this.tuning());
+    // Chamado com `void` em varios pontos: sem este try/catch, uma falha ao
+    // aplicar bitrate/resolucao sumia sem deixar rastro e a pessoa ficaria
+    // transmitindo na qualidade errada sem ninguem entender por que. E a
+    // mesma armadilha que escondeu o bug do microfone.
+    try {
+      await applyVideoEncoding(this.videoTx.sender, this.tuning(), targets);
+      await applyAudioEncoding(this.micTx.sender, this.screenAudioTx.sender, this.tuning());
+    } catch (err) {
+      this.cb.onError(this.id, err);
+    }
   }
 
   refreshCodecPreferences() {
