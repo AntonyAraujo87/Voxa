@@ -81,6 +81,25 @@ export function saidaTocando(): boolean {
   return !!elemento && !elemento.paused;
 }
 
+/**
+ * Estado do caminho de saida, para o diagnostico.
+ *
+ * "tocando" sozinho nao bastou: o elemento pode estar rodando e ainda assim
+ * ninguem ouvir — se o processador de audio esta suspenso, se o volume geral
+ * esta zerado, ou se o som sai por um dispositivo que a pessoa nao usa.
+ */
+export function estadoSaida() {
+  const ctx = audioContext();
+  return {
+    contexto: ctx.state,
+    tocando: saidaTocando(),
+    volumeGeral: bus ? Number(bus.gain.value.toFixed(2)) : null,
+    dispositivo:
+      (elemento as (HTMLAudioElement & { sinkId?: string }) | null)?.sinkId || "padrao do sistema",
+    modo: nivelado ? "nivelado" : "natural",
+  };
+}
+
 /** Ponto de entrada de cada peer: conecte o GainNode individual aqui, nao no destination. */
 export function entradaDoBus(): GainNode {
   garantirGrafo();

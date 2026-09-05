@@ -1,7 +1,8 @@
 import { invoke, isDesktop } from "./desktop";
 import { SIGNALING_URL } from "./config";
-import { saidaTocando } from "./audioOutput";
+import { estadoSaida } from "./audioOutput";
 import { useApp } from "../store/store";
+import { getPeerMedia } from "../store/mediaStore";
 
 /* ---------------------------------------------------------------------------
    Diagnostico para quando algo quebra na maquina de outra pessoa.
@@ -117,7 +118,10 @@ export async function montarRelatorio(): Promise<string> {
     // O caminho por onde TODO o audio remoto sai. Se estiver parado, a
     // chamada fica muda com tudo o mais parecendo certo — conexao boa, anel
     // de "falando" aceso, video normal.
-    `saida de audio: ${saidaTocando() ? "tocando" : "PARADA (voce nao ouve ninguem)"}`,
+    (() => {
+      const e = estadoSaida();
+      return `saida: ${e.tocando ? "tocando" : "PARADA"} | processador=${e.contexto} | volume=${e.volumeGeral} | modo=${e.modo} | dispositivo=${e.dispositivo}`;
+    })(),
     `gerado: ${new Date().toISOString()}`,
     "",
   ];
@@ -134,8 +138,13 @@ export async function montarRelatorio(): Promise<string> {
       const nome = s.roster.find((r) => r.id === id)?.user.name ?? id.slice(0, 6);
       const envia = e.audioOutBytes > 0 ? `${Math.round(e.audioOutBytes / 1024)}KB` : "NADA";
       const recebe = e.audioInBytes > 0 ? `${Math.round(e.audioInBytes / 1024)}KB` : "NADA";
+      // `voz` responde a pergunta que os bytes nao respondem: o audio que
+      // chegou pela rede foi realmente entregue ao reprodutor? Se chega byte
+      // e aqui aparece "NAO", a trilha se perdeu entre a conexao e a saida.
+      const m = getPeerMedia(id);
+      const voz = m.mic ? "ligada" : "NAO CHEGOU AO PLAYER";
       linhas.push(
-        `${nome}: conexao=${e.connection} via=${e.path} audio enviado=${envia} recebido=${recebe} rtt=${e.rttMs}ms perda=${e.lossPct.toFixed(1)}%`
+        `${nome}: conexao=${e.connection} via=${e.path} audio enviado=${envia} recebido=${recebe} voz=${voz} rtt=${e.rttMs}ms perda=${e.lossPct.toFixed(1)}%`
       );
     }
     linhas.push("");
