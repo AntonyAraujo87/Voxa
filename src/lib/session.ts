@@ -329,6 +329,7 @@ class Session {
       // nunca "meu microfone falhou" — porque nada na tela dizia isso.
       registrarErro("microfone", err);
       s.toast("error", `Entrando so para ouvir — ${(err as Error).message}`);
+      this.aguardarMicrofoneLivre();
     }
 
     // Marca o canal ANTES do ack: se alguem entrar nesse intervalo, o
@@ -349,6 +350,7 @@ class Session {
   }
 
   leaveVoice({ keepMic = false } = {}) {
+    this.pararEsperaDoMicrofone();
     this.stopShare();
     this.mesh.clear();
     for (const r of app.getState().roster) clearPeerMedia(r.id);
@@ -502,12 +504,51 @@ class Session {
   async tentarMicrofoneDeNovo() {
     try {
       await this.openMic();
+      this.pararEsperaDoMicrofone();
       app.setState({ semMicrofone: false });
       app.getState().toast("ok", "Microfone ativo — ja te ouvem.");
     } catch (err) {
       registrarErro("microfone", err);
       app.getState().toast("error", `Continua indisponivel — ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * Fica tentando o microfone de fundo enquanto ele estiver indisponivel.
+   *
+   * O caso comum nao e "nao tenho microfone", e sim outro programa segurando
+   * o dispositivo — Discord, Parsec, OBS. Quando ele solta, nao ha motivo
+   * para a pessoa continuar muda ate reparar no aviso e clicar: o app volta
+   * sozinho e avisa que ja da para falar.
+   *
+   * Silencioso de proposito enquanto falha: quem esta sem microfone de
+   * verdade nao pode receber um toast de erro a cada 15 segundos.
+   */
+  private esperaMicrofone: number | null = null;
+
+  private aguardarMicrofoneLivre() {
+    if (this.esperaMicrofone !== null) return;
+    this.esperaMicrofone = window.setInterval(() => {
+      if (!app.getState().activeVoice || !app.getState().semMicrofone) {
+        this.pararEsperaDoMicrofone();
+        return;
+      }
+      void this.openMic()
+        .then(() => {
+          this.pararEsperaDoMicrofone();
+          app.setState({ semMicrofone: false });
+          app.getState().toast("ok", "Microfone liberado — ja te ouvem.");
+        })
+        .catch(() => {
+          /* segue ocupado: tenta de novo no proximo ciclo */
+        });
+    }, 15_000);
+  }
+
+  private pararEsperaDoMicrofone() {
+    if (this.esperaMicrofone === null) return;
+    window.clearInterval(this.esperaMicrofone);
+    this.esperaMicrofone = null;
   }
 
   /* ---------------------------- push-to-talk ---------------------------- */
@@ -668,6 +709,7 @@ class Session {
   }
 
   destroy() {
+    this.pararEsperaDoMicrofone();
     this.leaveVoice();
     // `leaveVoice` ja passa por `stopShare`, mas se a captura de tela nunca
     // chegou a abrir (erro no meio) a thread do WASAPI podia continuar viva
