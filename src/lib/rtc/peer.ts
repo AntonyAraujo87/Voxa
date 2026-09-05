@@ -321,6 +321,25 @@ export class Peer {
         this.ignoreOffer = !this.polite && collision;
         if (this.ignoreOffer) return;
 
+        // Colisao de ofertas no lado educado: desfaz a PROPRIA oferta antes
+        // de aceitar a de la. Esta linha faltava, e era a origem do
+        // "InvalidAccessError: The order of m-lines in subsequent offer
+        // doesn't match order from previous offer/answer".
+        //
+        // Sem o rollback, o lado educado aceitava a oferta remota com a
+        // propria ainda pendente. As duas descricoes traziam as mesmas tres
+        // midias em ordens diferentes, a conexao ficava num estado que o
+        // navegador nao consegue reconciliar, e a renegociacao SEGUINTE
+        // morria — que e quando o microfone e anexado. Resultado: conexao
+        // "connected", sem erro visivel, e voz que nao sai para aquela
+        // pessoa ate alguma tentativa posterior dar certo por acaso.
+        //
+        // Acontece quando duas pessoas entram no canal quase juntas: as duas
+        // ofertam uma para a outra ao mesmo tempo.
+        if (collision) {
+          await this.pc.setLocalDescription({ type: "rollback" });
+        }
+
         this.settingRemoteAnswer = desc.type === "answer";
         await this.pc.setRemoteDescription(desc);
         this.settingRemoteAnswer = false;
