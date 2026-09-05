@@ -24,6 +24,12 @@ export const NO_TRACKS: LocalTracks = { mic: null, screen: null, screenAudio: nu
 export interface PeerStats {
   outKbps: number;
   inKbps: number;
+  /** Total de bytes de AUDIO trafegados nesta conexao, acumulado.
+   *  Enviado = 0 significa que o microfone nao esta chegando na conexao;
+   *  recebido = 0, que o audio do outro nunca chegou aqui. Sao as duas
+   *  perguntas que "nao estou ouvindo ninguem" faz, e nada respondia. */
+  audioOutBytes: number;
+  audioInBytes: number;
   fps: number;
   width: number;
   height: number;
@@ -44,6 +50,8 @@ export interface PeerStats {
 export const EMPTY_STATS: PeerStats = {
   outKbps: 0,
   inKbps: 0,
+  audioOutBytes: 0,
+  audioInBytes: 0,
   fps: 0,
   width: 0,
   height: 0,

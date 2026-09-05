@@ -40,6 +40,14 @@ export function readStats(
   });
 
   report.forEach((r: Report) => {
+    // Audio: so o acumulado, que e o que responde "esta passando ou nao".
+    if (r.type === "outbound-rtp" && r.kind === "audio") {
+      s.audioOutBytes = (r.bytesSent as number) ?? 0;
+    }
+    if (r.type === "inbound-rtp" && r.kind === "audio") {
+      s.audioInBytes = (r.bytesReceived as number) ?? 0;
+    }
+
     if (r.type === "outbound-rtp" && r.kind === "video") {
       const ts = r.timestamp as number;
       const bytes = (r.bytesSent as number) ?? 0;

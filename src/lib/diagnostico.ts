@@ -1,6 +1,7 @@
 import { invoke, isDesktop } from "./desktop";
 import { SIGNALING_URL } from "./config";
 import { saidaTocando } from "./audioOutput";
+import { useApp } from "../store/store";
 
 /* ---------------------------------------------------------------------------
    Diagnostico para quando algo quebra na maquina de outra pessoa.
@@ -120,6 +121,27 @@ export async function montarRelatorio(): Promise<string> {
     `gerado: ${new Date().toISOString()}`,
     "",
   ];
+
+  // Uma linha por pessoa na chamada. Responde de uma vez as perguntas que
+  // "nao estou ouvindo ninguem" faz e que nada respondia: o microfone esta
+  // saindo daqui? o audio do outro esta chegando? a conexao fechou direto ou
+  // esta em relay?
+  const s = useApp.getState();
+  const pares = Object.entries(s.stats);
+  if (pares.length) {
+    linhas.push(`--- ${pares.length} conexao(oes) ---`);
+    for (const [id, e] of pares) {
+      const nome = s.roster.find((r) => r.id === id)?.user.name ?? id.slice(0, 6);
+      const envia = e.audioOutBytes > 0 ? `${Math.round(e.audioOutBytes / 1024)}KB` : "NADA";
+      const recebe = e.audioInBytes > 0 ? `${Math.round(e.audioInBytes / 1024)}KB` : "NADA";
+      linhas.push(
+        `${nome}: conexao=${e.connection} via=${e.path} audio enviado=${envia} recebido=${recebe} rtt=${e.rttMs}ms perda=${e.lossPct.toFixed(1)}%`
+      );
+    }
+    linhas.push("");
+  } else {
+    linhas.push("--- sem ninguem conectado neste momento ---", "");
+  }
 
   if (panics?.trim()) {
     linhas.push("--- falhas do processo nativo ---", panics.trim(), "");
