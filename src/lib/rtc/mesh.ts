@@ -136,6 +136,18 @@ export class Mesh {
 
   /* ---------------------------- tracks locais --------------------------- */
 
+  /** Estado do envio de cada par, para o diagnostico. */
+  estadoEnvio(): Record<string, ReturnType<Peer["estadoEnvio"]>> {
+    const out: Record<string, ReturnType<Peer["estadoEnvio"]>> = {};
+    for (const [id, peer] of this.peers) out[id] = peer.estadoEnvio();
+    return out;
+  }
+
+  /** Ha trilha de microfone na malha? */
+  get temMic() {
+    return !!this.tracks.mic;
+  }
+
   setMic(track: MediaStreamTrack | null) {
     this.tracks = { ...this.tracks, mic: track };
     for (const peer of this.peers.values()) peer.attachTracks(this.tracks);

@@ -146,6 +146,17 @@ export async function montarRelatorio(): Promise<string> {
     ""
   );
 
+  // Onde a trilha parou: existe na malha? chegou ao canal daquele par?
+  // Sem isto, "enviado=NADA" nao distingue "nao capturei" de "capturei e
+  // nao consegui anexar" — que sao problemas completamente diferentes.
+  let envio: { temMic: boolean; pares: Record<string, { pronto: boolean; micNoCanal: boolean; micLigado: boolean | null; direcao: string }> } | null = null;
+  try {
+    envio = (window as unknown as { __voxaEnvio?: () => typeof envio }).__voxaEnvio?.() ?? null;
+  } catch {
+    /* sem sessao ativa */
+  }
+  if (envio) linhas.push(`trilha de microfone na malha: ${envio.temMic ? "sim" : "NAO"}`, "");
+
   const pares = Object.entries(s.stats);
   if (pares.length) {
     linhas.push(`--- ${pares.length} conexao(oes) ---`);
@@ -158,8 +169,12 @@ export async function montarRelatorio(): Promise<string> {
       // e aqui aparece "NAO", a trilha se perdeu entre a conexao e a saida.
       const m = getPeerMedia(id);
       const voz = m.mic ? "ligada" : "NAO CHEGOU AO PLAYER";
+      const env = envio?.pares[id];
+      const canal = env
+        ? ` [pronto=${env.pronto} micNoCanal=${env.micNoCanal} ligado=${env.micLigado} dir=${env.direcao}]`
+        : "";
       linhas.push(
-        `${nome}: conexao=${e.connection} via=${e.path} audio enviado=${envia} recebido=${recebe} voz=${voz} rtt=${e.rttMs}ms perda=${e.lossPct.toFixed(1)}%`
+        `${nome}: conexao=${e.connection} via=${e.path} audio enviado=${envia} recebido=${recebe} voz=${voz} rtt=${e.rttMs}ms perda=${e.lossPct.toFixed(1)}%${canal}`
       );
     }
     linhas.push("");

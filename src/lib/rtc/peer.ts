@@ -240,9 +240,32 @@ export class Peer {
   attachTracks(tracks: LocalTracks) {
     this.ultimasTracks = tracks;
     if (!this.ready) return;
-    void this.micTx?.sender.replaceTrack(tracks.mic);
-    void this.videoTx?.sender.replaceTrack(tracks.screen);
-    void this.screenAudioTx?.sender.replaceTrack(tracks.screenAudio);
+    // O erro do replaceTrack era descartado com `void`. Se anexar o
+    // microfone falhasse, ninguem ficava sabendo: o app seguia dizendo
+    // "microfone ativo" e nao saia um byte para aquela pessoa.
+    this.trocar(this.micTx, tracks.mic, "mic");
+    this.trocar(this.videoTx, tracks.screen, "tela");
+    this.trocar(this.screenAudioTx, tracks.screenAudio, "audio da tela");
+  }
+
+  private trocar(tx: RTCRtpTransceiver | undefined, track: MediaStreamTrack | null, nome: string) {
+    if (!tx) {
+      if (track) this.cb.onError(this.id, new Error(`sem canal para ${nome}`));
+      return;
+    }
+    tx.sender.replaceTrack(track).catch((err) => {
+      this.cb.onError(this.id, new Error(`nao consegui anexar ${nome}: ${String(err)}`));
+    });
+  }
+
+  /** Estado do envio, para o diagnostico: onde a trilha parou. */
+  estadoEnvio() {
+    return {
+      pronto: this.ready,
+      micNoCanal: !!this.micTx?.sender.track,
+      micLigado: this.micTx?.sender.track?.enabled ?? null,
+      direcao: this.micTx?.currentDirection ?? this.micTx?.direction ?? "-",
+    };
   }
 
   /** Aplica o que ficou pendente enquanto o peer nao estava pronto. */

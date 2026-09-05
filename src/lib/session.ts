@@ -114,7 +114,9 @@ class Session {
       onStats: (map) => app.setState({ stats: Object.fromEntries(map) }),
       onSpeaking: (peerId, speaking) =>
         app.setState((s) => ({ speaking: { ...s.speaking, [peerId]: speaking } })),
-      onError: (peerId, err) => console.error("[rtc]", peerId, err),
+      // Ia so para o console do WebView2, que ninguem abre. Erro de anexar
+      // trilha entra aqui — e foi exatamente o que ficou invisivel.
+      onError: (peerId, err) => registrarErro(`rtc:${peerId.slice(0, 6)}`, err),
       onQuality: (label, reason) =>
         app.getState().toast("info", `Qualidade ajustada: ${label} (${reason})`),
     });
@@ -710,6 +712,11 @@ class Session {
   /* -------------------------------- ciclo ------------------------------- */
 
   /** so para depuracao no console */
+  /** Fotografia do envio, usada pelo diagnostico. */
+  estadoEnvio() {
+    return { temMic: this.mesh.temMic, pares: this.mesh.estadoEnvio() };
+  }
+
   debugSenders() {
     return this.mesh.debugSenders();
   }
@@ -737,3 +744,8 @@ if (import.meta.env.DEV) {
     senders: () => session.debugSenders(),
   };
 }
+
+// Este vale TAMBEM em producao: e o que o diagnostico le para dizer onde a
+// trilha de microfone parou. Nao expoe nada sensivel — so contadores e
+// bandeiras booleanas do proprio envio.
+(window as unknown as Record<string, unknown>).__voxaEnvio = () => session.estadoEnvio();
