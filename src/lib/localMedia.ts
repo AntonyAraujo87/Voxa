@@ -88,7 +88,17 @@ export class LocalMedia {
     deviceId: string,
     noiseSuppression = false
   ): Promise<MediaStreamTrack | null> {
-    if (this.micStream) return this.mixDestino?.stream.getAudioTracks()[0] ?? null;
+    // Ja aberto: devolve a trilha existente. Mas se o grafo interno ficou
+    // sem ela (o destino de mistura sumiu, ou nunca chegou a ser montado),
+    // NAO devolve null — fecha e monta de novo. Devolver null aqui era o
+    // caminho silencioso do bug: quem chamou saia sem anexar nada, sem
+    // excecao nenhuma, e o app seguia dizendo "microfone ativo" enquanto
+    // nao mandava um byte de voz para ninguem.
+    if (this.micStream) {
+      const existente = this.mixDestino?.stream.getAudioTracks()[0];
+      if (existente && existente.readyState === "live") return existente;
+      this.closeMic();
+    }
 
     const stream = await captureMic(preset, deviceId);
     this.micStream = stream;

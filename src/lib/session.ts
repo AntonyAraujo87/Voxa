@@ -373,7 +373,13 @@ class Session {
   private async openMic() {
     const { tuning, micDeviceId, muted, noiseSuppression } = app.getState();
     const track = await this.media.openMic(tuning.audio, micDeviceId, noiseSuppression);
-    if (!track) return;
+    if (!track) {
+      // Nunca sair daqui em silencio: sem trilha ninguem te ouve, e sem
+      // marcar o estado o app continuaria mostrando "microfone ativo".
+      app.setState({ semMicrofone: true, micReady: false });
+      registrarErro("microfone", "abriu sem trilha de audio");
+      throw new Error("O microfone abriu sem enviar audio.");
+    }
 
     this.media.setMicEnabled(!muted);
     this.mesh.setMic(track);
