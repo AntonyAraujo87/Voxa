@@ -1,4 +1,5 @@
 import { audioContext } from "./media";
+import { bufferDoSom } from "./soundboardCustom";
 
 /* ---------------------------------------------------------------------------
    Soundboard: efeitos curtos, sintetizados no WebAudio — mesmo motivo dos
@@ -124,7 +125,43 @@ const RECEITAS: Record<string, (ctx: AudioContext, destinos: Destino[]) => void>
 
 /** Toca o efeito em todos os destinos passados. Ignora id desconhecido. */
 export function tocarEfeito(id: string, destinos: Destino[]) {
+  if (destinos.length === 0) return;
+
+  // Som proprio da pessoa: vem do IndexedDB, ja decodificado em cache.
+  if (id.startsWith("meu:")) {
+    void tocarProprio(id, destinos);
+    return;
+  }
+
   const receita = RECEITAS[id];
-  if (!receita || destinos.length === 0) return;
+  if (!receita) return;
   receita(audioContext(), destinos);
+}
+
+async function tocarProprio(id: string, destinos: Destino[]) {
+  const buffer = await bufferDoSom(id);
+  if (!buffer) return;
+
+  const ctx = audioContext();
+  const fonte = ctx.createBufferSource();
+  fonte.buffer = buffer;
+
+  // Ganho proprio: arquivo do usuario pode vir muito mais alto que os
+  // efeitos sinteticos, e sairia estourando no ouvido de todo mundo.
+  const ganho = ctx.createGain();
+  ganho.gain.value = 0.7;
+  fonte.connect(ganho);
+  for (const d of destinos) ganho.connect(d);
+
+  // Sem isto o ganho fica pendurado no grafo depois que o som acaba — o
+  // mesmo vazamento que os avisos sonoros ja tiveram.
+  fonte.onended = () => {
+    try {
+      fonte.disconnect();
+      ganho.disconnect();
+    } catch {
+      /* contexto ja fechou */
+    }
+  };
+  fonte.start();
 }
