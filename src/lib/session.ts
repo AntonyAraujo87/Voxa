@@ -4,6 +4,7 @@ import { listDevices } from "./media";
 import { Mesh, type TuningState } from "./rtc";
 import { Signaling, pingSignaling, type PeerUser, type RosterEntry } from "./signaling";
 import { Chat } from "./chat";
+import { registrarErro } from "./diagnostico";
 import { Transmissao } from "./transmissao";
 import { useApp } from "../store/store";
 import { clearPeerMedia, setPeerStream } from "../store/mediaStore";
@@ -318,9 +319,16 @@ class Session {
     let semMicrofone = false;
     try {
       await this.openMic();
+      app.setState({ semMicrofone: false });
     } catch (err) {
       semMicrofone = true;
-      s.toast("info", `Entrando so para ouvir — ${(err as Error).message}`);
+      app.setState({ semMicrofone: true });
+      // Vai para o diagnostico, e nao so para um toast que some em segundos:
+      // sem microfone a pessoa fica no canal achando que fala normalmente,
+      // e ninguem a ouve. O sintoma reportado e sempre "ninguem me escuta",
+      // nunca "meu microfone falhou" — porque nada na tela dizia isso.
+      registrarErro("microfone", err);
+      s.toast("error", `Entrando so para ouvir — ${(err as Error).message}`);
     }
 
     // Marca o canal ANTES do ack: se alguem entrar nesse intervalo, o
@@ -482,6 +490,24 @@ class Session {
     app.setState({ overlayMoving: true });
     await setOverlayMovable(true);
     await emitEvent("overlay:posicionar", true);
+  }
+
+  /**
+   * Nova tentativa de abrir o microfone sem sair do canal.
+   *
+   * O caso comum e outro programa ter segurado o dispositivo (Discord,
+   * Parsec, OBS): a pessoa fecha o outro programa e quer voltar a falar sem
+   * ter que sair e entrar de novo.
+   */
+  async tentarMicrofoneDeNovo() {
+    try {
+      await this.openMic();
+      app.setState({ semMicrofone: false });
+      app.getState().toast("ok", "Microfone ativo — ja te ouvem.");
+    } catch (err) {
+      registrarErro("microfone", err);
+      app.getState().toast("error", `Continua indisponivel — ${(err as Error).message}`);
+    }
   }
 
   /* ---------------------------- push-to-talk ---------------------------- */

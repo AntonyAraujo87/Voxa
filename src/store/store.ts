@@ -70,6 +70,9 @@ export interface AppState {
   streamVolumes: Record<string, number>;
   pushToTalk: boolean;
   talking: boolean;
+  /** entrou no canal sem microfone: ninguem consegue te ouvir.
+   *  Estado, e nao toast: vale enquanto durar, nao por 3 segundos. */
+  semMicrofone: boolean;
   sounds: boolean;
   /** janela flutuante de quem esta falando, por cima do jogo */
   overlayEnabled: boolean;
@@ -146,6 +149,7 @@ export const useApp = create<AppState>((set) => ({
   streamVolumes: {},
   pushToTalk: false,
   talking: false,
+  semMicrofone: false,
   sounds: true,
   overlayEnabled: false,
   overlayMoving: false,

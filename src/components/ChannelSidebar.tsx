@@ -227,11 +227,33 @@ const UserPanel = memo(function UserPanel() {
   const selfId = useApp((s) => s.selfSocketId);
   const speaking = useApp((s) => !!s.speaking[s.selfSocketId]);
   const micReady = useApp((s) => s.micReady);
+  const semMicrofone = useApp((s) => s.semMicrofone);
 
   if (!me) return null;
 
   return (
-    <div className="flex items-center gap-1 bg-base-900 px-2 py-[7px]">
+    <div className="bg-base-900">
+      {/* Aviso fixo, nao toast: sem microfone a pessoa fica no canal achando
+          que fala normalmente, e ninguem a ouve. O relato que chega e sempre
+          "ninguem me escuta", nunca "meu microfone falhou". */}
+      {semMicrofone && (
+        <button
+          onClick={() => void session.tentarMicrofoneDeNovo()}
+          className="flex w-full items-start gap-2 bg-danger/15 px-3 py-2 text-left transition-colors hover:bg-danger/25"
+        >
+          <MicOff size={14} className="mt-0.5 shrink-0 text-danger" />
+          <span className="min-w-0">
+            <span className="block text-[12px] font-semibold text-danger">
+              Sem microfone — ninguem te ouve
+            </span>
+            <span className="block text-[11px] text-muted">
+              Outro programa pode estar usando (Discord, Parsec, OBS). Toque para tentar de novo.
+            </span>
+          </span>
+        </button>
+      )}
+
+    <div className="flex items-center gap-1 px-2 py-[7px]">
       <div className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5">
         <Avatar name={me.name} color={me.color} size={30} speaking={speaking && micReady} />
         <div className="min-w-0">
@@ -267,6 +289,7 @@ const UserPanel = memo(function UserPanel() {
       >
         <Settings size={18} />
       </button>
+      </div>
     </div>
   );
 });
