@@ -203,6 +203,34 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
 - Esta correção prepara o comportamento quando TURN estiver configurado; não
   provisiona TURN nem altera Render. Manter pendências de cloud e teste físico.
 
+### Implantação autorizada no Render em 15/9
+
+- Usuário pediu explicitamente implantar as correções. Browser CUA voltou a
+  funcionar, sessão Render autenticada. Commit f7bb18b com checks success no
+  GitHub; escolhido por SHA completo no Manual Deploy, sem merge na main.
+- TRUST_PROXY=1 adicionado via Save only, preservando ORIGIN/VOXA_TOKEN.
+  Build alterado para npm ci --omit=dev. Essa alteração disparou deploy da
+  main e378d82 (`dep-dako042fngtc73esuet0`); cancelamento solicitado antes de
+  selecionar a revisão correta. Publicação final verificada é f7bb18b.
+- Deploy `dep-dako0mad0e5s73a4fltg`: iniciado 14:28:57 BRT, Live às 14:29:29,
+  duração 31,5 s. SHA f7bb18b04541e6865b44460b3c7f65e0b8cfde51. Logs de
+  build/start sem falhas; proteção por token ativa e zero vulnerabilidades npm.
+- Health público HTTP 200, corpo exato {"ok":true}, TLS 1.3 e certificado válido.
+  Smoke WSS abriu um único transporte Engine.IO, maxPayload=262144 e fechou;
+  não autenticou nem publicou presença/chat/mídia. Scripts em work e test-results.
+- Painel confirma Auto-Deploy desabilitado pelo deploy específico. A branch
+  configurada continua main (e378d82), mas o SHA servido é o da auditoria.
+  Não usar Deploy latest commit nem reativar Auto-Deploy antes de reconciliar
+  a main: poderia restaurar o servidor antigo. Blueprint continua gerenciado;
+  conferir diferenças antes de futuras sincronizações de configuração.
+- Runtime selecionado pelo Render: Node 26.8.2 (engines >=18). Próxima revisão:
+  fixar linha compatível com CI e medir chaves de rate limit entre redes reais;
+  TRUST_PROXY=1 habilita último XFF com peer privado, mas não houve inspeção dos
+  hops reais. Não afirmar topologia homologada nem teste de carga em produção.
+- TURN ainda inexistente; implantação não resolve todos os casos de NAT.
+  Não houve release desktop, instalador, novo SQL nem mudança no bucket público.
+  Atualizar/push deste registro conforme preferência permanente do usuário.
+
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.
 Separar resultado automatizado de teste físico com dois PCs e redes distintas.

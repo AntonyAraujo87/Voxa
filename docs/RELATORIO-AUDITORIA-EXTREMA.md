@@ -1,7 +1,7 @@
 # Voxa — auditoria e implementação
 
 Atualizado em 15/09/2026. Versão de trabalho: 0.5.29. **Em andamento; não é uma
-certificação de ausência de falhas nem uma confirmação de implantação.**
+certificação de ausência de falhas. Signaling implantado em 15/9; cliente desktop ainda pendente.**
 
 ## Achados que afetam o uso agora
 
@@ -10,10 +10,10 @@ certificação de ausência de falhas nem uma confirmação de implantação.**
    Isso pode manter dois participantes em `connecting`, sem áudio ou vídeo,
    mesmo com microfone e player funcionando. O código aceita credenciais
    temporárias; falta provisionar o relay e validar em redes distintas.
-2. **As correções estão na branch de auditoria no GitHub.** GitHub latest continua em 0.5.27. O commit do
-   Render é 424c70f; seus arquivos de servidor são iguais aos do main e378d82.
-   O número antigo decorre do deploy filtrado por `server/`. Nenhuma nova
-   publicação do aplicativo foi confirmada nesta auditoria.
+2. **Signaling corrigido em produção; cliente ainda não distribuído.** Render
+   executa f7bb18b04541e6865b44460b3c7f65e0b8cfde51 desde 15/9 às 14:29 BRT.
+   GitHub latest continua em 0.5.27. As alterações desktop estão na branch
+   `codex/voxa-auditoria-extrema`; nenhum instalador/release novo foi gerado.
 3. **Anexos ainda estão em bucket público.** O banco tem RLS e seis salas
    privadas, mas isso não protege URLs públicas dos arquivos. O cliente novo
    resolve URLs assinadas; fechar o bucket exige distribuir esse cliente antes,
@@ -45,11 +45,12 @@ Correções das rodadas anteriores estão detalhadas em `REVISAO-0.5.29.md` e
 `CORRECOES-0.5.29.md`, incluindo lifecycle de mídia, renegociação simultânea,
 PCM/AudioWorklet, URLs assinadas, histórico, atalhos e proteções de release.
 
-Checkpoints bf3a9de/a933630/fb94cd0 enviados ao GitHub após login do usuário em
-15/9, na branch `codex/voxa-auditoria-extrema`. O usuário pediu commit/push após
-cada alteração validada. Nenhum PR foi criado; o controle do navegador ainda
-falha ao inicializar. A correção de entradas malformadas exige rollout do servidor
-para proteger produção; a branch de revisão não altera o serviço publicado.
+Correções até f7bb18b enviadas ao GitHub na branch `codex/voxa-auditoria-extrema`.
+O usuário pediu commit/push após cada alteração validada. Controle do navegador
+restabelecido e checks do commit f7bb18b confirmados com sucesso. Render foi
+implantado manualmente nesse SHA, sem merge na main. Auto-Deploy ficou desligado
+para evitar a substituição pelo código antigo da main. Próximas publicações do
+servidor exigem selecionar explicitamente o SHA validado até reconciliar a main.
 
 ## Validação realizada
 
@@ -84,16 +85,25 @@ limpos. Não houve teste de DDoS contra serviços públicos; testes de abuso for
   o desafio no cliente. Não há modelo de contas/cargos individuais: senha
   compartilhada concede acesso ao grupo e apelidos são autodeclarados.
 - **Render:** plano Free, Oregon, health `/health`, root `server`, build
-  `npm install`; somente ORIGIN e VOXA_TOKEN. Blueprint local prepara `npm ci`
-  e confiança de proxy explícita. Conferir topologia do proxy no rollout.
+  `npm ci --omit=dev`, start `node index.js`, TRUST_PROXY=1 salvo; ORIGIN e
+  VOXA_TOKEN preservados. Deploy `dep-dako0mad0e5s73a4fltg` confirmado Live,
+  commit f7bb18b, 31,5 s, logs confirmam proteção por token. Sem erros de build
+  ou inicialização; npm informou zero vulnerabilidades nas dependências instaladas.
+  O provedor selecionou Node 26.8.2 pelo intervalo aberto >=18; alinhar runtime
+  fixo ao CI numa próxima revisão. Auto-Deploy desativado pelo deploy por SHA.
+  A configuração usa o último IP do X-Forwarded-For somente com peer privado;
+  distribuição real das chaves por IP entre redes diferentes não foi medida.
+  Não considerar a topologia de múltiplos proxies homologada por este smoke test.
 - **GitHub:** CI publicado #53 aprovado; chave de assinatura e variáveis de
   signaling/Supabase presentes por nome. Valores não foram expostos. Permissões
   padrão do token somente leitura; Actions não pode aprovar PRs. Regra SHA ativada.
 - **Oracle:** usuário confirmou que não há VM/TURN existente; não há firewall
   desse ambiente para auditar. Provisionamento depende de conta gratuita disponível.
-- **TLS público:** signaling negociou TLS 1.3 com certificado validado e `/health`
-  respondeu 200. Ainda expõe contagens/uptime/RSS na versão publicada; a correção
-  local reduz a resposta a `{ok:true}`. Supabase também negociou TLS 1.3 validado;
+- **TLS público:** após implantação, signaling negociou TLS 1.3 com certificado
+  validado e `/health` respondeu 200, corpo exato `{ok:true}`, sem contagens/RSS.
+  Uma conexão WSS confirmou handshake Engine.IO e maxPayload=262144; encerrada
+  sem autenticar, publicar presença, entrar em salas ou transmitir mídia.
+  Supabase também negociou TLS 1.3 validado;
   `/auth/v1/health` sem chave respondeu 401. Isso verifica transporte, não login.
 
 ## Próximas melhorias de maior impacto
