@@ -1,6 +1,6 @@
 # Voxa — auditoria e implementação
 
-Atualizado em 14/09/2026. Versão de trabalho: 0.5.29. **Em andamento; não é uma
+Atualizado em 15/09/2026. Versão de trabalho: 0.5.29. **Em andamento; não é uma
 certificação de ausência de falhas nem uma confirmação de implantação.**
 
 ## Achados que afetam o uso agora
@@ -36,6 +36,7 @@ certificação de ausência de falhas nem uma confirmação de implantação.**
 | Chat | XSS exibido como texto; evento duplicado não reescreve mensagem; histórico RLS prevalece em colisão | Testes de UI e regressões |
 | Desktop | Loader oficial no desenvolvimento GNU, target ASCII e rlib para evitar estouro de ordinais | Compilação e início de voxa.exe |
 | Publicação nativa | Rejeita manifest ausente/duplicado ou pedido de administrador no executável final | 4 testes PE e recusa do binário GNU local com duplicidade |
+| Atualizador | Libera recursos nativos substituídos/descartados e respostas tardias; preserva instalação ativa e retry | 6 testes do controlador real com plugin controlado |
 | GitHub | Exigência de SHA completo para ações habilitada em produção | Painel confirmou salvamento |
 
 Correções das rodadas anteriores estão detalhadas em `REVISAO-0.5.29.md` e
@@ -49,7 +50,7 @@ navegador falhou ao inicializar mesmo após reset nesta retomada.
 
 ## Validação realizada
 
-- 114 testes unitários/integração, 17 regressões de ciclo de vida/chat,
+- 120 testes unitários/integração, 17 regressões de ciclo de vida/chat,
   10 verificações SQL, 7 de revisão, 11 de renovação/retomada e 5 da política
   de captura passaram. Comando consolidado: `npm run verify`.
 - 12 verificações da interface com duas sessões e dispositivos sintéticos:
@@ -123,6 +124,8 @@ devem aperfeiçoar esses recursos, sem apresentá-los como funcionalidades ausen
   — franquia seguida de cobrança; não adotado como solução de custo garantidamente zero.
 - [WinLibs: duplicidade de manifests no GCC 16](https://github.com/brechtsanders/winlibs_mingw/issues/299)
   — compatível com o problema reproduzido no desenvolvimento GNU local.
+- [Tauri: ciclo de vida de Update.close](https://v2.tauri.app/reference/javascript/updater/#close)
+  — recurso nativo liberado quando a consulta é substituída ou a sessão é encerrada.
 
 TLS/WSS protege o transporte da sinalização; não equivale a identidade verificada
 entre participantes. WebRTC cifra a mídia, mas segurança depende também da

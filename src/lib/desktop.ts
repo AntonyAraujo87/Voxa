@@ -143,6 +143,7 @@ export interface UpdateInfo {
   version: string;
   notes?: string;
   install: () => Promise<void>;
+  close: () => Promise<void>;
 }
 
 /**
@@ -159,6 +160,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     return {
       version: update.version,
       notes: update.body ?? undefined,
+      close: () => update.close(),
       install: async () => {
         await update.downloadAndInstall();
         const { relaunch } = await import("@tauri-apps/plugin-process");

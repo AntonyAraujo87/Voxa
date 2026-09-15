@@ -756,6 +756,7 @@ class Session {
 
   destroy() {
     this.destroyed = true;
+    this.updates.destroy();
     this.pararEsperaDoMicrofone();
     this.leaveVoice();
     // `leaveVoice` ja passa por `stopShare`, mas se a captura de tela nunca

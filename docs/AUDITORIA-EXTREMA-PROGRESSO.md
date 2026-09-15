@@ -135,6 +135,24 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
   confirmou a duplicidade. O helper dev repõe o loader ao executar, mas isso
   não prova instalação limpa e não autoriza distribuir o executável de debug.
 
+### Retomada automática em 15/9 — recursos do atualizador
+
+- Identificado vazamento de recursos do plugin updater: `checkForUpdate` criava
+  `Update` nativo e expunha somente install; substituir a consulta descartava
+  a closure sem chamar `close`. API instalada e documentação confirmam limpeza
+  explícita de Resource. Não houve download nem instalação de atualização.
+- `UpdateInfo` agora expõe close; `SessionUpdates` mantém o dono do recurso,
+  libera ao substituir/remover a oferta, descarta respostas após destroy e
+  aguarda instalação ativa antes de fechar. Falhas de consulta/download mantêm
+  a tentativa de instalação disponível. Session.destroy encerra o controlador.
+- 6 regressões novas cobrem substituição, resposta tardia, falha de consulta,
+  instalação concorrente com destroy, retry de download e falha de close.
+  Passaram 120 unitários totais, 17 regressões de sessão, TypeScript e build
+  frontend (38,88 s). Testes de plugin usam recursos controlados; não equivalem
+  a instalação/auto-update real, que permanece pendente.
+- GitHub/TURN/instalador permanecem com as pendências já descritas. Não repetir
+  push que aguarda credenciais nem a geração de instalador recusada anteriormente.
+
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.
 Separar resultado automatizado de teste físico com dois PCs e redes distintas.
