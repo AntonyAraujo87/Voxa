@@ -14,7 +14,7 @@
     "app:build": "tauri build",
     "app:build:local": "node scripts/build-local.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test server/test/security.test.js server/test/admission.test.js server/test/handshake.test.js server/test/payloads.test.js server/test/hello-retry.test.js src/lib/rtc/nucleo.test.ts src/lib/rtc/peer.test.js src/lib/filaPcm.test.ts src/lib/mencao.test.ts scripts/check-native.test.mjs scripts/check-updates.test.mjs",
+    "test": "node --test server/test/security.test.js server/test/admission.test.js server/test/handshake.test.js server/test/payloads.test.js server/test/hello-retry.test.js src/lib/rtc/nucleo.test.ts src/lib/rtc/peer.test.js src/lib/filaPcm.test.ts src/lib/mencao.test.ts scripts/check-native.test.mjs scripts/check-updates.test.mjs scripts/check-deployment.test.mjs",
     "verify": "tsc --noEmit && npm test && npm run test:regressions && npm run test:sql && npm run test:review && npm run test:recovery && npm run test:capture",
     "test:rtc": "node scripts/rtc-validation/run.mjs",
     "test:regressions": "node scripts/check-regressions.mjs",

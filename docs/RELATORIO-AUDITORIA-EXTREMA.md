@@ -54,7 +54,7 @@ servidor exigem selecionar explicitamente o SHA validado até reconciliar a main
 
 ## Validação realizada
 
-- 123 testes unitários/integração, 17 regressões de ciclo de vida/chat,
+- 128 testes unitários/integração (última rodada com `npm test`), 17 regressões de ciclo de vida/chat,
   10 verificações SQL, 7 de revisão, 11 de renovação/retomada e 5 da política
   de captura passaram. Comando consolidado: `npm run verify`.
 - 12 verificações da interface com duas sessões e dispositivos sintéticos:
@@ -89,8 +89,9 @@ limpos. Não houve teste de DDoS contra serviços públicos; testes de abuso for
   VOXA_TOKEN preservados. Deploy `dep-dako0mad0e5s73a4fltg` confirmado Live,
   commit f7bb18b, 31,5 s, logs confirmam proteção por token. Sem erros de build
   ou inicialização; npm informou zero vulnerabilidades nas dependências instaladas.
-  O provedor selecionou Node 26.8.2 pelo intervalo aberto >=18; alinhar runtime
-  fixo ao CI numa próxima revisão. Auto-Deploy desativado pelo deploy por SHA.
+  O provedor selecionou Node 26.8.2 pelo intervalo aberto >=18. Configuração do
+  código agora limitada a 24.x, alinhada ao CI; ainda exige novo deploy para
+  alterar produção. Auto-Deploy desativado pelo deploy por SHA.
   A configuração usa o último IP do X-Forwarded-For somente com peer privado;
   distribuição real das chaves por IP entre redes diferentes não foi medida.
   Não considerar a topologia de múltiplos proxies homologada por este smoke test.
@@ -105,6 +106,9 @@ limpos. Não houve teste de DDoS contra serviços públicos; testes de abuso for
   sem autenticar, publicar presença, entrar em salas ou transmitir mídia.
   Supabase também negociou TLS 1.3 validado;
   `/auth/v1/health` sem chave respondeu 401. Isso verifica transporte, não login.
+  Verificador corrigido para rejeitar HTTP inesperado, JSON inválido, health
+  negativo, corpo excessivo/truncado e prazo excedido, além de falha TLS.
+  Cinco testes locais novos passaram; leitura pública repetida passou também.
 
 ## Próximas melhorias de maior impacto
 

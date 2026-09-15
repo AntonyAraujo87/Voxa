@@ -10,6 +10,16 @@ e usa `/health` para saúde agregada. Mantenha uma instância: sockets e salas f
 em memória. Reiniciar desconecta clientes, que tentam reidentificar e reentrar.
 Suspensão do serviço pode atrasar o login; não há prazo garantido de inicialização.
 
+O servidor exige Node `24.x`, a mesma linha usada no CI. O limite superior evita
+que um novo deploy salte automaticamente para outra versão principal. A variável
+`NODE_VERSION` no painel tem precedência; mantenha-a ausente ou compatível.
+Referência: [seleção de Node no Render](https://render.com/docs/node-version).
+
+Execute `node scripts/check-deployment.mjs` após um deploy. O comando exige TLS
+válido, HTTP 200 e corpo `{ok:true}` na sinalização. No endpoint Auth sem chave,
+espera HTTP 401 com erro JSON: isso não valida login, RLS, TURN ou mídia.
+Respostas truncadas, excessivas, lentas ou incompatíveis fazem o comando falhar.
+
 Configure `VOXA_TOKEN` no servidor; convidados digitam a senha no aplicativo.
 Nunca coloque a senha ou o segredo do TURN em `VITE_*`: esses valores são públicos.
 

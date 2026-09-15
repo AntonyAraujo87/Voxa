@@ -231,6 +231,26 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
   Não houve release desktop, instalador, novo SQL nem mudança no bucket público.
   Atualizar/push deste registro conforme preferência permanente do usuário.
 
+### Continuação — runtime e validação de implantação
+
+- `server/package.json` e lockfile agora limitam Node a 24.x, mesma linha do CI
+  e dos testes locais. O intervalo >=18 permitiu selecionar 26.8.2 no Render.
+  Conferida documentação oficial do Render sobre precedência e limite superior.
+  Não alterado runtime em produção: segue o deploy f7bb18b até novo rollout.
+- `check-deployment.mjs` antes só fazia o comando falhar por transporte/TLS;
+  HTTP 500 com certificado válido podia terminar com exit 0. Agora exige status
+  e JSON esperados: signaling 200/{ok:true}; Auth público sem chave 401/erro JSON.
+  Esse segundo resultado não comprova autenticação, banco ou RLS.
+- Prazo absoluto de 90 s, teto de 16 KiB, tratamento de resposta interrompida
+  e conexão TLS reutilizada. Nenhum corpo de resposta ou segredo é impresso.
+- Cinco regressões usando servidor HTTP local real: respostas inválidas/status,
+  Auth sem chave, limite de corpo, interrupção e servidor enviando bytes devagar.
+  Entraram no npm test/CI. 128 testes passaram. Health público repetido passou:
+  Render 200 e Supabase 401 esperado, ambos TLS 1.3 com certificado validado.
+- Ferramenta de controle do navegador não está exposta nesta rodada, portanto
+  não foi iniciado outro deploy pelo painel. Não supor que o push muda o Render:
+  Auto-Deploy continua desligado. Sem nova release/instalador/SQL/TURN.
+
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.
 Separar resultado automatizado de teste físico com dois PCs e redes distintas.
