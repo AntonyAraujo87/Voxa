@@ -4,11 +4,14 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { io } from 'socket.io-client';
 
-test('payloads JSON malformados nao derrubam signaling nem clientes validos', { timeout: 15000 }, async () => {
+test('payloads JSON malformados nao derrubam signaling nem clientes validos', { timeout: 25000 }, async () => {
   const url = 'http://127.0.0.1:3213', token = 'payload-test-only';
   const server = spawn(process.execPath, [fileURLToPath(new URL('../index.js', import.meta.url))], {
-    env: { ...process.env, PORT: '3213', VOXA_TOKEN: token }, stdio: 'ignore',
+    env: { ...process.env, PORT: '3213', VOXA_TOKEN: token }, stdio: ['ignore', 'ignore', 'pipe'],
   });
+  let startupError = '';
+  server.stderr.on('data', chunk => { startupError = (startupError + chunk.toString()).slice(-1500); });
+  server.on('error', error => { startupError = error.message; });
   const clients = [];
   const connect = async auth => {
     const socket = io(url, { transports: ['websocket'], reconnection: false, auth, timeout: 1500 });
@@ -19,11 +22,12 @@ test('payloads JSON malformados nao derrubam signaling nem clientes validos', { 
   const send = (socket, event, payload) => socket.timeout(1500).emitWithAck(event, payload);
   try {
     let ready = false;
-    for (let i = 0; i < 30; i++) {
-      try { if ((await fetch(`${url}/health`)).ok) { ready = true; break; } } catch {}
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline && server.exitCode === null) {
+      try { if ((await fetch(`${url}/health`, { signal: AbortSignal.timeout(500) })).ok) { ready = true; break; } } catch {}
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    assert.ok(ready, 'servidor local iniciou');
+    assert.ok(ready, `servidor local iniciou: exit=${server.exitCode}; ${startupError}`);
     const user = { id: 'valid-user', name: 'Valid', color: '#fff' };
     const valid = await connect({ token });
     assert.ok((await send(valid, 'hello', { user })).selfId);
@@ -46,7 +50,7 @@ test('payloads JSON malformados nao derrubam signaling nem clientes validos', { 
     assert.equal(server.exitCode, null); assert.equal(valid.connected, true);
   } finally {
     for (const client of clients) client.close();
-    if (server.exitCode === null) {
+    if (server.pid && server.exitCode === null && server.signalCode === null) {
       const exited = new Promise(resolve => server.once('exit', resolve));
       server.kill(); await exited;
     }

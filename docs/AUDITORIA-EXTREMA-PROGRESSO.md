@@ -179,6 +179,15 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
   ainda pendente: browser indisponível e leitura web de Actions retornou erro.
 - Automação atualizada para incluir commit/push após mudanças validadas e aviso
   explícito se o envio falhar. A preferência persiste nas próximas retomadas.
+- Teste novo também executado em `server/`: primeira tentativa excedeu a janela
+  curta de inicialização (3 s). Ampliada para 10 s com timeout de fetch, diagnóstico
+  de stderr/exit e limpeza de processo. Passou na repetição (8,9 s no total).
+  Ajuste de teste também deve ser enviado; não confundir essa falha do harness
+  com regressão da validação de payloads, já aprovada no verify completo.
+- CI confirmado pela API pública do GitHub (acesso de rede precisou de escalada):
+  run 34925516824 do commit f27e030 terminou com success. Run 34925661111 de
+  07bb779 estava em andamento. API REST permite acompanhar sem o browser CUA;
+  consultar o run do SHA final antes de afirmar sucesso do checkpoint mais novo.
 
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.
