@@ -34,6 +34,7 @@ export class Transmissao {
    *  vazariam um stream que ninguem mais desliga. */
   private telaPendente = false;
   private cameraPendente = false;
+  private telaGeracao = 0;
 
   constructor(
     private media: LocalMedia,
@@ -50,45 +51,62 @@ export class Transmissao {
       s.toast("info", "Entre num canal de voz antes de compartilhar.");
       return;
     }
-    if (this.media.isWebcamOn) this.pararCamera();
+    this.pararTela();
 
     this.telaPendente = true;
+    const geracao = ++this.telaGeracao;
+    const cancelada = () => geracao !== this.telaGeracao || app.getState().activeVoice !== s.activeVoice;
     try {
-      const { stream, video, audio } = await this.media.openScreen(s.tuning.video, s.tuning.content);
+      const { stream, video, audio } = await this.media.openScreen(s.tuning.video, s.tuning.content, s.systemAudio);
+      if (cancelada()) return;
       setLocalScreen(stream);
 
       // O audio do getDisplayMedia costuma vir vazio com jogo em tela cheia — e
       // o WebView2 nem sempre entrega alguma coisa. Com a opcao ligada, pega
       // direto o que a placa de som esta tocando (WASAPI loopback).
-      let trilhaAudio = audio;
+      let trilhaAudio = s.systemAudio ? audio : null;
+      const restrictedAudio = isDesktop && s.systemAudioMode !== "system";
+      // O usuario escolheu um aplicativo: falha jamais amplia para todo o PC.
+      if (restrictedAudio) { audio?.stop(); trilhaAudio = null; }
+      if (!s.systemAudio) audio?.stop();
       if (s.systemAudio) {
         try {
-          trilhaAudio = (await iniciarAudioDoSistema()) ?? audio;
+          trilhaAudio = (await iniciarAudioDoSistema((mensagem) => {
+            if (cancelada()) return;
+            void this.mesh.setScreen(video, null);
+            app.getState().toast("error", `O som da transmissao parou: ${mensagem}`);
+          }, { mode: s.systemAudioMode, processId: s.audioProcessId })) ?? (restrictedAudio ? null : audio);
         } catch (err) {
           // Falhar aqui nao pode cancelar a transmissao: segue com o audio que
           // o navegador deu (mesmo que seja nenhum) e avisa.
           s.toast("info", `Audio do sistema indisponivel: ${(err as Error).message}`);
         }
       }
+      if (cancelada()) return;
       await this.mesh.setScreen(video, trilhaAudio);
+      if (cancelada()) return;
       this.marcarNoAr("tela");
 
       const preset = VIDEO_PRESETS[s.tuning.video];
       s.toast("ok", `Compartilhando ${preset.width}x${preset.height} @ ${preset.fps}fps`);
+      if (!trilhaAudio) s.toast("info", "Transmissao sem som. Ative Compartilhar som do computador e inicie novamente.");
     } catch (err) {
+      if (cancelada()) return;
       this.media.closeScreen();
       pararAudioDoSistema();
       setLocalScreen(null);
       s.toast("error", (err as Error).message);
     } finally {
-      this.telaPendente = false;
+      if (geracao === this.telaGeracao) this.telaPendente = false;
     }
   }
 
   pararTela() {
-    if (!this.media.isSharing) return;
+    this.telaGeracao++;
+    this.telaPendente = this.cameraPendente = false;
     void this.mesh.setScreen(null, null);
     this.media.closeScreen();
+    this.media.closeWebcam();
     pararAudioDoSistema();
     this.encerrar();
   }
@@ -101,7 +119,7 @@ export class Transmissao {
    * existe o SharePicker, que escolhe ANTES de chamar getDisplayMedia().
    */
   async alternarTela() {
-    if (app.getState().sharingKind === "tela") {
+    if (app.getState().sharingKind === "tela" || this.telaPendente) {
       this.pararTela();
       return;
     }
@@ -124,33 +142,32 @@ export class Transmissao {
       s.toast("info", "Entre num canal de voz antes de ligar a camera.");
       return;
     }
-    if (s.sharing) this.pararTela();
+    this.pararTela();
 
     this.cameraPendente = true;
+    const geracao = this.telaGeracao;
+    const cancelada = () => geracao !== this.telaGeracao || app.getState().activeVoice !== s.activeVoice;
     try {
       const track = await this.media.openWebcam(s.camDeviceId);
-      if (!track) return;
+      if (!track || cancelada()) return;
       setLocalScreen(new MediaStream([track]));
       await this.mesh.setScreen(track, null);
+      if (cancelada()) return;
       this.marcarNoAr("camera");
     } catch (err) {
+      if (cancelada()) return;
       this.media.closeWebcam();
       setLocalScreen(null);
       s.toast("error", (err as Error).message);
     } finally {
-      this.cameraPendente = false;
+      if (geracao === this.telaGeracao) this.cameraPendente = false;
     }
   }
 
-  pararCamera() {
-    if (!this.media.isWebcamOn) return;
-    void this.mesh.setScreen(null, null);
-    this.media.closeWebcam();
-    this.encerrar();
-  }
+  pararCamera() { this.pararTela(); }
 
   alternarCamera() {
-    if (this.media.isWebcamOn) this.pararCamera();
+    if (this.media.isWebcamOn || this.cameraPendente) this.pararCamera();
     else void this.iniciarCamera();
   }
 

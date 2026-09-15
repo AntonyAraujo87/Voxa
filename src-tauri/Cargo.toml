@@ -1,6 +1,6 @@
 [package]
 name = "voxa"
-version = "0.5.27"
+version = "0.5.29"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -12,7 +12,9 @@ edition = "2021"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "voxa_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# O executavel desktop liga esta biblioteca Rust diretamente. Exportar todas
+# as dependencias numa DLL extra excede 65535 ordinais no build debug GNU.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -28,7 +30,7 @@ tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-single-instance = "2.4.4"
 
 [target.'cfg(windows)'.dependencies]
-# Mesma versao que o wry usa (0.38.2) — precisa bater pra compartilhar os tipos COM.
+# Mesma versao que o wry usa (0.38.2) â€” precisa bater pra compartilhar os tipos COM.
 webview2-com = "0.38"
 # GetUserDefaultUILanguage: descobre o idioma do titulo da fonte de captura.
 windows = { version = "0.61", features = [

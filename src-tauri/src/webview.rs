@@ -44,7 +44,12 @@ fn capture_source_title() -> String {
 
 #[cfg(target_os = "windows")]
 pub fn tune() {
-    let source = capture_source_title();
+    let source = capture_source_title().replace(['"', '\n', '\r'], "");
+    crate::capture::remember_active_source(if source == default_screen_title() {
+        String::new()
+    } else {
+        source.clone()
+    });
     eprintln!("[voxa] fonte de captura automatica: \"{source}\"");
 
     let seguro = crate::capture::read_config().modo_seguro;
@@ -58,7 +63,7 @@ pub fn tune() {
         // acontece na GPU, sem GDI BitBlt. Custa uma fracao da CPU e captura
         // janelas aceleradas por hardware (jogos) sem tela preta.
         "--enable-features=WebRtcAllowWgcDesktopCapturer,WebRtcAllowWgcScreenCapturer,WebRtcAllowWgcWindowCapturer,MediaFoundationD3D11VideoCapture".to_string(),
-        format!("--auto-select-desktop-capture-source={source}"),
+        format!("--auto-select-desktop-capture-source=\"{source}\""),
         "--autoplay-policy=no-user-gesture-required".to_string(),
     ];
 
@@ -127,6 +132,16 @@ pub fn grant_media_permissions(webview: &tauri::webview::PlatformWebview) {
                 if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
                     || kind == COREWEBVIEW2_PERMISSION_KIND_CAMERA
                 {
+                    let mut uri = windows::core::PWSTR::null();
+                    args.Uri(&mut uri)?;
+                    let uri = webview2_com::CoTaskMemPWSTR::from(uri).to_string();
+                    let origin = uri.split('/').take(3).collect::<Vec<_>>().join("/");
+                    let local = matches!(origin.as_str(), "http://tauri.localhost" | "https://tauri.localhost" | "tauri://localhost")
+                        || (cfg!(debug_assertions) && origin == "http://localhost:1420");
+                    if !local {
+                        args.SetState(webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PERMISSION_STATE_DENY)?;
+                        return Ok(());
+                    }
                     args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
                 }
                 Ok(())

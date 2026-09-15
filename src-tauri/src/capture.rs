@@ -6,6 +6,14 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+static ACTIVE_SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+pub fn remember_active_source(source: String) {
+    let _ = ACTIVE_SOURCE.set(source);
+}
+#[tauri::command]
+pub fn get_active_capture_source() -> String {
+    ACTIVE_SOURCE.get().cloned().unwrap_or_default()
+}
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct BootConfig {
@@ -56,6 +64,41 @@ pub struct CaptureSource {
     id: String,
     label: String,
     kind: &'static str,
+    pub process_id: Option<u32>,
+}
+
+/// O jogo pode minimizar depois da selecao. Verificar o processo, nao sua
+/// janela visivel, evita rejeitar uma fonte de audio ainda em execucao.
+#[cfg(target_os = "windows")]
+pub fn audio_process_exists(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    if pid == 0 || pid == std::process::id() {
+        return false;
+    }
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return false;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut valid = Process32FirstW(snapshot, &mut entry).is_ok();
+        let mut found = false;
+        while valid {
+            if entry.th32ProcessID == pid {
+                found = true;
+                break;
+            }
+            valid = Process32NextW(snapshot, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snapshot);
+        found
+    }
 }
 
 /// Lista as fontes que o Chromium consegue auto-selecionar.
@@ -69,6 +112,7 @@ pub fn list_capture_sources() -> Vec<CaptureSource> {
         id: String::new(),
         label: "Monitor inteiro (padrao)".into(),
         kind: "monitor",
+        process_id: None,
     }];
 
     #[cfg(target_os = "windows")]
@@ -100,7 +144,7 @@ pub fn list_capture_sources() -> Vec<CaptureSource> {
 
         unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
             unsafe {
-                let list = &mut *(lparam.0 as *mut Vec<String>);
+                let list = &mut *(lparam.0 as *mut Vec<(String, u32)>);
 
                 if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
                     return TRUE;
@@ -136,23 +180,24 @@ pub fn list_capture_sources() -> Vec<CaptureSource> {
                 if read > 0 {
                     let title = String::from_utf16_lossy(&buf[..read as usize]);
                     if !title.trim().is_empty() {
-                        list.push(title);
+                        list.push((title, pid));
                     }
                 }
                 TRUE
             }
         }
 
-        let mut titles: Vec<String> = Vec::new();
+        let mut titles: Vec<(String, u32)> = Vec::new();
         let _ = EnumWindows(Some(collect), LPARAM(&mut titles as *mut _ as isize));
 
         titles.sort();
         titles.dedup();
-        for title in titles {
+        for (title, pid) in titles {
             out.push(CaptureSource {
                 id: title.clone(),
                 label: title,
                 kind: "window",
+                process_id: Some(pid),
             });
         }
     }
@@ -163,6 +208,9 @@ pub fn list_capture_sources() -> Vec<CaptureSource> {
 /// Grava a fonte escolhida. So vale no proximo boot — ver o comentario do topo.
 #[tauri::command]
 pub fn set_capture_source(title: String) -> Result<(), String> {
+    if title.len() > 512 || title.chars().any(|ch| ch.is_control() || ch == '"') {
+        return Err("Titulo de captura invalido".into());
+    }
     // Le antes de gravar: escrever a struct do zero apagaria `modo_seguro`,
     // e a pessoa que ligou o modo de compatibilidade o perderia ao trocar a
     // fonte de captura — sem nenhum aviso, e o congelamento voltaria.

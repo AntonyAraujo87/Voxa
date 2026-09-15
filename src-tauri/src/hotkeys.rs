@@ -49,7 +49,7 @@ pub struct HotkeyState {
     /// push-to-talk, mesmo quando o modo esta desligado e a tecla nao esta
     /// registrada em lugar nenhum — e o que `set_push_to_talk` usa quando o
     /// modo liga.
-    talk_code: Mutex<String>,
+    talk_code: Mutex<Option<String>>,
 }
 
 #[cfg(desktop)]
@@ -178,7 +178,7 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(HotkeyState {
         bindings: Mutex::new(bindings),
         status: Mutex::new(status),
-        talk_code: Mutex::new("F8".to_string()),
+        talk_code: Mutex::new(Some("F8".to_string())),
     });
     Ok(())
 }
@@ -235,17 +235,33 @@ pub fn rebind_hotkey(
             .lock()
             .map_err(|_| "estado travado".to_string())?;
 
-        let estava_registrada = bindings.iter().any(|b| b.action == acao);
-        if let Some(pos) = bindings.iter().position(|b| b.action == acao) {
-            let antiga = bindings.remove(pos);
-            let _ = manager.unregister(antiga.shortcut);
-        }
-
+        let old = bindings
+            .iter()
+            .find(|binding| binding.action == acao)
+            .map(|binding| binding.shortcut);
         let Some(code_str) = code else {
+            if let Some(shortcut) = old {
+                manager
+                    .unregister(shortcut)
+                    .map_err(|error| error.to_string())?;
+            }
+            bindings.retain(|binding| binding.action != acao);
+            if acao == "talk" {
+                *state
+                    .talk_code
+                    .lock()
+                    .map_err(|_| "estado travado".to_string())? = None;
+                let _ = app.emit(
+                    "hotkey",
+                    HotkeyEvent {
+                        action: "talk",
+                        pressed: false,
+                    },
+                );
+            }
             grava_status(&mut status, acao, None);
             return Ok(status.clone());
         };
-
         let tecla = Code::from_str(&code_str).map_err(|_| "tecla nao reconhecida".to_string())?;
         let mut mods = Modifiers::empty();
         if ctrl {
@@ -258,40 +274,43 @@ pub fn rebind_hotkey(
             mods |= Modifiers::ALT;
         }
         let novo = Shortcut::new(if mods.is_empty() { None } else { Some(mods) }, tecla);
-
-        // Duas acoes do proprio Voxa na mesma tecla travariam uma a outra —
-        // o handler acharia so a primeira do vetor.
-        if bindings.iter().any(|b| b.shortcut == novo) {
+        if bindings
+            .iter()
+            .any(|binding| binding.action != acao && binding.shortcut == novo)
+        {
             return Err("essa combinacao ja esta em uso por outro atalho do Voxa".into());
         }
-
-        if acao == "talk" {
-            *state
-                .talk_code
-                .lock()
-                .map_err(|_| "estado travado".to_string())? = code_str.clone();
-            // So registra no sistema agora se push-to-talk ja estava ligado —
-            // senao a tecla fica presa sem necessidade. `set_push_to_talk`
-            // registra com a tecla nova quando o modo for ligado.
-            if estava_registrada {
-                manager
-                    .register(novo)
-                    .map_err(|_| "combinacao ja esta em uso por outro programa".to_string())?;
-                bindings.push(Binding {
-                    action: acao,
-                    shortcut: novo,
-                });
-            }
-        } else {
+        let register = acao != "talk" || old.is_some();
+        if register && old != Some(novo) {
+            // Reserva a nova primeiro: uma recusa preserva a combinacao anterior.
             manager
                 .register(novo)
                 .map_err(|_| "combinacao ja esta em uso por outro programa".to_string())?;
+            if let Some(shortcut) = old {
+                if let Err(error) = manager.unregister(shortcut) {
+                    let _ = manager.unregister(novo);
+                    return Err(error.to_string());
+                }
+            }
+            bindings.retain(|binding| binding.action != acao);
             bindings.push(Binding {
                 action: acao,
                 shortcut: novo,
             });
         }
-
+        if acao == "talk" {
+            *state
+                .talk_code
+                .lock()
+                .map_err(|_| "estado travado".to_string())? = Some(code_str.clone());
+            let _ = app.emit(
+                "hotkey",
+                HotkeyEvent {
+                    action: "talk",
+                    pressed: false,
+                },
+            );
+        }
         grava_status(&mut status, acao, label.or(Some(code_str)));
         Ok(status.clone())
     }
@@ -322,23 +341,35 @@ pub fn set_push_to_talk(app: tauri::AppHandle, enabled: bool) -> Result<(), Stri
             .map_err(|_| "estado travado".to_string())?;
 
         if let Some(pos) = bindings.iter().position(|b| b.action == "talk") {
-            let antigo = bindings.remove(pos);
-            let _ = manager.unregister(antigo.shortcut);
+            if enabled {
+                return Ok(());
+            }
+            manager
+                .unregister(bindings[pos].shortcut)
+                .map_err(|error| error.to_string())?;
+            bindings.remove(pos);
         }
-
         if !enabled {
+            let _ = app.emit(
+                "hotkey",
+                HotkeyEvent {
+                    action: "talk",
+                    pressed: false,
+                },
+            );
             return Ok(());
         }
-
         let code_str = state
             .talk_code
             .lock()
             .map_err(|_| "estado travado".to_string())?
-            .clone();
-        let code = Code::from_str(&code_str).unwrap_or(Code::F8);
+            .clone()
+            .ok_or_else(|| "Escolha uma tecla de falar antes de ativar push-to-talk".to_string())?;
+        let code = Code::from_str(&code_str).map_err(|_| "tecla nao reconhecida".to_string())?;
         let sc = Shortcut::new(None, code);
-        // Mesmo motivo do registro inicial: a tecla pode ter ficado presa.
-        let _ = manager.unregister(sc);
+        if bindings.iter().any(|binding| binding.shortcut == sc) {
+            return Err("tecla ja usada por outro atalho do Voxa".into());
+        }
         manager.register(sc).map_err(|e| e.to_string())?;
         bindings.push(Binding {
             action: "talk",

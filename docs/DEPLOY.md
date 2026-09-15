@@ -1,81 +1,104 @@
-# Deploy
+# Operação do Voxa
 
-Anotações operacionais do projeto. Nada aqui é necessário para rodar local.
+Configuração suportada pelo código 0.5.29. Este documento não confirma aplicação
+nos serviços hospedados.
 
-## Servidor de sinalização
+## Sinalização
 
-`render.yaml` na raiz descreve o serviço. No Render, um Blueprint apontando
-para este repositório sobe `server/` como web service free, gera um `VOXA_TOKEN`
-aleatório e expõe `/health`.
+O `render.yaml` instala com `npm ci --omit=dev`, inicia `server/index.js`
+e usa `/health` para saúde agregada. Mantenha uma instância: sockets e salas ficam
+em memória. Reiniciar desconecta clientes, que tentam reidentificar e reentrar.
+Suspensão do serviço pode atrasar o login; não há prazo garantido de inicialização.
 
-O plano free dorme após 15 minutos sem tráfego e leva cerca de 30 segundos para
-acordar — por isso o timeout de conexão do app é de 45 segundos.
+Configure `VOXA_TOKEN` no servidor; convidados digitam a senha no aplicativo.
+Nunca coloque a senha ou o segredo do TURN em `VITE_*`: esses valores são públicos.
 
-## Senha da sala
-
-O servidor rejeita quem não mandar o mesmo token:
-
-```
-servidor:  VOXA_TOKEN=<segredo>
-```
-
-A senha **não** é embutida no instalador. O Vite grava qualquer variável `VITE_*`
-dentro do bundle em tempo de build, e o instalador é público — a senha sairia
-junto, extraível por quem baixasse o `.exe`. Cada pessoa digita uma vez na tela
-de entrada e o app guarda.
-
-A variável `VITE_ROOM_TOKEN` existe para builds privados de rede fechada. Em
-release público, deixe vazia.
+O Blueprint habilita `TRUST_PROXY=1` atrás do proxy do Render. Em acesso direto,
+use `0`. Só habilite se a infraestrutura controlar e higienizar
+`X-Forwarded-For`; não há lista detalhada de proxies no código. Limites: 128 sockets
+e 12 participantes por canal de voz. Exceção não tratada encerra o processo;
+a hospedagem precisa oferecer restart supervisionado.
 
 ## TURN
 
-STUN só descobre o IP público. Se os dois lados estiverem atrás de NAT simétrico
-ou CGNAT, nenhum par de candidatos casa e a conexão não fecha. TURN é um relay:
-sempre funciona, mas todo o vídeo passa por ele — por isso não existe TURN
-gratuito ilimitado.
+TURN depende de disponibilidade, portas, credenciais e políticas de rede.
+Mídia retransmitida consome banda do serviço.
 
+O servidor emite credenciais temporárias compatíveis com coturn configurado com
+`use-auth-secret`. Configure no ambiente do servidor:
+
+```dotenv
+VOXA_TURN_URLS=turn:turn.exemplo.com:3478,turns:turn.exemplo.com:5349
+VOXA_TURN_SECRET=segredo-compartilhado-com-o-coturn
 ```
-VITE_TURN_URLS=turn:servidor:3478
-VITE_TURN_USERNAME=usuario
-VITE_TURN_CREDENTIAL=senha
-```
 
-Antes de contratar, meça: o overlay de métricas mostra `rota: direto` ou
-`rota: relay TURN`. Se der direto, TURN nunca é usado.
+São exemplos, não um serviço provisionado. O segredo fica no servidor.
+As credenciais duram uma hora; o cliente renova a cada 40 minutos, repete em
+5–60 segundos se falhar e renova após suspensão/mudança de rede. Atualiza o
+peer ao recuperar a conexão. O fallback legado `VITE_TURN_URLS`,
+`VITE_TURN_USERNAME` e `VITE_TURN_CREDENTIAL` continua suportado em ambientes
+controlados, mas é extraível do instalador.
 
-## Releases e auto-update
+Um build de teste com `VITE_ICE_POLICY=relay` exige relay. Confirme tráfego
+bidirecional e rota relay no diagnóstico. Esse teste no serviço real não foi
+executado nesta correção.
 
-O app consulta o `latest.json` publicado no GitHub Releases, compara versões,
-baixa o instalador assinado e reinstala por cima. A assinatura é verificada
-contra a chave pública embutida no binário.
+## Supabase e anexos privados
 
-Secrets necessários em Settings → Secrets and variables → Actions:
+Sem `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY`, há chat ao vivo, sem
+histórico/anexos. Com Supabase, habilite autenticação anônima e suas proteções
+contra abuso. A chave pública do cliente não é um segredo. A senha de
+`join_guild` precisa corresponder à senha da sinalização.
 
-| Secret | Valor |
+Para banco novo, revise e execute nesta ordem:
+
+1. `supabase/schema.sql`
+2. `supabase/attachments.sql`
+3. `supabase/hardening.sql`
+4. `supabase/fechar-historico.sql` — substitua o token de exemplo.
+5. `supabase/hardening-2.sql`
+6. `supabase/audit-3.sql`
+
+Para banco existente com os cinco primeiros scripts, **distribua primeiro o
+cliente que resolve URLs assinadas e depois aplique audit-3.sql**. A migração
+torna o bucket privado; clientes antigos deixam de abrir anexos por URL pública.
+Faça backup e valide em homologação antes de aplicar em produção.
+
+A migração corrige leitura de perfis, autoriza anexos por sala, serializa limites
+no banco e revoga associações quando o hash da senha muda. Aplicá-la não muda
+a senha. URLs já assinadas continuam válidas até expirar, em até cinco minutos.
+
+Quota conservadora: 25 objetos por proprietário, 100 no bucket e 8 MiB por
+arquivo. Não existe limpeza automática de órfãos. O administrador precisa revisar
+e remover arquivos pela API/painel do Storage e suas referências correspondentes.
+Essa quota não cobre histórico ou outros consumos. Limites por identidade anônima
+não impedem abuso com várias identidades; use também as proteções do provedor.
+
+Os testes locais validam SQL/RLS. Não validam a API hospedada do Storage, seu
+fluxo de upload nem concorrência de um serviço real. A senha compartilhada autoriza
+o grupo inteiro; não existe modelo de contas/cargos ou canais privados por pessoa.
+
+## Release e atualização
+
+Mantenha versões iguais em `package.json`, `package-lock.json`,
+`src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` e `src-tauri/tauri.conf.json`.
+O workflow exige tag `vVERSAO` igual ao pacote e executa CI no mesmo commit.
+Cria um draft e só promove após verificar artefatos e dependências nativas.
+Uma versão inferior não substitui a maior versão estável como latest.
+
+| Secret no GitHub Actions | Finalidade |
 |---|---|
-| `TAURI_SIGNING_PRIVATE_KEY` | conteúdo de `.keys/voxa.key` |
-| `VITE_SIGNALING_URL` | URL do servidor de sinalização |
-| `VITE_TURN_URLS` / `_USERNAME` / `_CREDENTIAL` | se usar TURN |
-| `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | se usar Supabase |
+| TAURI_SIGNING_PRIVATE_KEY | Assinar artefatos do atualizador |
+| VITE_SIGNALING_URL | Endereço da sinalização |
+| VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY | Histórico opcional |
+| VITE_TURN_URLS / VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL | Fallback legado opcional |
 
-Para publicar: subir a versão em `package.json`, `src-tauri/Cargo.toml` e
-`src-tauri/tauri.conf.json`, e criar a tag.
+Mantenha `bundle.createUpdaterArtifacts` habilitado e cópia segura da chave
+privada: os apps instalados verificam com a chave pública embutida. A assinatura
+do atualizador não equivale a Authenticode; o workflow atual não configura
+Authenticode do executável/instalador Windows.
 
-```bash
-git tag v0.1.2 && git push --tags
-```
-
-O workflow compila no Windows, assina e publica.
-
-`bundle.createUpdaterArtifacts` precisa estar `true` no `tauri.conf.json`. No
-Tauri 2 os artefatos de update não são gerados por padrão, e sem eles o build
-passa normalmente mas a release sai sem `.sig` e sem `latest.json`.
-
-`.keys/` está fora do versionamento. Perder a chave privada significa que os
-apps já instalados param de aceitar atualizações, sem como reemitir.
-
-## Banco de dados
-
-`supabase/schema.sql` cria `users`, `rooms`, `messages` e `voice_sessions`, com
-RLS e a função de login por nick. É opcional: sem as variáveis do Supabase o
-chat funciona em tempo real, apenas sem histórico.
+O diagnóstico informa versão, commit, hash das fontes e capacidades, sem segredos.
+O script local gera hashes dos artefatos. Antes de distribuição geral, valide
+instalação limpa, update da versão anterior, reinício e desinstalação. O CI
+atual não comprova esses fluxos nativos.

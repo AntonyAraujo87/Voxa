@@ -23,7 +23,9 @@ const PAGINA_HISTORICO = 40;
 export class Chat {
   /** canais que ja chegaram ao inicio do historico — evita consultas inuteis */
   private historicoCompleto = new Set<string>();
-  private carregandoHistorico = false;
+  private carregandoHistorico = new Set<string>();
+  private carregados = new Set<string>();
+  private abrindo = new Map<string, Promise<void>>();
   private timestamps: number[] = [];
 
   constructor(private signaling: Signaling) {}
@@ -31,21 +33,36 @@ export class Chat {
   async openChannel(id: string) {
     app.setState({ activeText: id });
     app.getState().clearUnread(id);
-    if (app.getState().messages[id]) return;
-    const history = await loadMessages(id);
-    app.getState().setMessages(id, history);
+    if (this.carregados.has(id)) return;
+    if (this.abrindo.has(id)) return this.abrindo.get(id);
+    const task = (async () => {
+      try {
+        const history = await loadMessages(id);
+        const merged = new Map(history.map(message => [message.id, message]));
+        // O banco com RLS e a fonte de autoria persistida. Um evento ao vivo
+        // com id copiado nao pode sobrescrever essa linha durante a abertura.
+        for (const message of app.getState().messages[id] ?? []) if (!merged.has(message.id)) merged.set(message.id, message);
+        app.getState().setMessages(id, [...merged.values()].sort((a,b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)));
+        this.carregados.add(id);
+      } catch { app.getState().toast("info", "Historico indisponivel. Abra o canal novamente para tentar."); }
+      finally { this.abrindo.delete(id); }
+    })();
+    this.abrindo.set(id, task);
+    return task;
   }
 
   send(content: string) {
     const s = app.getState();
     const text = content.trim();
-    if (!text || !s.me) return;
+    if (!text || !s.me) return false;
+    if (text.length > 2000) { s.toast("info", "Use ate 2000 caracteres por mensagem."); return false; }
+    if (s.status !== "online") { s.toast("error", "Sem conexao. Sua mensagem foi mantida para tentar novamente."); return false; }
 
     // O servidor tambem limita, mas ali a mensagem excedente e descartada em
     // silencio. Barrando aqui, quem digitou entende o que aconteceu.
     if (!this.allowance()) {
       s.toast("info", "Devagar com o chat — aguarde alguns segundos.");
-      return;
+      return false;
     }
 
     this.dispatch({
@@ -57,6 +74,7 @@ export class Chat {
       authorColor: s.me.color,
       createdAt: new Date().toISOString(),
     });
+    return true;
   }
 
   /**
@@ -68,6 +86,8 @@ export class Chat {
   async sendAttachment(file: File, caption = "") {
     const s = app.getState();
     if (!s.me) return;
+    if (s.status !== "online") { s.toast("info", "Aguarde a conexao antes de enviar anexos."); return; }
+    if (caption.trim().length > 2000) { s.toast("error", "A legenda deve ter no maximo 2000 caracteres."); return; }
     if (!this.allowance()) {
       s.toast("info", "Devagar com o chat — aguarde alguns segundos.");
       return;
@@ -82,7 +102,7 @@ export class Chat {
     }
 
     s.toast("info", `Enviando ${file.name}...`);
-    const anexo = await uploadAttachment(file);
+    const anexo = await uploadAttachment(file, s.activeText);
     if (!anexo) {
       s.toast("error", `Nao foi possivel enviar ${file.name}.`);
       return;
@@ -101,6 +121,7 @@ export class Chat {
       attachmentMime: anexo.mime,
       attachmentSize: anexo.size,
     });
+    return true;
   }
 
   typing() {
@@ -112,14 +133,15 @@ export class Chat {
    * @returns quantas mensagens novas entraram
    */
   async loadOlder(channelId: string): Promise<number> {
-    if (this.carregandoHistorico || this.historicoCompleto.has(channelId)) return 0;
+    if (this.carregandoHistorico.has(channelId) || this.historicoCompleto.has(channelId)) return 0;
 
     const atuais = app.getState().messages[channelId] ?? [];
     if (atuais.length === 0) return 0;
+    if (atuais.length >= 1000) { app.getState().toast("info", "Limite de 1000 mensagens carregadas neste canal."); return 0; }
 
-    this.carregandoHistorico = true;
+    this.carregandoHistorico.add(channelId);
     try {
-      const anteriores = await loadMessages(channelId, PAGINA_HISTORICO, atuais[0].createdAt);
+      const anteriores = await loadMessages(channelId, PAGINA_HISTORICO, atuais[0].createdAt, atuais[0].id);
       // Nada mais atras: marca o canal para nao consultar de novo a cada
       // rolagem ate o topo.
       if (anteriores.length === 0) {
@@ -128,16 +150,20 @@ export class Chat {
       }
       app.getState().prependMessages(channelId, anteriores);
       return anteriores.length;
-    } finally {
-      this.carregandoHistorico = false;
+    } catch { app.getState().toast("info", "Nao foi possivel carregar mensagens antigas. Tente novamente."); return 0; } finally {
+      this.carregandoHistorico.delete(channelId);
     }
   }
 
   /** Eco otimista + propagacao em tempo real + persistencia — o mesmo tripé
    *  pra mensagem de texto e pra anexo, so muda o que vai dentro do objeto. */
+  retry(msg: ChatMessage) {
+    if (msg.authorId === app.getState().me?.id) this.dispatch(msg);
+  }
+
   private dispatch(msg: ChatMessage) {
-    app.getState().pushMessage(msg); // aparece antes de sair da maquina
-    this.signaling.sendChat({
+    app.getState().pushMessage({ ...msg, pending: true, failed: false, persistenceFailed: false }); // aparece antes de sair da maquina
+    void this.signaling.sendChat({
       id: msg.id,
       channelId: msg.channelId,
       content: msg.content,
@@ -145,8 +171,14 @@ export class Chat {
       attachmentName: msg.attachmentName,
       attachmentMime: msg.attachmentMime,
       attachmentSize: msg.attachmentSize,
+    }).then(async confirmed => {
+      app.getState().pushMessage({ ...confirmed, pending: false, failed: false });
+      const saved = await saveMessage(confirmed);
+      if (saved === false) app.getState().pushMessage({ ...confirmed, pending: false, persistenceFailed: true });
+    }).catch(error => {
+      app.getState().pushMessage({ ...msg, pending: false, failed: true });
+      app.getState().toast("error", `Mensagem nao confirmada: ${String(error)}`);
     });
-    void saveMessage(msg);
   }
 
   private allowance(): boolean {

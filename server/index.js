@@ -4,7 +4,7 @@
  * Responsabilidade UNICA: handshake WebRTC (SDP/ICE), presenca e relay de chat.
  * Nenhum byte de audio ou video passa por aqui — tudo e P2P entre os clientes.
  *
- * Sem Express, sem ORM, sem middleware: http nativo + socket.io.
+ * Express limita HTTP; Engine.IO limita transportes antes da autenticacao.
  * O que este arquivo faz e apenas montar as pecas:
  *   lib/security.js  limites de taxa, sanitizacao, comparacao de segredo
  *   lib/state.js     quem esta conectado e em qual canal
@@ -12,6 +12,8 @@
  */
 import { createServer } from "node:http";
 import { Server } from "socket.io";
+import { createHttpApp } from "./lib/http.js";
+import { Admission } from "./lib/admission.js";
 
 import { Registry } from "./lib/state.js";
 import { registerHandlers } from "./lib/handlers.js";
@@ -20,6 +22,7 @@ import {
   MAX_SOCKETS_PER_IP,
   RateLimiter,
   clientIp,
+  requestIp,
   safeEqual,
 } from "./lib/security.js";
 
@@ -52,33 +55,21 @@ const limiter = new RateLimiter();
 
 /* ------------------------------- HTTP ------------------------------------- */
 
-const httpServer = createServer((req, res) => {
-  if (req.url === "/health") {
-    res.writeHead(200, {
-      "content-type": "application/json",
-      // Endpoint publico de status: nao ha nada a embutir nem a inferir dele.
-      "x-content-type-options": "nosniff",
-      "cache-control": "no-store",
-    });
-    res.end(
-      JSON.stringify({
-        ok: true,
-        ...registry.summary(),
-        uptime: Math.round(process.uptime()),
-        rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + "MB",
-      })
-    );
-    return;
-  }
-
-  // Qualquer outra rota nao existe — e nao conta ao visitante o que existe.
-  res.writeHead(404, { "content-type": "text/plain" });
-  res.end("not found");
-});
+const httpServer = createServer({ requestTimeout: 10000, headersTimeout: 10000, maxHeaderSize: 16384 }, createHttpApp());
+const admission = new Admission(128, MAX_SOCKETS_PER_IP);
+const reservations = new WeakMap();
 
 /* ------------------------------ socket.io --------------------------------- */
 
 const io = new Server(httpServer, {
+  allowRequest: (req, callback) => {
+    const ip = requestIp(req);
+    if (!limiter.allow(`transport:${ip}`, 60000, MAX_HANDSHAKES_PER_MIN)) return callback("muitas tentativas", false);
+    const reservation = admission.reserve(ip);
+    if (!reservation) return callback("limite de conexoes", false);
+    reservations.set(req, reservation);
+    callback(null, true);
+  },
   cors: { origin: ORIGIN, methods: ["GET", "POST"] },
   // Handshake e mensagens curtas: websocket direto, sem polling.
   transports: ["websocket"],
@@ -95,6 +86,12 @@ const io = new Server(httpServer, {
  * Porta de entrada. Roda ANTES de qualquer handler existir, entao flood e
  * senha errada morrem sem custar processamento nem alocar estado.
  */
+io.engine.on("connection", (client) => {
+  const reservation = reservations.get(client.request);
+  reservation?.connected();
+  client.once("close", () => reservation?.release());
+});
+
 io.use((socket, next) => {
   const ip = clientIp(socket);
   socket.data.ip = ip;
@@ -102,7 +99,7 @@ io.use((socket, next) => {
   if (!limiter.allow(`hs:${ip}`, 60_000, MAX_HANDSHAKES_PER_MIN)) {
     return next(new Error("muitas tentativas"));
   }
-  if (registry.countByIp(ip) >= MAX_SOCKETS_PER_IP) {
+  if (io.engine.clientsCount > 128 || [...io.sockets.sockets.values()].filter(client => client.data.ip === ip).length >= MAX_SOCKETS_PER_IP) {
     return next(new Error("limite de conexoes"));
   }
 
@@ -142,5 +139,5 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 
 // Uma excecao nao tratada nao pode derrubar a sala inteira. Registramos o tipo
 // e seguimos: o processo continua servindo quem ja esta conectado.
-process.on("uncaughtException", (err) => log.warn("excecao nao tratada:", err?.name));
+process.on("uncaughtException", (err) => { log.warn("excecao nao tratada:", err?.name); process.exit(1); });
 process.on("unhandledRejection", (err) => log.warn("promessa rejeitada:", err?.name));

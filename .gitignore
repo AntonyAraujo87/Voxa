@@ -34,3 +34,6 @@ dist-ssr
 
 # dependencias do servidor de signaling
 server/node_modules
+test-results/
+artifacts/
+work/

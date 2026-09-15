@@ -58,6 +58,8 @@ export interface AppState {
   noiseSuppression: boolean;
   /** usa o loopback do WASAPI no lugar do audio do getDisplayMedia */
   systemAudio: boolean;
+  systemAudioMode: "system" | "application" | "exclude-voxa";
+  audioProcessId: number | null;
   camDeviceId: string;
   cameras: MediaDeviceInfo[];
   outputDeviceId: string;
@@ -140,6 +142,8 @@ export const useApp = create<AppState>((set) => ({
   mics: [],
   noiseSuppression: false,
   systemAudio: false,
+  systemAudioMode: "system",
+  audioProcessId: null,
   camDeviceId: "default",
   cameras: [],
   outputDeviceId: "default",
@@ -170,7 +174,15 @@ export const useApp = create<AppState>((set) => ({
   pushMessage: (msg) =>
     set((s) => {
       const list = s.messages[msg.channelId] ?? [];
-      if (list.some((m) => m.id === msg.id)) return s;
+      const existing = list.findIndex((m) => m.id === msg.id);
+      if (existing !== -1) {
+        // ACK e resultado de persistencia atualizam o eco otimista sem
+        // acrescentar outra linha ou contar a mensagem como nao lida novamente.
+        if (list[existing].authorId !== msg.authorId) return s;
+        const next = [...list];
+        next[existing] = { ...list[existing], ...msg };
+        return { messages: { ...s.messages, [msg.channelId]: next } };
+      }
 
       // Conta como nao lida quando a mensagem nao e minha e o canal nao esta
       // aberto — ou esta aberto mas a janela nem visivel, que e o caso comum:
@@ -194,15 +206,17 @@ export const useApp = create<AppState>((set) => ({
         ? { ...s.mentions, [msg.channelId]: (s.mentions[msg.channelId] ?? 0) + 1 }
         : s.mentions;
 
-      // janela deslizante: 300 mensagens por canal em memoria, o resto vive no
-      // Supabase. Evita a lista crescer sem limite numa sessao longa.
+      // Preserve a janela ampliada pela paginacao. Voltar abruptamente para
+      // 300 ao chegar uma mensagem apagava centenas de linhas ja carregadas.
+      // O teto permanece limitado, inclusive em sessoes longas.
       const next = [...list, msg];
+      const capacity = Math.max(300, Math.min(1000, list.length));
       return {
         unread,
         mentions,
         messages: {
           ...s.messages,
-          [msg.channelId]: next.length > 300 ? next.slice(-300) : next,
+          [msg.channelId]: next.length > capacity ? next.slice(-capacity) : next,
         },
       };
     }),

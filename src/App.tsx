@@ -13,8 +13,8 @@ import { LoginGate } from "./components/LoginGate";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useApp, type AppState } from "./store/store";
 import { session } from "./lib/session";
-import { savePrefs } from "./lib/prefs";
-import { emitEvent, listenEvent, releaseMemory } from "./lib/desktop";
+import { currentPrefs, savePrefs } from "./lib/prefs";
+import { emitEvent, listenEvent, releaseMemory, isDesktop } from "./lib/desktop";
 import { iniciarDiagnostico } from "./lib/diagnostico";
 import type { OverlayPeer } from "./components/Overlay";
 
@@ -43,39 +43,41 @@ export default function App() {
   // Atalhos globais (Rust) + checagem de atualizacao, so depois de logado.
   useEffect(() => {
     if (!ready) return;
+    let alive = true;
     let dispose: (() => void) | undefined;
     void session.initHotkeys().then((off) => {
-      dispose = off;
+      if (!alive) off(); else dispose = off;
     });
     const timer = window.setTimeout(() => void session.checkUpdate(), 4000);
     return () => {
+      alive = false;
       dispose?.();
       window.clearTimeout(timer);
     };
   }, [ready]);
 
   useEffect(() => {
-    // Atalhos globais estilo Discord.
-    const onKey = (e: KeyboardEvent) => {
-      if (!ready) return;
-      const typing = (e.target as HTMLElement)?.tagName;
-      if (typing === "INPUT" || typing === "TEXTAREA") return;
-      const mod = e.ctrlKey || e.metaKey;
-      if (mod && e.shiftKey && e.code === "KeyM") {
-        e.preventDefault();
-        if (!useApp.getState().pushToTalk) session.toggleMute();
-      }
-      if (mod && e.shiftKey && e.code === "KeyD") {
-        e.preventDefault();
-        session.toggleDeafen();
-      }
-      if (mod && e.shiftKey && e.code === "KeyE") {
-        e.preventDefault();
-        void session.toggleShare();
+    if (!ready || isDesktop) return;
+    const defaults = {mute:{code:"KeyM",ctrl:true,shift:true,alt:false}, deafen:{code:"KeyD",ctrl:true,shift:true,alt:false}, share:{code:"KeyE",ctrl:true,shift:true,alt:false}, talk:{code:"F8",ctrl:false,shift:false,alt:false}};
+    const onKey = (event: KeyboardEvent) => {
+      if (event.repeat || (event.target as HTMLElement)?.closest("input,textarea,[contenteditable=true]")) return;
+      for (const action of ["mute","deafen","share","talk"] as const) {
+        const saved = currentPrefs().hotkeys[action];
+        const combo = saved === undefined ? defaults[action] : saved;
+        if (!combo || combo.code !== event.code || combo.ctrl !== event.ctrlKey || combo.shift !== event.shiftKey || combo.alt !== event.altKey) continue;
+        event.preventDefault();
+        if (action === "mute") session.toggleMute();
+        if (action === "deafen") session.toggleDeafen();
+        if (action === "share") void session.toggleShare();
+        if (action === "talk") session.setTalking(true);
       }
     };
+    const release = () => session.setTalking(false);
+    const onRelease = (event: KeyboardEvent) => { const saved = currentPrefs().hotkeys.talk; if (event.code === (saved === undefined ? "F8" : saved?.code)) release(); };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onRelease);
+    window.addEventListener("blur", release);
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("keyup", onRelease); window.removeEventListener("blur", release); release(); };
   }, [ready]);
 
   useEffect(() => {
@@ -118,14 +120,16 @@ export default function App() {
     // ignora repeticao, sem isto ela nasceria vazia e so se preencheria na
     // proxima mudanca de roster.
     let dispose: (() => void) | undefined;
+    let disposed = false;
     void listenEvent("overlay:pronto", () => {
       ultimo = "";
       emitir(useApp.getState());
     }).then((off) => {
-      dispose = off;
+      if (disposed) off(); else dispose = off;
     });
 
     return () => {
+      disposed = true;
       parar();
       dispose?.();
     };
@@ -139,7 +143,7 @@ export default function App() {
     const onVisibility = () => {
       window.clearTimeout(timer);
       if (document.hidden) {
-        timer = window.setTimeout(() => void releaseMemory(), 5000);
+        timer = window.setTimeout(() => { if (!useApp.getState().activeVoice) void releaseMemory(); }, 5000);
         return;
       }
       // Voltou a olhar: o canal aberto passa a estar lido de novo.
@@ -181,7 +185,7 @@ export default function App() {
             {/* RemoteAudio fica FORA do boundary de video e sempre montado
                 enquanto ha canal de voz: audio nao pode depender da UI de
                 transmissao, que na maior parte do tempo nao mostra nada. */}
-            {activeVoice && <RemoteAudio />}
+            {activeVoice && <ErrorBoundary area="audio" compact><RemoteAudio /></ErrorBoundary>}
             {activeVoice && (
               <ErrorBoundary area="video">
                 <StageGrid />

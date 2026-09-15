@@ -25,6 +25,7 @@ export interface LocalMediaHooks {
   onScreenEnded: () => void;
   /** dispositivo de camera sumiu (desconectado, outro programa tomou) */
   onWebcamEnded: () => void;
+  onMicEnded?: () => void;
 }
 
 export interface ScreenHandles {
@@ -34,6 +35,9 @@ export interface ScreenHandles {
 }
 
 export class LocalMedia {
+  private micGeneration = 0;
+  private videoGeneration = 0;
+  private openingMic: Promise<MediaStreamTrack | null> | null = null;
   private micStream: MediaStream | null = null;
   private screenStream: MediaStream | null = null;
   private webcamStream: MediaStream | null = null;
@@ -57,6 +61,9 @@ export class LocalMedia {
   get hasMic() {
     return this.micStream !== null;
   }
+
+  /** O teste e dono apenas do clone; encerrar o teste nao encerra a chamada. */
+  cloneMicrophoneForTest() { return this.micStream?.clone() ?? null; }
 
   get screen(): MediaStream | null {
     return this.screenStream;
@@ -88,6 +95,15 @@ export class LocalMedia {
     deviceId: string,
     noiseSuppression = false
   ): Promise<MediaStreamTrack | null> {
+    if (this.openingMic) return this.openingMic;
+    const generation = this.micGeneration;
+    const task = this.openMicOnce(preset, deviceId, noiseSuppression, generation);
+    this.openingMic = task;
+    try { return await task; }
+    finally { if (this.openingMic === task) this.openingMic = null; }
+  }
+
+  private async openMicOnce(preset: AudioPresetId, deviceId: string, noiseSuppression: boolean, generation: number) {
     // Ja aberto: devolve a trilha existente. Mas se o grafo interno ficou
     // sem ela (o destino de mistura sumiu, ou nunca chegou a ser montado),
     // NAO devolve null — fecha e monta de novo. Devolver null aqui era o
@@ -98,11 +114,19 @@ export class LocalMedia {
       const existente = this.mixDestino?.stream.getAudioTracks()[0];
       if (existente && existente.readyState === "live") return existente;
       this.closeMic();
+      generation = this.micGeneration;
     }
 
     const stream = await captureMic(preset, deviceId);
+    if (generation !== this.micGeneration) { stopStream(stream); return null; }
     this.micStream = stream;
-    this.stopVad = createVoiceDetector(stream, (speaking) => this.hooks.onSpeaking(speaking));
+    try {
+    for (const track of stream.getAudioTracks()) track.onended = () => {
+      if (this.micStream !== stream) return;
+      this.closeMic();
+      this.hooks.onMicEnded?.();
+    };
+    this.stopVad = createVoiceDetector(stream, (speaking) => this.hooks.onSpeaking(this.micEnabled && speaking));
 
     const ctx = audioContext();
     this.micSource = ctx.createMediaStreamSource(stream);
@@ -136,9 +160,12 @@ export class LocalMedia {
     this.micGain.connect(this.mixDestino);
 
     return this.mixDestino.stream.getAudioTracks()[0];
+    } catch (error) { if (this.micStream === stream) this.closeMic(); throw error; }
   }
 
   closeMic() {
+    this.micGeneration++;
+    this.openingMic = null;
     this.stopVad?.();
     this.stopVad = null;
     try {
@@ -152,6 +179,7 @@ export class LocalMedia {
     this.micSource = null;
     this.rnnoiseNode = null;
     this.micGain = null;
+    stopStream(this.mixDestino?.stream);
     this.mixDestino = null;
     stopStream(this.micStream);
     this.micStream = null;
@@ -165,19 +193,23 @@ export class LocalMedia {
    */
   setMicEnabled(enabled: boolean) {
     this.micEnabled = enabled;
+    if (!enabled) this.hooks.onSpeaking(false);
     if (this.micGain) this.micGain.gain.value = enabled ? 1 : 0;
   }
 
   /* -------------------------------- tela -------------------------------- */
 
-  async openScreen(presetId: VideoPresetId, mode: ContentMode): Promise<ScreenHandles> {
-    const handles = await captureScreen(VIDEO_PRESETS[presetId], mode);
+  async openScreen(presetId: VideoPresetId, mode: ContentMode, includeAudio = false): Promise<ScreenHandles> {
+    const generation = this.videoGeneration;
+    const handles = await captureScreen(VIDEO_PRESETS[presetId], mode, includeAudio);
+    if (generation !== this.videoGeneration) { stopStream(handles.stream); throw new DOMException("Captura cancelada", "AbortError"); }
     this.screenStream = handles.stream;
     handles.video.onended = () => this.hooks.onScreenEnded();
     return handles;
   }
 
   closeScreen() {
+    this.videoGeneration++;
     stopStream(this.screenStream);
     this.screenStream = null;
   }
@@ -210,13 +242,16 @@ export class LocalMedia {
   async openWebcam(deviceId: string): Promise<MediaStreamTrack | null> {
     if (this.webcamStream) return this.webcamStream.getVideoTracks()[0] ?? null;
 
+    const generation = this.videoGeneration;
     const { stream, video } = await captureWebcam(deviceId);
+    if (generation !== this.videoGeneration) { stopStream(stream); return null; }
     this.webcamStream = stream;
     video.onended = () => this.hooks.onWebcamEnded();
     return video;
   }
 
   closeWebcam() {
+    this.videoGeneration++;
     stopStream(this.webcamStream);
     this.webcamStream = null;
   }

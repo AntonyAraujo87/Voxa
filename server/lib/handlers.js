@@ -1,4 +1,5 @@
 import { GUILD } from "./state.js";
+import { turnCredentials } from "./turn.js";
 import {
   EVENT_LIMITS,
   sanitizeColor,
@@ -73,8 +74,8 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
   /* ------------------------------- identidade ---------------------------- */
 
   socket.on("hello", (payload = {}, ack) => {
-    if (!guard("hello")) return;
-    if (identificado()) return; // reapresentacao nao recria o cliente
+    if (!guard("hello")) { if (typeof ack === "function") ack({ error: "limite-de-identificacao" }); return; }
+    if (identificado()) { if (typeof ack === "function") ack({ selfId: socket.id, roster: registry.roster() }); return; } // reapresentacao nao recria o cliente
 
     // Compatibilidade: clientes novos mandam o token no handshake e ja chegam
     // marcados; os antigos so o enviam aqui. Ambos precisam acertar.
@@ -97,14 +98,19 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
     registry.add(socket.id, user, socket.data.ip);
     socket.join(GUILD);
 
-    if (typeof ack === "function") ack({ selfId: socket.id, roster: registry.roster() });
+    if (typeof ack === "function") ack({ selfId: socket.id, roster: registry.roster(), iceServers: turnCredentials(socket.id) });
     broadcastRoster();
   });
 
   /* ------------------------------- voz / tela ---------------------------- */
+  socket.on("ice:config", (_payload, ack) => {
+    if (!identificado() || !guard("ice:config")) { if (typeof ack === "function") ack({ error: "nao-autorizado" }); return; }
+    if (typeof ack === "function") ack({ iceServers: turnCredentials(socket.id) });
+  });
 
   socket.on("voice:join", (payload = {}, ack) => {
-    if (!identificado() || !guard("voice:join")) return;
+    if (!identificado()) { if (typeof ack === "function") ack({ error: "nao-identificado" }); return; }
+    if (!guard("voice:join")) { if (typeof ack === "function") ack({ error: "Muitas trocas de canal. Aguarde alguns segundos." }); return; }
 
     const channelId = sanitizeId(payload?.channelId, 64);
     const client = registry.get(socket.id);
@@ -117,10 +123,11 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
       return;
     }
     if (client.voice === channelId) {
-      if (typeof ack === "function") ack({ channelId, peers: registry.peersOf(channelId) });
+      if (typeof ack === "function") ack({ channelId, peers: registry.peersOf(channelId).filter(peer => peer.id !== socket.id) });
       return;
     }
 
+    if (registry.peersOf(channelId).length >= 12) { if (typeof ack === "function") ack({ error: "Canal cheio (12 participantes)" }); return; }
     if (client.voice) leaveVoice({ silent: true });
 
     const peers = registry.joinVoice(socket.id, channelId);
@@ -150,7 +157,8 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
   }
 
   socket.on("voice:leave", () => {
-    if (!identificado() || !guard("voice:leave")) return;
+    // Sair deve continuar possivel mesmo depois de exceder o limite de entrada.
+    if (!identificado()) return;
     leaveVoice();
   });
 
@@ -166,8 +174,24 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
     if (!to || !data || typeof data !== "object") return;
 
     // So entrega para quem esta de fato conectado: impede varredura de ids.
-    if (!registry.get(to)) return;
-    io.to(to).emit("signal", { from: socket.id, data });
+    const source = registry.get(socket.id);
+    const target = registry.get(to);
+    if (to === socket.id || !source?.voice || source.voice !== target?.voice) return;
+    const description = data.description;
+    const candidate = data.candidate;
+    const validDescription = description && ["offer", "answer"].includes(description.type) && typeof description.sdp === "string" && description.sdp.length <= 65536;
+    const validCandidate = Object.hasOwn(data, "candidate") && (candidate === null || (typeof candidate === "object" && typeof candidate.candidate === "string" && candidate.candidate.length <= 4096));
+    if (!validDescription && !validCandidate) return;
+    // Nunca refletir campos arbitrarios enviados por um cliente.
+    const clean = validDescription ? { description: { type: description.type, sdp: description.sdp } } : {
+      candidate: candidate === null ? null : {
+        candidate: candidate.candidate,
+        sdpMid: typeof candidate.sdpMid === "string" ? candidate.sdpMid.slice(0, 64) : null,
+        sdpMLineIndex: Number.isInteger(candidate.sdpMLineIndex) && candidate.sdpMLineIndex >= 0 && candidate.sdpMLineIndex < 32 ? candidate.sdpMLineIndex : null,
+        usernameFragment: typeof candidate.usernameFragment === "string" ? candidate.usernameFragment.slice(0, 256) : undefined,
+      },
+    };
+    io.to(to).emit("signal", { from: socket.id, channelId: source.voice, data: clean });
   });
 
   socket.on("state", (patch = {}) => {
@@ -178,17 +202,20 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
 
   /* ---------------------------------- chat ------------------------------- */
 
-  socket.on("chat:send", (msg = {}) => {
-    if (!identificado() || !guard("chat:send")) return;
+  const delivered = new Map();
+  socket.on("chat:send", (msg = {}, ack) => {
+    if (!identificado()) { if (typeof ack === "function") ack({ error: "nao-identificado" }); return; }
+    if (typeof msg?.id === "string" && delivered.has(msg.id)) { if (typeof ack === "function") ack(delivered.get(msg.id)); return; }
+    if (!guard("chat:send")) { if (typeof ack === "function") ack({ error: "Limite de mensagens. Tente novamente em alguns segundos." }); return; }
 
     const client = registry.get(socket.id);
     const content = sanitizeText(msg?.content, MAX_CHAT_LENGTH);
     const channelId = sanitizeId(msg?.channelId, 64);
     const attachment = sanitizeAttachment(msg);
     // Mensagem so-anexo (sem legenda) e valida; sem conteudo E sem anexo, nao ha o que mandar.
-    if ((!content && !attachment.attachmentUrl) || !channelId) return;
+    if ((!content && !attachment.attachmentUrl) || !channelId) { if (typeof ack === "function") ack({ error: "Mensagem invalida ou muito longa" }); return; }
 
-    io.to(GUILD).emit("chat:new", {
+    const message = {
       id: sanitizeId(msg?.id, 64) || `${Date.now()}-${socket.id}`,
       channelId,
       content,
@@ -199,7 +226,11 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
       authorColor: client.user.color,
       createdAt: new Date().toISOString(),
       ...attachment,
-    });
+    };
+    delivered.set(message.id, message);
+    if (delivered.size > 256) delivered.delete(delivered.keys().next().value);
+    io.to(GUILD).emit("chat:new", message);
+    if (typeof ack === "function") ack(message);
   });
 
   socket.on("chat:typing", (payload = {}) => {
@@ -219,5 +250,5 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
     broadcastRoster();
   });
 
-  socket.on("error", (err) => log.warn("socket", err?.message ?? "erro"));
+  socket.on("error", () => log.warn("erro de transporte de socket"));
 }

@@ -63,7 +63,7 @@ function useGainStream(stream: MediaStream | null, gain: number, silenciado: boo
     const node = gainNodeRef.current;
     if (!node) return;
     node.gain.value = silenciado ? 0 : Math.max(0, gain);
-  }, [gain, silenciado]);
+  }, [stream, gain, silenciado]);
 }
 
 const PeerAudio = memo(function PeerAudio({

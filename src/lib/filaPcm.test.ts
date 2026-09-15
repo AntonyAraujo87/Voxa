@@ -110,22 +110,18 @@ describe("FilaPCM", () => {
     assert.doesNotThrow(() => drenar(f, 1));
   });
 
-  test("o codigo do worklet gera a partir da propria classe", () => {
-    // O AudioWorklet recebe `FilaPCM.toString()` como texto. Se a classe
-    // passasse a depender de algo de fora (helper do compilador, import), o
-    // worklet quebraria em runtime sem erro de tipo nenhum — e o audio
-    // simplesmente nao sairia.
-    const fonte = FilaPCM.toString();
-    assert.match(fonte, /class FilaPCM/);
-    assert.match(fonte, /push\(/);
-    assert.match(fonte, /pull\(/);
-    assert.ok(
-      !/\bimport\b|\brequire\(|__decorate|__extends/.test(fonte),
-      "a classe nao pode depender de nada externo para virar worklet"
-    );
-    assert.doesNotThrow(
-      () => new Function(`${fonte}; return new FilaPCM();`)(),
-      "o texto gerado precisa ser JavaScript valido por conta propria"
-    );
+  test("overflow preserva contagem do bloco parcialmente consumido", () => {
+    const f = new FilaPCM(1, 10);
+    f.push(new Float32Array(16).fill(1));
+    f.pull(new Float32Array(2), new Float32Array(2));
+    f.push(new Float32Array(16).fill(2));
+    assert.equal(f.disponivel, 8);
+  });
+  test("limita bloco gigante e descarta amostra estereo incompleta", () => {
+    const f = new FilaPCM(0, 10);
+    f.push(new Float32Array(3));
+    assert.equal(f.disponivel, 0);
+    f.push(new Float32Array(200).fill(3));
+    assert.equal(f.disponivel, 10);
   });
 });

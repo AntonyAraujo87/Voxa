@@ -1,11 +1,12 @@
 import { audioContext } from "./media";
-import { FilaPCM } from "./filaPcm";
+import workletUrl from "./pcmWorklet.ts?worker&url";
 import { isDesktop } from "./desktop";
+import { registrarErro } from "./diagnostico";
 
 /* ---------------------------------------------------------------------------
    Audio do sistema (WASAPI loopback) virando um MediaStreamTrack.
 
-   O `getDisplayMedia` do WebView2 entrega o audio da janela escolhida — quando
+   O `getDisplayMedia` do WebView2 entrega o audio da janela escolhida â€” quando
    entrega. Com jogo em tela cheia o normal e vir nada, e quem assiste ve a
    imagem em silencio. O Rust captura o que a placa esta tocando (sysaudio.rs)
    e manda blocos de f32 intercalado por um Channel do Tauri, em bytes crus.
@@ -16,86 +17,108 @@ import { isDesktop } from "./desktop";
    O buffer no worklet e o coracao disto: IPC nao entrega com a regularidade de
    um relogio de audio. Sem folga, cada atraso vira clique; com folga demais, o
    som atrasa em relacao a imagem. O worklet segura ~60 ms e descarta o excesso
-   quando passa de 400 ms — atrasar meio segundo e pior que perder um pedaco.
+   quando passa de 400 ms â€” atrasar meio segundo e pior que perder um pedaco.
 --------------------------------------------------------------------------- */
 
-/**
- * Codigo do worklet. O AudioWorklet roda num escopo isolado que nao aceita
- * `import`, entao a classe da fila entra aqui pelo `toString()` — mesma fonte
- * que os testes usam, em vez de uma copia que envelhece sozinha.
- */
-const WORKLET = `
-${FilaPCM.toString()}
+/** Modulo independente empacotado pelo Vite; carregado uma vez por contexto. */
+const worklets = new WeakMap<AudioContext, Promise<void>>();
+let quadrosProcessados = 0;
+let quadrosComSom = 0;
+let geracao = 0;
+let captura: { node: AudioWorkletNode; destino: MediaStreamAudioDestinationNode } | null = null;
+let pendente: Promise<MediaStreamTrack | null> | null = null;
+let comandos: Promise<unknown> = Promise.resolve();
+let estado = "desligado";
+let blocos = 0;
 
-class ProcessadorPCM extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.fila = new FilaPCM();
-    this.port.onmessage = (e) => this.fila.push(new Float32Array(e.data));
-  }
-  process(_inputs, outputs) {
-    const saida = outputs[0];
-    this.fila.pull(saida[0], saida[1] ?? saida[0]);
-    return true;
-  }
+export function estadoAudioDoSistema() { return { estado, blocos, quadrosProcessados, quadrosComSom }; }
+
+/** Serializa start/stop nativos, inclusive quando a abertura ainda aguarda WASAPI. */
+function comando<T>(run: () => Promise<T>): Promise<T> {
+  const next = comandos.then(run, run);
+  comandos = next.catch(() => {});
+  return next;
 }
-registerProcessor("fila-pcm", ProcessadorPCM);
-`;
 
-let workletCarregado = false;
-let node: AudioWorkletNode | null = null;
-let destino: MediaStreamAudioDestinationNode | null = null;
-let pararNativo: (() => void) | null = null;
-
-/**
- * Liga a captura e devolve o track pronto pra malha.
- * `null` quando nao ha suporte (fora do app instalado, ou nao-Windows).
- */
-export async function iniciarAudioDoSistema(): Promise<MediaStreamTrack | null> {
-  if (!isDesktop) return null;
-  if (node && destino) return destino.stream.getAudioTracks()[0] ?? null;
-
-  const ctx = audioContext();
-
-  if (!workletCarregado) {
-    const url = URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" }));
-    try {
-      await ctx.audioWorklet.addModule(url);
-      workletCarregado = true;
-    } finally {
-      URL.revokeObjectURL(url);
+export function iniciarAudioDoSistema(onFailure?: (message: string) => void, options: { mode?: "system" | "application" | "exclude-voxa"; processId?: number | null } = {}): Promise<MediaStreamTrack | null> {
+  if (!isDesktop) return Promise.resolve(null);
+  if (pendente) return pendente;
+  if (captura) return Promise.resolve(captura.destino.stream.getAudioTracks()[0] ?? null);
+  const token = ++geracao;
+  estado = "iniciando";
+  blocos = quadrosProcessados = quadrosComSom = 0;
+  const iniciar = async () => {
+    const ctx = audioContext();
+    let modulo = worklets.get(ctx);
+    if (!modulo) {
+      modulo = ctx.audioWorklet.addModule(workletUrl).catch((err) => { worklets.delete(ctx); throw err; });
+      worklets.set(ctx, modulo);
     }
-  }
-
-  const { Channel, invoke } = await import("@tauri-apps/api/core");
-  const canal = new Channel<ArrayBuffer>();
-
-  node = new AudioWorkletNode(ctx, "fila-pcm", { outputChannelCount: [2] });
-  destino = ctx.createMediaStreamDestination();
-  node.connect(destino);
-
-  canal.onmessage = (bloco) => node?.port.postMessage(bloco, [bloco]);
-
-  try {
-    await invoke("start_system_audio", { canal });
-  } catch (err) {
+    await modulo;
+    if (token !== geracao) return null;
+    const { Channel, invoke } = await import("@tauri-apps/api/core");
+    if (token !== geracao) return null;
+    const atual = {
+      node: new AudioWorkletNode(ctx, "fila-pcm", { outputChannelCount: [2] }),
+      destino: ctx.createMediaStreamDestination(),
+    };
+    captura = atual;
+    atual.node.connect(atual.destino);
+    const canal = new Channel<ArrayBuffer>();
+    const erros = new Channel<string>();
+    let erroNativo: string | null = null;
+    canal.onmessage = (bloco) => {
+      if (captura !== atual) return;
+      blocos++;
+      atual.node.port.postMessage(bloco, [bloco]);
+    };
+    atual.node.port.onmessage = (event) => {
+      if (captura !== atual) return;
+      quadrosProcessados += Number(event.data.quadros) || 0;
+      quadrosComSom += Number(event.data.comSom) || 0;
+    };
+    const falhar = (mensagem: string) => {
+      if (captura !== atual) return;
+      erroNativo = mensagem;
+      if (estado !== "capturando") return;
+      registrarErro("audio-sistema", new Error(mensagem));
+      pararAudioDoSistema();
+      estado = `falhou: ${mensagem}`;
+      onFailure?.(mensagem);
+    };
+    erros.onmessage = falhar;
+    atual.node.onprocessorerror = () => falhar("O processador de audio falhou. Reinicie a transmissao.");
+    await comando(() => invoke("start_system_audio", { canal, erros, mode: options.mode ?? "system", processId: options.processId ?? null }));
+    if (token !== geracao) return null;
+    if (erroNativo) throw new Error(erroNativo);
+    estado = "capturando";
+    return atual.destino.stream.getAudioTracks()[0] ?? null;
+  };
+  const tarefa = iniciar().catch((err) => {
+    if (token !== geracao) return null;
     pararAudioDoSistema();
+    estado = `falhou: ${String(err)}`;
+    registrarErro("audio-sistema", err);
     throw err;
-  }
-
-  pararNativo = () => void invoke("stop_system_audio").catch(() => {});
-  return destino.stream.getAudioTracks()[0] ?? null;
+  }).finally(() => { if (pendente === tarefa) pendente = null; });
+  pendente = tarefa;
+  return tarefa;
 }
 
 export function pararAudioDoSistema() {
-  pararNativo?.();
-  pararNativo = null;
-  try {
-    node?.disconnect();
-    destino?.disconnect();
-  } catch {
-    /* grafo ja desfeito */
+  geracao++;
+  pendente = null;
+  const atual = captura;
+  captura = null;
+  estado = "desligado";
+  if (atual) {
+    atual.node.disconnect();
+    atual.node.port.close();
+    atual.destino.stream.getTracks().forEach((track) => track.stop());
+    atual.destino.disconnect();
+    void comando(async () => {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("stop_system_audio");
+    }).catch((err) => registrarErro("audio-sistema:parar", err));
   }
-  node = null;
-  destino = null;
 }

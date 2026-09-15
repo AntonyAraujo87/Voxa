@@ -63,8 +63,19 @@ function tom(
  * a 14 nodes; sem isto, uma noite de soundboard deixa centenas pendurados no
  * grafo, todos sendo processados a cada bloco de audio.
  */
+const activeSources = new Map<AudioScheduledSourceNode, GainNode>();
+let generation = 0;
+let lastPlayed = 0;
+export function pararEfeitos() {
+  generation++;
+  for (const [source, gain] of activeSources) { try { source.stop(); source.disconnect(); gain.disconnect(); } catch { /* ja terminou */ } }
+  activeSources.clear();
+}
+
 function soltarNoFim(fonte: AudioScheduledSourceNode, ganho: GainNode) {
+  activeSources.set(fonte, ganho);
   fonte.onended = () => {
+    activeSources.delete(fonte);
     try {
       fonte.disconnect();
       ganho.disconnect();
@@ -125,7 +136,8 @@ const RECEITAS: Record<string, (ctx: AudioContext, destinos: Destino[]) => void>
 
 /** Toca o efeito em todos os destinos passados. Ignora id desconhecido. */
 export function tocarEfeito(id: string, destinos: Destino[]) {
-  if (destinos.length === 0) return;
+  if (destinos.length === 0 || activeSources.size >= 3 || Date.now() - lastPlayed < 350) return;
+  lastPlayed = Date.now();
 
   // Som proprio da pessoa: vem do IndexedDB, ja decodificado em cache.
   if (id.startsWith("meu:")) {
@@ -139,8 +151,9 @@ export function tocarEfeito(id: string, destinos: Destino[]) {
 }
 
 async function tocarProprio(id: string, destinos: Destino[]) {
+  const current = generation;
   const buffer = await bufferDoSom(id);
-  if (!buffer) return;
+  if (!buffer || current !== generation || activeSources.size >= 3) return;
 
   const ctx = audioContext();
   const fonte = ctx.createBufferSource();
@@ -163,5 +176,6 @@ async function tocarProprio(id: string, destinos: Destino[]) {
       /* contexto ja fechou */
     }
   };
+  soltarNoFim(fonte, ganho);
   fonte.start();
 }

@@ -3,6 +3,7 @@ import { AtSign, Download, FileText, Hash, Paperclip, Send, Users } from "lucide
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import { Avatar } from "./Avatar";
+import { resolveAttachmentUrl } from "../lib/supabase";
 import type { ChatMessage } from "../lib/signaling";
 import { MENCAO_TODOS, mencionaVoce, partirPorMencao, sugerir, trechoDeMencao } from "../lib/mencao";
 
@@ -19,13 +20,28 @@ function tamanhoLegivel(bytes: number): string {
 
 /** Imagem inline se o mime bater; senao um card com nome/tamanho e link de download. */
 const Attachment = memo(function Attachment({ msg }: { msg: ChatMessage }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    const refresh = async () => {
+      const resolved = msg.attachmentUrl ? await resolveAttachmentUrl(msg.attachmentUrl) : null;
+      if (alive) { setUrl(resolved); setLoading(false); }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 4 * 60 * 1000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [msg.attachmentUrl]);
   if (!msg.attachmentUrl) return null;
+  if (!url) return <span className="text-xs text-muted">{loading ? "Carregando anexo..." : "Anexo indisponivel ou acesso expirado"}</span>;
 
   if (msg.attachmentMime?.startsWith("image/")) {
     return (
-      <a href={msg.attachmentUrl} target="_blank" rel="noreferrer" className="mt-1 block">
+      <a href={url} target="_blank" rel="noreferrer" className="mt-1 block">
         <img
-          src={msg.attachmentUrl}
+          src={url}
+          referrerPolicy="no-referrer"
+          loading="lazy"
           alt={msg.attachmentName ?? "imagem"}
           className="max-h-80 max-w-sm rounded-lg border border-line object-contain"
         />
@@ -35,7 +51,7 @@ const Attachment = memo(function Attachment({ msg }: { msg: ChatMessage }) {
 
   return (
     <a
-      href={msg.attachmentUrl}
+      href={url}
       target="_blank"
       rel="noreferrer"
       className="mt-1 flex max-w-sm items-center gap-2 rounded-lg border border-line bg-base-500/60 px-3 py-2 transition-colors hover:bg-base-500"
@@ -92,6 +108,14 @@ const Texto = memo(function Texto({
   );
 });
 
+function Delivery({msg}: {msg: ChatMessage}) {
+  if (msg.failed) return <button className="text-xs text-red-400" onClick={() => session.retryChat(msg)}>Entrega nao confirmada — tentar novamente</button>;
+  if (msg.pending) return <span className="text-xs text-muted">Enviando...</span>;
+  if (msg.persistenceFailed) return <span className="text-xs text-muted">Entregue ao vivo; nao salvo no historico</span>;
+  return null;
+}
+
+const drafts = new Map<string, string>();
 const Message = memo(function Message({
   msg,
   grouped,
@@ -119,6 +143,7 @@ const Message = memo(function Message({
         <div className="min-w-0 flex-1">
           {msg.content && <Texto conteudo={msg.content} nomes={nomes} meuNome={meuNome} />}
           <Attachment msg={msg} />
+          <Delivery msg={msg} />
         </div>
       </div>
     );
@@ -136,6 +161,7 @@ const Message = memo(function Message({
         </p>
         {msg.content && <Texto conteudo={msg.content} nomes={nomes} meuNome={meuNome} />}
         <Attachment msg={msg} />
+          <Delivery msg={msg} />
       </div>
     </div>
   );
@@ -228,8 +254,9 @@ const TIPOS_ACEITOS =
   "image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm," +
   "audio/mpeg,audio/ogg,audio/wav,application/pdf,text/plain,application/zip";
 
-const Composer = memo(function Composer({ channelName }: { channelName: string }) {
-  const [text, setText] = useState("");
+const Composer = memo(function Composer({ channelName, channelId }: { channelName: string; channelId: string }) {
+  const [text, setText] = useState(drafts.get(channelId) ?? "");
+  useEffect(() => { if (text) drafts.set(channelId, text); else drafts.delete(channelId); }, [channelId, text]);
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const lastTyping = useRef(0);
@@ -268,7 +295,7 @@ const Composer = memo(function Composer({ channelName }: { channelName: string }
   const submit = () => {
     const value = text.trim();
     if (!value) return;
-    session.sendChat(value);
+    if (!session.sendChat(value)) return;
     setText("");
     setMencao(null);
     if (ref.current) ref.current.style.height = "auto";
@@ -278,8 +305,8 @@ const Composer = memo(function Composer({ channelName }: { channelName: string }
     const file = e.target.files?.[0];
     e.target.value = ""; // sem isso, escolher o MESMO arquivo de novo nao dispara onChange
     if (!file) return;
-    void session.sendAttachment(file, text);
-    setText("");
+    const original = text;
+    void session.sendAttachment(file, original).then(sent => { if (sent) setText(current => current === original ? "" : current); });
     if (ref.current) ref.current.style.height = "auto";
   };
 
@@ -380,6 +407,7 @@ const Composer = memo(function Composer({ channelName }: { channelName: string }
         <textarea
           ref={ref}
           rows={1}
+          maxLength={2000}
           value={text}
           onChange={onChange}
           onKeyDown={onKeyDown}
@@ -388,6 +416,7 @@ const Composer = memo(function Composer({ channelName }: { channelName: string }
         />
         <button
           onClick={submit}
+          aria-label="Enviar mensagem"
           disabled={!text.trim()}
           className="grid size-8 shrink-0 place-items-center rounded text-muted transition-colors enabled:hover:bg-base-400 enabled:hover:text-ink disabled:opacity-40"
         >
@@ -449,14 +478,14 @@ function ChatPanelBase() {
         </button>
       </header>
 
-      <MessageList channelId={activeText} />
+      <MessageList key={activeText} channelId={activeText} />
 
       <div className="h-4 px-5 text-[11px] text-muted">
         {whoIsTyping.length > 0 &&
           `${whoIsTyping.join(", ")} ${whoIsTyping.length > 1 ? "estao" : "esta"} digitando...`}
       </div>
 
-      <Composer channelName={channel?.name ?? activeText} />
+      <Composer key={activeText} channelId={activeText} channelName={channel?.name ?? activeText} />
     </div>
   );
 }

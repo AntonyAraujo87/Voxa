@@ -61,9 +61,10 @@ export async function captureMic(
   try {
     return await navigator.mediaDevices.getUserMedia({ audio, video: false });
   } catch (err) {
-    // Fallback: alguma flag exotica pode ter derrubado. Tenta o basico.
+    if ((err as DOMException)?.name !== "OverconstrainedError") throw new MediaError(describe(err), err);
+    // Relaxa qualidade, preservando o dispositivo escolhido.
     try {
-      return await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      return await navigator.mediaDevices.getUserMedia({ audio: deviceId && deviceId !== "default" ? { deviceId: { exact: deviceId } } : true, video: false });
     } catch {
       throw new MediaError(describe(err), err);
     }
@@ -80,7 +81,8 @@ export interface ScreenCaptureResult {
 
 export async function captureScreen(
   preset: VideoPreset,
-  mode: ContentMode
+  mode: ContentMode,
+  includeAudio = false
 ): Promise<ScreenCaptureResult> {
   const constraints: DisplayMediaStreamOptions = {
     video: {
@@ -95,9 +97,9 @@ export async function captureScreen(
         resizeMode: "crop-and-scale",
       } as Record<string, unknown>),
     },
-    audio: SCREEN_AUDIO_CONSTRAINTS,
+    audio: includeAudio ? SCREEN_AUDIO_CONSTRAINTS : false,
     ...({
-      systemAudio: "include",
+      systemAudio: includeAudio ? "include" : "exclude",
       surfaceSwitching: "include",
       selfBrowserSurface: "exclude",
       monitorTypeSurfaces: "include",
@@ -109,8 +111,9 @@ export async function captureScreen(
   try {
     stream = await navigator.mediaDevices.getDisplayMedia(constraints);
   } catch (err) {
+    if (!["OverconstrainedError", "TypeError"].includes((err as DOMException)?.name)) throw new MediaError(describe(err), err);
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: includeAudio });
     } catch {
       throw new MediaError(describe(err), err);
     }
@@ -118,6 +121,7 @@ export async function captureScreen(
 
   const video = stream.getVideoTracks()[0];
   const audio = stream.getAudioTracks()[0] ?? null;
+  if (!video) { stopStream(stream); throw new MediaError("Captura abriu sem trilha de video"); }
 
   if (video) {
     // contentHint e o interruptor mais importante do encoder:
@@ -173,8 +177,9 @@ export async function captureWebcam(deviceId?: string): Promise<WebcamCaptureRes
     // Constraint exotica pode ter derrubado; tenta o basico antes de desistir.
     // Mas se o proprio erro ja foi "abriu sem imagem", insistir nao ajuda.
     if (err instanceof MediaError) throw err;
+    if ((err as DOMException)?.name !== "OverconstrainedError") throw new MediaError(describe(err), err);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: deviceId && deviceId !== "default" ? { deviceId: { exact: deviceId } } : true, audio: false });
       return { stream, video: primeiroTrack(stream) };
     } catch (fallbackErr) {
       throw fallbackErr instanceof MediaError ? fallbackErr : new MediaError(describe(err), err);

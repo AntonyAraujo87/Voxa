@@ -1,7 +1,9 @@
+import { IceLease } from "./iceLease";
 import { io, type Socket } from "socket.io-client";
-import { SIGNALING_URL } from "./config";
+import { SIGNALING_URL, updateIceServers } from "./config";
 
 export interface PeerState {
+  watching?: boolean;
   muted: boolean;
   deafened: boolean;
   sharing: boolean;
@@ -32,6 +34,8 @@ export interface ChatMessage {
   authorColor: string;
   createdAt: string;
   pending?: boolean;
+  failed?: boolean;
+  persistenceFailed?: boolean;
   attachmentUrl?: string;
   attachmentName?: string;
   attachmentMime?: string;
@@ -42,11 +46,15 @@ export type SignalPayload =
   | { description: RTCSessionDescriptionInit }
   | { candidate: RTCIceCandidateInit | null };
 
+export class SignalingRequestError extends Error {
+  constructor(message: string, readonly retryable = false) { super(message); }
+}
+
 interface Handlers {
   onRoster?: (roster: RosterEntry[]) => void;
   onPeerJoined?: (p: { id: string; user: PeerUser; state: PeerState; channelId: string }) => void;
   onPeerLeft?: (p: { id: string; channelId: string }) => void;
-  onSignal?: (p: { from: string; data: SignalPayload }) => void;
+  onSignal?: (p: { from: string; data: SignalPayload; channelId?: string }) => void;
   onPeerState?: (p: { id: string; state: PeerState }) => void;
   onChat?: (msg: ChatMessage) => void;
   onTyping?: (p: { channelId: string; name: string }) => void;
@@ -92,9 +100,12 @@ export class Signaling {
       timeout: 8000,
     });
 
-    this.socket.on("connect", () => handlers.onStatus?.("online"));
+    this.socket.on("connect", () => void this.identify());
     this.socket.on("disconnect", () => handlers.onStatus?.("offline"));
-    this.socket.on("connect_error", () => handlers.onStatus?.("offline"));
+    this.socket.on("connect_error", (error) => {
+      handlers.onStatus?.("offline");
+      if (/autorizado|token/i.test(error.message)) this.failLogin(new Error("Senha da sala incorreta"));
+    });
 
     this.socket.on("roster", (r) => handlers.onRoster?.(r));
     this.socket.on("voice:peer-joined", (p) => handlers.onPeerJoined?.(p));
@@ -105,99 +116,115 @@ export class Signaling {
     this.socket.on("chat:typing", (p) => handlers.onTyping?.(p));
   }
 
-  /** evita registrar os mesmos listeners de novo quando o login e repetido */
-  private listenersDeConexao = false;
+  private credentials: { user: PeerUser; token: string } | null = null;
+  private attempt = 0;
+  private ready = false;
+  private iceLease = new IceLease(
+    async () => (await this.request<{ iceServers: RTCIceServer[] }>("ice:config", {})).iceServers,
+    updateIceServers,
+    () => this.socket.connected,
+  );
+  private identifyRetry: ReturnType<typeof setTimeout> | null = null;
+  private login: { resolve: (value: { selfId: string; roster: RosterEntry[] }) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> } | null = null;
 
-  connect(
-    user: PeerUser,
-    token: string
-  ): Promise<{ selfId: string; roster: RosterEntry[] }> {
+  private failLogin(error: Error) {
+    this.ready = false;
+    if (this.identifyRetry) clearTimeout(this.identifyRetry);
+    this.identifyRetry = null;
+    this.iceLease.stop();
+    const pending = this.login;
+    this.login = null;
+    if (pending) { clearTimeout(pending.timer); pending.reject(error); }
+    this.attempt++;
+    this.socket.disconnect();
+    this.handlers.onStatus?.("offline");
+  }
+
+  private async identify() {
+    if (this.identifyRetry) clearTimeout(this.identifyRetry);
+    this.identifyRetry = null;
+    const credentials = this.credentials;
+    if (!credentials) return;
+    const attempt = this.attempt;
+    const socketId = this.socket.id;
+    try {
+      const response = await this.request<{ selfId: string; roster: RosterEntry[]; iceServers?: RTCIceServer[] }>("hello", credentials);
+      if (attempt !== this.attempt || socketId !== this.socket.id) return;
+      if (!response.selfId || !Array.isArray(response.roster)) throw new Error("Resposta de identificacao invalida");
+      this.selfId = response.selfId;
+      if (Array.isArray(response.iceServers)) this.iceLease.start(response.iceServers);
+      const pending = this.login;
+      this.login = null;
+      this.handlers.onStatus?.("online");
+      if (pending) { clearTimeout(pending.timer); pending.resolve(response); }
+      else if (this.ready) this.handlers.onReconnected?.(response);
+      this.ready = true;
+    } catch (error) {
+      if (attempt !== this.attempt || socketId !== this.socket.id) return;
+      if ((this.ready || this.login) && error instanceof SignalingRequestError && error.retryable) {
+        // Timeout de ACK nao e logout. Manter o socket ativo permite a
+        // reconexao do transporte; hello repetido e idempotente no servidor.
+        this.handlers.onStatus?.("connecting");
+        this.identifyRetry = setTimeout(() => {
+          this.identifyRetry = null;
+          if (attempt === this.attempt && this.socket.connected) void this.identify();
+        }, 2000);
+        return;
+      }
+      this.failLogin(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  connect(user: PeerUser, token: string): Promise<{ selfId: string; roster: RosterEntry[] }> {
+    if (this.login) this.failLogin(new Error("Tentativa substituida"));
+    this.iceLease.stop();
+    this.socket.disconnect();
+    this.attempt++;
+    this.ready = false;
+    this.credentials = { user, token };
+    this.socket.auth = { token };
+    this.socket.io.reconnection(true);
     this.handlers.onStatus?.("connecting");
     return new Promise((resolve, reject) => {
-      // 45s e nao 10s: no plano free do Render o servico dorme depois de 15min
-      // ociosos e leva ~30s pra acordar. Timeout curto reprovaria o primeiro
-      // login do dia mesmo com tudo certo.
-      const timeout = setTimeout(
-        () => reject(new Error("Servidor nao respondeu. Ele pode estar acordando — tente de novo.")),
-        45000
-      );
-      const onReady = () => {
-        this.socket.emit(
-          "hello",
-          { user, token },
-          (res: { selfId: string; roster: RosterEntry[]; error?: string }) => {
-            clearTimeout(timeout);
-            if (res?.error) {
-              // Sem isso o socket.io ficaria batendo na porta pra sempre com a
-              // mesma senha errada, gerando reconexao infinita.
-              this.socket.io.opts.reconnection = false;
-              this.socket.disconnect();
-              reject(new Error("Senha da sala incorreta"));
-              return;
-            }
-            this.selfId = res.selfId;
-            resolve(res);
-          }
-        );
-      };
-      // Token tambem no handshake: o servidor recusa a conexao ANTES de
-      // registrar qualquer handler, entao senha errada nao custa memoria nem
-      // processamento. O envio no `hello` permanece para servidores antigos.
-      this.socket.auth = { token };
+      const timer = setTimeout(() => this.failLogin(new Error("Servidor nao respondeu. Tente novamente.")), 45000);
+      this.login = { resolve, reject, timer };
+      this.socket.connect();
+    });
+  }
 
-      if (this.socket.connected) onReady();
-      else {
-        this.socket.once("connect", onReady);
-        this.socket.connect();
-      }
-      // Senha errada faz o usuario tentar de novo, e cada tentativa passava
-      // por aqui registrando outro par de listeners: na terceira tentativa o
-      // `hello` de reconexao sairia tres vezes.
-      if (this.listenersDeConexao) return;
-      this.listenersDeConexao = true;
-
-      // Reidentifica depois de cada reconexao.
-      //
-      // O socket.io cria um socket NOVO ao reconectar, com id novo. Ignorar o
-      // ack aqui deixava o app usando o id antigo: a regra polite/impolite
-      // passava a comparar contra um id que nao existe mais, o proprio tile
-      // deixava de ser reconhecido como "eu", e — pior — o servidor via um
-      // socket sem canal de voz, avisava os outros que saimos e a malha morria
-      // enquanto a interface continuava dizendo "Voz conectada".
-      this.socket.io.on("reconnect", () => {
-        this.socket.emit("hello", { user, token }, (res: { selfId?: string; roster?: RosterEntry[] }) => {
-          if (!res?.selfId) return;
-          this.selfId = res.selfId;
-          this.handlers.onReconnected?.({ selfId: res.selfId, roster: res.roster ?? [] });
-        });
-      });
-      // "nao autorizado" vem do middleware do servidor: nao adianta insistir.
-      this.socket.on("connect_error", (err) => {
-        if (/autorizado|token/i.test(err?.message ?? "")) {
-          this.socket.io.opts.reconnection = false;
-          clearTimeout(timeout);
-          reject(new Error("Senha da sala incorreta"));
-        }
+  private request<T>(event: string, payload: unknown): Promise<T> {
+    if (!this.socket.connected) return Promise.reject(new SignalingRequestError("Sem conexao com o servidor", true));
+    return new Promise((resolve, reject) => {
+      this.socket.timeout(10000).emit(event, payload, (error: Error | null, response: T & { error?: string }) => {
+        if (error) { reject(new SignalingRequestError("O servidor nao confirmou a operacao. Tente novamente.", true)); return; }
+        if (!response || response.error) { reject(new Error(response?.error ?? "Resposta invalida do servidor")); return; }
+        resolve(response);
       });
     });
   }
 
-  joinVoice(channelId: string): Promise<{ channelId: string; peers: { id: string; user: PeerUser; state: PeerState }[] }> {
-    return new Promise((resolve) => {
-      this.socket.emit("voice:join", { channelId }, resolve);
-    });
+  async recoverNetwork() {
+    if (!this.credentials || !this.ready) return false;
+    if (!this.socket.connected) this.socket.connect();
+    return this.iceLease.refresh();
+  }
+
+  async joinVoice(channelId: string): Promise<{ channelId: string; peers: { id: string; user: PeerUser; state: PeerState }[] }> {
+    const result = await this.request<{ channelId: string; peers: { id: string; user: PeerUser; state: PeerState }[] }>("voice:join", { channelId });
+    if (result.channelId !== channelId || !Array.isArray(result.peers)) throw new Error("Resposta de canal invalida");
+    return { ...result, peers: result.peers.filter(peer => peer.id !== this.selfId) };
   }
 
   leaveVoice() {
-    this.socket.emit("voice:leave");
+    if (this.socket.connected) this.socket.emit("voice:leave");
   }
 
   signal(to: string, data: SignalPayload) {
-    this.socket.emit("signal", { to, data });
+    if (this.socket.connected) this.socket.emit("signal", { to, data });
   }
 
   setState(patch: Partial<PeerState>) {
-    this.socket.emit("state", patch);
+    if (this.socket.connected) this.socket.emit("state", patch);
   }
 
   sendChat(msg: {
@@ -209,7 +236,22 @@ export class Signaling {
     attachmentMime?: string;
     attachmentSize?: number;
   }) {
-    this.socket.emit("chat:send", msg);
+    if (!this.socket.connected) return Promise.reject(new Error("Sem conexao com o servidor"));
+    return new Promise<ChatMessage>((resolve, reject) => {
+      let finished = false;
+      const finish = (error: Error | null, message?: ChatMessage) => {
+        if (finished) return;
+        finished = true;
+        this.socket.off("chat:new", echo);
+        if (error) reject(error); else resolve(message!);
+      };
+      const echo = (message: ChatMessage) => { if (message.id === msg.id && message.channelId === msg.channelId) finish(null, message); };
+      this.socket.on("chat:new", echo);
+      this.socket.timeout(10000).emit("chat:send", msg, (error: Error | null, message: ChatMessage & {error?:string}) => {
+        if (error || !message || message.error) finish(new Error(message?.error ?? "Entrega nao confirmada"));
+        else finish(null, message);
+      });
+    });
   }
 
   typing(channelId: string) {
@@ -217,6 +259,9 @@ export class Signaling {
   }
 
   destroy() {
+    this.failLogin(new Error("Sessao encerrada"));
+    this.credentials = null;
+    this.iceLease.stop();
     this.socket.removeAllListeners();
     this.socket.disconnect();
   }

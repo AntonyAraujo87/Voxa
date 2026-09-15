@@ -63,6 +63,7 @@ export class Registry {
     for (const campo of ["muted", "deafened", "sharing", "speaking"]) {
       if (campo in patch) client.state[campo] = !!patch[campo];
     }
+    if (typeof patch.watching === "boolean") client.state.watching = patch.watching;
     // Nao e boolean: so aceita um dos dois rotulos conhecidos, qualquer outra
     // coisa (incluindo null explicito, pra "parou de compartilhar") vira null.
     if ("sharingKind" in patch) {
@@ -107,7 +108,7 @@ export class Registry {
     }
 
     client.voice = null;
-    client.state = { ...client.state, sharing: false, speaking: false };
+    client.state = { ...client.state, sharing: false, sharingKind: null, speaking: false };
     return channelId;
   }
 
@@ -131,7 +132,7 @@ export class Registry {
   summary() {
     return {
       clients: this.#clients.size,
-      voiceChannels: [...this.#voice].map(([id, set]) => ({ id, peers: set.size })),
+      voiceChannels: this.#voice.size,
     };
   }
 }

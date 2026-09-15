@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { PartyPopper, Plus, X } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
-import { SOUNDBOARD_CLIPS } from "../lib/soundboard";
+import { SOUNDBOARD_CLIPS, pararEfeitos } from "../lib/soundboard";
 import { listarSons, removerSom, salvarSom, MAX_SONS, type SomProprio } from "../lib/soundboardCustom";
 
 /* ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ function SoundboardBase() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const recarregar = useCallback(() => {
-    void listarSons().then(setMeus);
+    void listarSons().then(setMeus).catch(error => setErro(String(error)));
   }, []);
 
   useEffect(() => {
@@ -53,8 +53,8 @@ function SoundboardBase() {
 
   const apagar = async (id: string, ev: React.MouseEvent) => {
     ev.stopPropagation(); // nao tocar o som ao clicar no X
-    await removerSom(id);
-    recarregar();
+    try { await removerSom(id); recarregar(); }
+    catch (error) { setErro(String(error)); }
   };
 
   const todos = [...SOUNDBOARD_CLIPS, ...meus.map((m) => ({ id: m.id, label: m.label, emoji: m.emoji }))];
@@ -77,6 +77,7 @@ function SoundboardBase() {
 
       {open && (
         <div className="absolute bottom-full left-0 z-30 mb-1 w-full rounded-md border border-line bg-base-900 p-2 shadow-xl">
+          <button onClick={pararEfeitos} className="mb-2 w-full rounded bg-base-500 py-1 text-xs text-ink-soft hover:bg-base-400">Parar efeitos</button>
           <div className="grid grid-cols-3 gap-1.5">
             {todos.map((clip) => (
               <button

@@ -161,6 +161,8 @@ const VoiceStatus = memo(function VoiceStatus() {
   const channels = useApp((s) => s.channels);
   const stats = useApp((s) => s.stats);
   const sharingKind = useApp((s) => s.sharingKind);
+  const connState = useApp((s) => s.connState);
+  const status = useApp((s) => s.status);
 
   if (!activeVoice) return null;
   const channel = channels.find((c) => c.id === activeVoice);
@@ -173,7 +175,7 @@ const VoiceStatus = memo(function VoiceStatus() {
         <Signal size={16} className={ping && ping < 80 ? "text-online" : "text-warn"} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13px] font-semibold text-online">
-            Voz conectada {ping ? `· ${ping}ms` : ""}
+            {status !== "online" ? "Reconectando ao servidor" : Object.values(connState).includes("failed") ? "Falha na conexao de voz" : Object.values(connState).includes("connected") ? "Voz conectada" : Object.keys(connState).length ? "Conectando audio..." : "Aguardando participantes"} {ping ? `· ${ping}ms` : ""}
           </p>
           <p className="truncate text-xs text-muted">{channel?.name ?? activeVoice}</p>
         </div>

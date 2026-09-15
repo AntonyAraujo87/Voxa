@@ -141,45 +141,6 @@ fn restore(app: &AppHandle) {
     }
 }
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Ultima liberacao de memoria, em segundos desde a epoca.
-static ULTIMO_TRIM: AtomicU64 = AtomicU64::new(0);
-const INTERVALO_MINIMO_S: u64 = 20;
-
-/// `Resized` dispara em rajada durante a animacao de minimizar. Sem esta
-/// travar, EmptyWorkingSet rodaria dezenas de vezes seguidas, varrendo a lista
-/// de processos filhos a cada uma — trabalho puro para nenhum ganho extra.
-///
-/// O trabalho vai para OUTRA THREAD de proposito. Isto aqui e chamado de
-/// dentro do handler de eventos de janela, que roda na thread de interface: e
-/// a mesma thread que processa clique, arrasto e o botao de fechar. E o
-/// trabalho nao e barato — varre a lista de processos do sistema inteiro e,
-/// pior, `EmptyWorkingSet` empurra as paginas do app para o arquivo de
-/// paginacao. Num PC com disco mecanico ou pouca RAM, trazer tudo de volta
-/// leva segundos.
-///
-/// Segurando a thread de interface, o Windows marca a janela como "nao
-/// respondendo": os botoes de fechar e minimizar, que sao desenhados pelo
-/// proprio app, param de responder, e ate "Fechar janela" pela barra de
-/// tarefas deixa de funcionar — so o Gerenciador de Tarefas encerra. Enquanto
-/// isso a chamada de voz continua normalmente, porque o audio nao depende
-/// dessa thread. E exatamente o sintoma de "congelou mas continua rodando".
-fn trim_memory_debounced() {
-    let agora = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    let anterior = ULTIMO_TRIM.load(Ordering::Relaxed);
-    if agora.saturating_sub(anterior) < INTERVALO_MINIMO_S {
-        return;
-    }
-    ULTIMO_TRIM.store(agora, Ordering::Relaxed);
-    std::thread::spawn(trim_memory);
-}
-
 /// Fechar esconde na bandeja em vez de encerrar; a chamada de voz continua.
 pub fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
     // SO a janela principal. Este handler roda para TODAS as janelas do app, e
@@ -192,16 +153,12 @@ pub fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
         return;
     }
 
-    match event {
-        WindowEvent::CloseRequested { api, .. } => {
-            api.prevent_close();
-            let _ = window.hide();
-            trim_memory_debounced();
+    if let WindowEvent::CloseRequested { api, .. } = event {
+        if window.app_handle().tray_by_id("voxa-tray").is_none() {
+            return;
         }
-        // Minimizar tambem e um bom momento: a janela para de ser desenhada.
-        WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
-            trim_memory_debounced();
-        }
-        _ => {}
+        api.prevent_close();
+        let _ = window.hide();
+        // A chamada pode continuar ativa; nao paginar a memoria de audio.
     }
 }

@@ -50,9 +50,12 @@ async function comLoja<T>(modo: IDBTransactionMode, fn: (loja: IDBObjectStore) =
   return new Promise<T>((resolve, reject) => {
     const tx = db.transaction(LOJA, modo);
     const req = fn(tx.objectStore(LOJA));
-    req.onsuccess = () => resolve(req.result as T);
+    let result: T;
+    req.onsuccess = () => { result = req.result as T; };
     req.onerror = () => reject(req.error);
-    tx.oncomplete = () => db.close();
+    tx.onabort = () => { db.close(); reject(tx.error ?? new Error("Gravacao cancelada")); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.oncomplete = () => { db.close(); resolve(result); };
   });
 }
 
@@ -65,7 +68,13 @@ export async function listarSons(): Promise<SomProprio[]> {
   }
 }
 
-export async function salvarSom(arquivo: File, label: string, emoji: string): Promise<string | null> {
+let saves: Promise<unknown> = Promise.resolve();
+export function salvarSom(arquivo: File, label: string, emoji: string): Promise<string | null> {
+  const task = saves.catch(() => {}).then(() => saveOne(arquivo, label, emoji));
+  saves = task;
+  return task;
+}
+async function saveOne(arquivo: File, label: string, emoji: string): Promise<string | null> {
   if (arquivo.size > TAMANHO_MAX) {
     throw new Error(`Arquivo muito grande (max ${Math.round(TAMANHO_MAX / 1024 / 1024)} MB).`);
   }
@@ -78,9 +87,10 @@ export async function salvarSom(arquivo: File, label: string, emoji: string): Pr
   // ja apertou o botao na frente dos outros.
   const bytes = await arquivo.arrayBuffer();
   try {
-    await audioContext().decodeAudioData(bytes.slice(0));
+    const decoded = await audioContext().decodeAudioData(bytes.slice(0));
+    validateAudio(decoded);
   } catch {
-    throw new Error("Nao consegui ler esse audio. Use mp3, wav, ogg ou m4a.");
+    throw new Error("Use um audio valido de ate 15 segundos e 6 MB depois de decodificado.");
   }
 
   const id = `meu:${crypto.randomUUID()}`;
@@ -107,10 +117,16 @@ export async function bufferDoSom(id: string): Promise<AudioBuffer | null> {
     const som = await comLoja<SomProprio | undefined>("readonly", (l) => l.get(id));
     if (!som) return null;
     const buffer = await audioContext().decodeAudioData(await som.blob.arrayBuffer());
+    validateAudio(buffer);
+    if (cache.size >= MAX_SONS) cache.delete(cache.keys().next().value!);
     cache.set(id, buffer);
     return buffer;
   } catch (err) {
     registrarErro("soundboard", err);
     return null;
   }
+}
+
+function validateAudio(buffer: AudioBuffer) {
+  if (buffer.duration > 15 || buffer.length * buffer.numberOfChannels * 4 > 6 * 1024 * 1024) throw new Error("Audio excede limite de duracao/memoria");
 }

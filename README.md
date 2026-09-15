@@ -1,131 +1,81 @@
 # Voxa
 
-App de desktop para conversar por voz e compartilhar tela com amigos enquanto
-joga. Interface no estilo Discord, transmissão pensada para segurar framerate
-como o Parsec, e infraestrutura de custo zero.
+Aplicativo Windows para conversar por voz, compartilhar tela/câmera e trocar
+mensagens com amigos. Usa Tauri 2, React, WebView2 e WebRTC. O servidor Node com
+Socket.IO cuida da identificação, sinalização e chat ao vivo; o Supabase opcional
+guarda histórico e anexos.
 
-O áudio e o vídeo vão direto de um computador para o outro. O único servidor que
-existe apresenta um PC ao outro e sai do caminho — nenhum byte de mídia passa
-por ele, então não há custo que cresça com o uso.
+O código está na versão **0.5.29**. O estado das correções e dos testes está em
+[CORRECOES-0.5.29.md](docs/CORRECOES-0.5.29.md). Isso não significa que exista
+um instalador publicado dessa versão.
 
-```
-Tauri (Rust) + React + Tailwind    app desktop, usando o WebView2 do sistema
-WebRTC puro, full mesh             áudio e vídeo direto entre os pares
-Node + socket.io                   só o handshake e o chat em tempo real
-STUN público do Google             descoberta de IP para a conexão direta
-Supabase (opcional)                histórico das mensagens de texto
-```
+## Voz e transmissão
 
-## O que faz a transmissão ficar boa
+Cada par negocia microfone, vídeo e som da transmissão separadamente. Os volumes
+de voz e compartilhamento são independentes, com ganho até 200%; ganhos elevados
+podem distorcer. Há mudo, ensurdecimento, push-to-talk e efeitos de soundboard.
 
-O que separa "compartilhar tela numa videochamada" de "assistir alguém jogar"
-são quatro decisões, todas em `src/lib/`:
+Os presets definem resolução, framerate e orçamento de upload. Jogo prefere
+conservar framerate; Leitura prefere resolução. Codec e aceleração dependem do
+runtime, dispositivo e rede: selecionar um preset não garante FPS nem uso de GPU.
 
-**Bitrate inicial no SDP.** A API do WebRTC deixa configurar o teto de bitrate,
-mas não o ponto de partida. Sem isso o encoder abre em ~300 kbps e leva de 10 a
-20 segundos subindo até a imagem ficar nítida. O `x-google-start-bitrate` é
-injetado direto no SDP antes da negociação, então a imagem já nasce afiada.
+Clientes atualizados recebem vídeo e som da transmissão ao escolher **Assistir**.
+A voz continua independente da grade. O orçamento de vídeo é dividido pelos
+espectadores. Clientes antigos sem esse controle mantêm o envio compatível.
 
-**`maintain-framerate`.** Quando a rede aperta, o encoder escolhe entre derrubar
-resolução ou derrubar FPS. No modo Jogo ele derruba resolução e segura os 60
-quadros; no modo Leitura faz o contrário, para texto continuar legível.
+## Rede e custos
 
-**H264 no topo da lista de codecs.** Faz o WebView2 usar o MediaFoundation, ou
-seja o encoder da própria GPU (NVENC, QuickSync, AMF). Encode e decode saem da
-CPU.
+A mídia tenta viajar diretamente entre os computadores. Quando a rede impede
+isso, um TURN configurado pode retransmiti-la. A sinalização não transporta
+áudio/vídeo, mas o TURN transporta e pode gerar custos de tráfego. Usar apenas
+STUN não garante conexão entre redes.
 
-**Windows Graphics Capture.** A captura acontece na GPU em vez do GDI antigo, o
-que custa uma fração da CPU e funciona com janelas aceleradas por hardware.
+A arquitetura full mesh aumenta conexões, upload e processamento conforme o
+grupo cresce. Os limites de 12 participantes por canal de voz e 128 sockets são
+proteções, não uma certificação de desempenho. O servidor usa memória local e
+deve operar em uma instância. Grupos maiores precisam de medições e, possivelmente,
+de uma arquitetura com servidor de mídia (SFU).
 
-O app tem um overlay de métricas mostrando FPS, bitrate, ping, perda, codec, se
-o encoder está na GPU ou na CPU, e se a conexão está direta ou passando por
-relay.
-
-Seis presets, do 1080p60 a 40 Mbps ao 720p30 a 3 Mbps. Dois deles dividem o
-mesmo orçamento de 8 Mbps por caminhos opostos: **Nítida** (1080p30) troca
-quadros por pixels para ler texto; **Fluida** (720p60) troca pixels por quadros
-para jogo rápido.
-
-## Interface
-
-**Entrada em duas etapas.** Nome e cor são escolhidos uma vez só, na primeira
-abertura — isso é identidade, não muda a cada uso. Da segunda vez em diante a
-tela pede só o código do servidor, com o perfil já pronto ao lado e um link
-para trocar nome ou cor quando quiser.
-
-**Transmissão não invasiva.** A maior parte de uma chamada não tem ninguém
-compartilhando tela, então por padrão a área de vídeo não existe — chat e voz
-ocupam o espaço todo. Quando alguém começa a transmitir, aparece só uma faixa
-fina avisando; quem quiser assiste, clicando em "Assistir". A grade que abre
-mostra apenas quem está transmitindo, não a chamada inteira — quem só está de
-voz já tem seu lugar na lista ao lado. Clicar numa miniatura amplia com tela
-cheia e picture-in-picture. Começar a própria transmissão abre a grade sozinho,
-pela mesma lógica de conveniência.
-
-**Dois volumes, dois lugares, até 200%.** O volume da voz de alguém fica ao
-lado da pessoa, no canal de voz — como no Discord. O volume da transmissão de
-tela é outro controle, independente, no próprio vídeo: uma pessoa pode estar
-alta na voz e baixa no jogo, ou o contrário. Os dois vão até 200% — o
-`<audio>` do HTML trava em 100% por especificação, então acima disso o áudio
-passa por um `GainNode` do WebAudio, com aviso na interface a partir de 150%
-de que pode distorcer.
-
-O áudio de voz nunca depende da UI de transmissão — continua tocando mesmo com
-a grade fechada, minimizada ou em erro.
-
-**Escolher o que compartilhar.** Clicar em "Compartilhar tela" abre um seletor
-com o monitor e as janelas abertas, em vez de compartilhar a fonte configurada
-sem perguntar. O WebView2 não tem o seletor nativo do Chrome — a fonte captu-
-rada é um argumento de linha de comando do Chromium, lido uma vez só quando o
-processo nasce. Escolher a mesma fonte que já está ativa começa a transmitir
-na hora; escolher outra salva a preferência e propõe reiniciar o app para
-aplicar, deixando claro o porquê em vez de fingir que é instantâneo.
-
-## A malha P2P
-
-Cada participante abre uma conexão com cada outro. Latência de um salto só e
-custo de servidor zero; em troca, o upload cresce com o número de espectadores —
-por isso o teto de bitrate é dividido pelo número de pessoas na sala.
-
-Toda conexão negocia sempre três fluxos, na mesma ordem: microfone, tela e som
-do sistema. Ordem fixa nos dois lados deixa a negociação simétrica e permite
-ligar e desligar o compartilhamento trocando a faixa de vídeo, sem renegociar
-nada — a conexão não pisca.
-
-Quem entra na sala é quem faz a oferta; quem já estava responde. O lado que
-responde não cria nada até a oferta chegar, o que elimina colisão de negociação
-por construção.
-
-## Rodando local
+## Desenvolvimento e validação
 
 ```bash
-npm install
+npm ci
+npm ci --prefix server
 npm run dev:all
 ```
 
-Sobe o servidor de sinalização e o app juntos. Para gerar o instalador:
+Copie `.env.example` para `.env` e configure a sinalização. A senha é digitada
+no login; não a coloque em variáveis `VITE_*`.
 
 ```bash
-npm run app:build
+npm run verify
+npm run build
+npm run test:worklet
+npm run test:rtc
+npm run test:ui
 ```
 
-Binário de 8,7 MB, instalador de 3 MB, bundle JS de 223 KB.
+Os testes de navegador usam Playwright. Instale seu Chromium com
+`npx playwright install chromium` ou indique um navegador disponível por
+`VOXA_TEST_BROWSER`. A mídia é sintética: os testes exercitam negociação, players
+e interface, sem provar o comportamento de dispositivos físicos. Os testes SQL
+usam PostgreSQL local com PGlite e não acessam o banco hospedado.
 
-Notas de produção — servidor, senha de sala, TURN e auto-update — em
-[docs/DEPLOY.md](docs/DEPLOY.md).
+## Empacotamento e operação
 
-## Limitações
+`npm run app:build` usa o fluxo Tauri. No Windows x64 com toolchain GNU,
+`npm run app:build:local` inclui a WebView2Loader.dll exigida pelo executável,
+inspeciona dependências e gera hashes dos artefatos. O perfil local não usa a
+assinatura do atualizador de produção. Compilar não comprova instalação/update.
 
-- **NAT simétrico ou CGNAT dos dois lados**: só STUN não fecha a conexão, seria
-  preciso um servidor TURN. Em fibra residencial comum a conexão fecha direto.
-- **Seletor de tela**: o WebView2 não tem o seletor do Chrome. A fonte é
-  escolhida nas configurações e vira argumento de linha de comando, lido uma vez
-  no boot — trocar exige reiniciar o app.
-- **Acima de ~5 pessoas numa sala**: o upload não acompanha. Para mais gente o
-  caminho seria um SFU, que exige servidor e sai do custo zero.
+Consulte [DEPLOY.md](docs/DEPLOY.md) para servidor, TURN, banco e releases.
 
----
+## Limitações atuais
 
-Desenvolvido com apoio de ferramentas de IA para escrever o código. Meu papel foi
-definir como o app deveria se comportar e testar em máquina real até parar de
-quebrar.
+- TURN precisa ser provisionado/configurado e validado entre redes.
+- A captura do WebView2 usa a fonte definida no início do processo; trocar exige
+  reiniciar. Títulos repetidos ou variáveis podem tornar a seleção ambígua.
+- O áudio nativo captura a saída padrão do Windows. Pode incluir o Voxa e outras
+  aplicações. Não há captura por processo ou troca dinâmica do dispositivo de loopback.
+- Testes locais não substituem dois PCs, jogos, instalação/update em Windows
+  limpo ou medição de carga com vários usuários.

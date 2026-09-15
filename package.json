@@ -1,7 +1,7 @@
 {
   "name": "voxa",
   "private": true,
-  "version": "0.5.27",
+  "version": "0.5.29",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,11 +10,20 @@
     "tauri": "tauri",
     "server": "node server/index.js",
     "dev:all": "node scripts/dev.mjs",
-    "app": "tauri dev",
+    "app": "node scripts/dev-native.mjs",
     "app:build": "tauri build",
+    "app:build:local": "node scripts/build-local.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test server/test/security.test.js server/test/handshake.test.js src/lib/rtc/nucleo.test.ts src/lib/filaPcm.test.ts src/lib/mencao.test.ts",
-    "verify": "tsc --noEmit && npm test"
+    "test": "node --test server/test/security.test.js server/test/admission.test.js server/test/handshake.test.js src/lib/rtc/nucleo.test.ts src/lib/rtc/peer.test.js src/lib/filaPcm.test.ts src/lib/mencao.test.ts scripts/check-native.test.mjs",
+    "verify": "tsc --noEmit && npm test && npm run test:regressions && npm run test:sql && npm run test:review && npm run test:recovery && npm run test:capture",
+    "test:rtc": "node scripts/rtc-validation/run.mjs",
+    "test:regressions": "node scripts/check-regressions.mjs",
+    "test:sql": "node scripts/check-sql.mjs",
+    "test:worklet": "node scripts/check-worklet.mjs",
+    "test:ui": "node scripts/check-ui.mjs",
+    "test:review": "node scripts/check-review-regressions.mjs",
+    "test:recovery": "node scripts/check-recovery.mjs",
+    "test:capture": "node scripts/check-capture-policy.mjs"
   },
   "dependencies": {
     "@sapphi-red/web-noise-suppressor": "^0.4.0",
@@ -31,11 +40,14 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "esbuild": "^0.28.2",
+    "playwright": "^1.62.1",
     "sharp": "^0.35.4",
     "tailwindcss": "^4.3.3",
     "typescript": "~5.8.3",

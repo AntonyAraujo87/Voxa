@@ -58,6 +58,7 @@ pub fn run() {
             capture::list_capture_sources,
             capture::set_capture_source,
             capture::get_capture_source,
+            capture::get_active_capture_source,
             capture::set_safe_mode,
             capture::get_safe_mode,
             hotkeys::set_push_to_talk,

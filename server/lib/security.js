@@ -8,6 +8,10 @@
  */
 
 /** Limites por evento: { janela em ms, maximo de eventos na janela }. */
+import { isIP } from "node:net";
+import { timingSafeEqual } from "node:crypto";
+import { ipKeyGenerator } from "express-rate-limit";
+
 export const EVENT_LIMITS = {
   hello: { windowMs: 10_000, max: 5 },
   // ICE chega em rajada durante o handshake — o teto precisa ser alto.
@@ -17,6 +21,7 @@ export const EVENT_LIMITS = {
   state: { windowMs: 10_000, max: 40 },
   "chat:send": { windowMs: 5_000, max: 8 },
   "chat:typing": { windowMs: 5_000, max: 6 },
+  "ice:config": { windowMs: 10_000, max: 5 },
 };
 
 /** Conexoes simultaneas do mesmo IP. Amigos na mesma casa compartilham IP. */
@@ -35,29 +40,37 @@ export const MAX_HANDSHAKES_PER_MIN = 60;
  * do proxy forja um IP diferente a cada conexao e o limite por IP deixa de
  * existir — cada tentativa parece vir de alguem novo.
  *
- * A regra: so acredita no header quando a conexao chegou de um endereco
- * PRIVADO, que e como todo PaaS entrega (o proxy fala com o processo por rede
- * interna). Vindo de um IP publico, a conexao e direta e o header e chute do
- * proprio cliente — ignora. Assim o limite continua certo no Render e nao ha
- * variavel de ambiente pra alguem esquecer de configurar; `TRUST_PROXY=0`
- * existe so pra desligar a mao.
+ * Exige TRUST_PROXY=1 e conexao direta de endereco privado. Isso pressupoe
+ * um unico proxy confiavel, que sobrescreve o header ou acrescenta o IP
+ * observado ao final. Verificar a topologia do provedor antes de habilitar;
+ * redes com varios proxies exigem uma lista explicita de proxies confiaveis.
  */
 const PRIVADO =
   /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|::ffff:(10\.|127\.|192\.168\.)|f[cd])/i;
 
 export function clientIp(socket) {
   const direto = socket.handshake.address || "desconhecido";
-  const atrasDeProxy = PRIVADO.test(direto) && process.env.TRUST_PROXY !== "0";
+  const atrasDeProxy = PRIVADO.test(direto) && process.env.TRUST_PROXY === "1";
 
   if (atrasDeProxy) {
     const fwd = socket.handshake.headers["x-forwarded-for"];
     if (typeof fwd === "string" && fwd.length) {
-      const first = fwd.split(",")[0].trim();
-      if (first) return first;
+      // Um proxy confiavel acrescenta o IP observado ao final. O primeiro
+      // item pode ter sido fornecido pelo atacante; nunca usá-lo como chave.
+      const last = fwd.split(",").at(-1).trim();
+      if (isIP(last)) return normalizeIp(last);
     }
   }
-  return direto;
+  return normalizeIp(direto);
 }
+
+function normalizeIp(value) {
+  const mapped = value.replace(/^::ffff:/i, "");
+  if (isIP(mapped) === 4) return mapped;
+  return isIP(value) ? ipKeyGenerator(value, 64) : "desconhecido";
+}
+
+export const requestIp = (req) => clientIp({ handshake: { address: req.socket.remoteAddress, headers: req.headers } });
 
 /* -------------------------- limitador por janela -------------------------- */
 
@@ -66,6 +79,8 @@ export class RateLimiter {
 
   /** @returns true se a acao e permitida */
   allow(key, windowMs, max) {
+    // IPs aleatorios nao podem criar um mapa ilimitado antes da varredura.
+    if (!this.#hits.has(key) && this.#hits.size >= 20000) return false;
     const now = Date.now();
     const list = this.#hits.get(key) ?? [];
     // Descarta o que saiu da janela antes de decidir.
@@ -149,7 +164,7 @@ export function sanitizeName(value, fallback = "anon") {
 
 /** Aceita apenas cores no formato #rgb / #rrggbb. */
 export function sanitizeColor(value, fallback = "#5865F2") {
-  return typeof value === "string" && /^#[0-9a-fA-F]{3,8}$/.test(value) ? value : fallback;
+  return typeof value === "string" && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value) ? value : fallback;
 }
 
 /** Ids de canal e de usuario: alfanumerico, hifen, underscore e ponto. */
@@ -165,8 +180,7 @@ export function sanitizeId(value, maxLength = 64) {
  */
 export function safeEqual(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+  if (a.length > 4096 || b.length > 4096) return false;
+  const left = Buffer.from(a), right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
 }

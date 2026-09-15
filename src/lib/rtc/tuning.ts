@@ -49,7 +49,7 @@ export function applyCodecPreferences(tx: RTCRtpTransceiver, strategy: TuningSta
  */
 export function budgetPerPeer(tuning: TuningState, viewers: number): number {
   const preset = VIDEO_PRESETS[tuning.video];
-  return Math.max(preset.minBitrate, Math.round(preset.maxBitrate / Math.max(1, viewers)));
+  return Math.max(1, Math.floor(preset.maxBitrate / Math.max(1, viewers)));
 }
 
 export interface EncodingTargets {
@@ -82,9 +82,7 @@ export async function applyVideoEncoding(
 
   try {
     await sender.setParameters(params);
-  } catch {
-    /* estados transitorios de negociacao rejeitam; a proxima passada aplica */
-  }
+  } catch (error) { throw error; }
 }
 
 export async function applyAudioEncoding(
@@ -105,9 +103,7 @@ export async function applyAudioEncoding(
       screen.encodings[0].maxBitrate = SCREEN_AUDIO_BITRATE;
       await screenAudioSender.setParameters(screen);
     }
-  } catch {
-    /* idem */
-  }
+  } catch (error) { throw error; }
 }
 
 /**

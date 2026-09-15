@@ -1,9 +1,10 @@
+import { useDialogFocus } from "../lib/useDialogFocus";
 import { memo, useEffect, useState } from "react";
 import { AppWindow, Monitor, RotateCw, X } from "lucide-react";
 import { useApp } from "../store/store";
 import { session } from "../lib/session";
 import {
-  getCaptureSource,
+  getActiveCaptureSource,
   listCaptureSources,
   relaunchApp,
   setCaptureSource,
@@ -24,6 +25,10 @@ import {
 
 function SharePickerBase() {
   const open = useApp((s) => s.showSharePicker);
+  const dialog = useDialogFocus(open, () => useApp.setState({ showSharePicker: false }));
+  const systemAudio = useApp((s) => s.systemAudio);
+  const audioMode = useApp((s) => s.systemAudioMode);
+  const audioProcessId = useApp((s) => s.audioProcessId);
   const [sources, setSources] = useState<CaptureSource[]>([]);
   const [active, setActive] = useState("");
   const [carregando, setCarregando] = useState(true);
@@ -33,13 +38,16 @@ function SharePickerBase() {
 
   useEffect(() => {
     if (!open) return;
+    let alive = true;
     setCarregando(true);
     setPendente(null);
-    Promise.all([listCaptureSources(), getCaptureSource()]).then(([list, current]) => {
+    Promise.all([listCaptureSources(), getActiveCaptureSource()]).then(([list, current]) => {
+      if (!alive) return;
       setSources(list ?? []);
       setActive(current ?? "");
       setCarregando(false);
     });
+    return () => { alive = false; };
   }, [open]);
 
   useEffect(() => {
@@ -72,7 +80,7 @@ function SharePickerBase() {
   };
 
   return (
-    <div
+    <div ref={dialog} role="dialog" aria-modal="true" aria-label="Escolher fonte de transmissao" tabIndex={-1}
       className="absolute inset-0 z-50 grid place-items-center bg-black/60 p-6"
       onClick={fechar}
     >
@@ -118,13 +126,41 @@ function SharePickerBase() {
           </div>
         ) : (
           <div className="overflow-y-auto p-3">
+            <label className="mb-3 flex items-start gap-2 rounded-md bg-base-500/50 p-3 text-sm text-ink-soft">
+              <input type="checkbox" checked={systemAudio}
+                onChange={(event) => session.setSystemAudio(event.target.checked)} />
+              <span>Compartilhar som do computador
+                <span className="block text-xs text-muted">Escolha abaixo quais aplicativos entram no som da transmissao.</span>
+              </span>
+            </label>
+            {systemAudio && <div className="mb-3 space-y-2 rounded-md bg-base-500/50 p-3 text-sm text-ink-soft">
+              <label className="block">Origem do som
+                <select aria-label="Origem do som da transmissao" value={audioMode}
+                  onChange={event => session.setSystemAudioMode(event.target.value as typeof audioMode)}
+                  className="mt-1 w-full rounded bg-base-700 p-2">
+                  <option value="system">Computador inteiro (inclui chamadas)</option>
+                  <option value="exclude-voxa">Computador sem o som do Voxa</option>
+                  <option value="application">Somente um jogo ou aplicativo</option>
+                </select>
+              </label>
+              {audioMode === "application" && <label className="block">Aplicativo para capturar audio
+                <select aria-label="Aplicativo para capturar audio" value={audioProcessId ?? ""}
+                  onChange={event => useApp.setState({ audioProcessId: event.target.value ? Number(event.target.value) : null })}
+                  className="mt-1 w-full rounded bg-base-700 p-2">
+                  <option value="">Selecione o jogo ou aplicativo</option>
+                  {sources.filter(source => source.process_id).map(source => <option key={`${source.id}:${source.process_id}`} value={source.process_id!}>{source.label}</option>)}
+                </select>
+              </label>}
+              {audioMode !== "system" && <p className="text-xs text-muted">Requer Windows build 20348 ou posterior. Se indisponivel, a tela continua sem som; a captura nao muda para o computador inteiro.</p>}
+            </div>}
             {carregando ? (
               <p className="p-4 text-center text-sm text-muted">carregando fontes...</p>
             ) : (
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 {sources.map((fonte) => (
                   <button
-                    key={fonte.id || "monitor"}
+                    key={`${fonte.id || "monitor"}:${fonte.process_id ?? 0}`}
+                    disabled={systemAudio && audioMode === "application" && !audioProcessId}
                     onClick={() => void escolher(fonte)}
                     className={`flex flex-col items-center gap-2 rounded-lg border p-4 text-center transition-colors ${
                       fonte.id === active

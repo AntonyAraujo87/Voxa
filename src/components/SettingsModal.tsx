@@ -1,3 +1,4 @@
+import { useDialogFocus } from "../lib/useDialogFocus";
 import { memo, useEffect, useState } from "react";
 import { Bell, Camera, Cpu, Gamepad2, Gauge, LifeBuoy, Mic, MonitorPlay, MonitorSmartphone, Move, RadioTower, RefreshCw, Volume2, X } from "lucide-react";
 import { useApp } from "../store/store";
@@ -6,6 +7,8 @@ import { outputSupport } from "../lib/audioOutput";
 import { Section, Option } from "./settings/Primitives";
 import { HotkeysSection } from "./settings/HotkeysSection";
 import { copiarTexto, montarRelatorio } from "../lib/diagnostico";
+import { AudioChecks } from "./AudioChecks";
+import { ErrorBoundary } from "./ErrorBoundary";
 import {
   isDesktop,
   getSafeMode,
@@ -37,7 +40,9 @@ const CONTENT_HINT: Record<ContentMode, string> = {
 };
 
 function SettingsModalBase() {
+  const [audioChecksOpen, setAudioChecksOpen] = useState(false);
   const open = useApp((s) => s.showSettings);
+  const dialog = useDialogFocus(open, () => useApp.setState({ showSettings: false }));
   const tuning = useApp((s) => s.tuning);
   const mics = useApp((s) => s.mics);
   const micDeviceId = useApp((s) => s.micDeviceId);
@@ -110,7 +115,7 @@ function SettingsModalBase() {
   if (!open) return null;
 
   return (
-    <div className="absolute inset-0 z-50 grid place-items-center bg-black/60 p-6">
+    <div ref={dialog} role="dialog" aria-modal="true" aria-label="Configuracoes" tabIndex={-1} className="absolute inset-0 z-50 grid place-items-center bg-black/60 p-6">
       <div className="animate-pop flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-line bg-base-600 shadow-2xl">
         <header className="flex h-12 shrink-0 items-center border-b border-line px-5">
           <h2 className="font-semibold text-ink">Configuracoes de transmissao</h2>
@@ -199,9 +204,9 @@ function SettingsModalBase() {
                 Audio do sistema {systemAudio ? "— ligado" : "— desligado"}
               </p>
               <p className="text-xs text-faint">
-                Captura o que a placa de som esta tocando, em vez do audio que o
-                WebView2 entrega junto da tela — que com jogo em tela cheia costuma
-                vir vazio. Vale no proximo compartilhamento.
+                  Inclui som no proximo compartilhamento. No seletor de tela,
+                  escolha o computador inteiro, somente um aplicativo ou exclua
+                  o som do Voxa para reduzir o retorno da chamada.
               </p>
             </button>
           </Section>
@@ -391,6 +396,11 @@ function SettingsModalBase() {
           </Section>
 
           <Section icon={<LifeBuoy size={13} />} title="Diagnostico">
+            <button aria-expanded={audioChecksOpen} onClick={() => setAudioChecksOpen(value => !value)}
+              className="mb-2 w-full rounded-md bg-brand/15 px-3 py-2 text-left text-sm text-ink">
+              Testar audio e conexao
+            </button>
+            {audioChecksOpen && <ErrorBoundary area="teste de audio"><AudioChecks /></ErrorBoundary>}
             <button
               onClick={() => void copiarDiagnostico()}
               className="w-full rounded-md bg-base-500/60 px-3 py-2 text-left text-muted transition-colors hover:bg-base-500"

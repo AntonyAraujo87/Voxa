@@ -42,7 +42,7 @@ function turnServers(): RTCIceServer[] {
 
 export const ICE_SERVERS: RTCIceServer[] = [STUN, ...turnServers()];
 
-export const hasTurn = turnServers().length > 0;
+export let hasTurn = turnServers().length > 0;
 
 /** "relay" forca todo o trafego pelo TURN — util so pra testar o relay. */
 const icePolicy = ((import.meta.env.VITE_ICE_POLICY as string) || "all") as RTCIceTransportPolicy;
@@ -56,6 +56,13 @@ export const PC_CONFIG: RTCConfiguration = {
   rtcpMuxPolicy: "require",
   iceCandidatePoolSize: 4,
 };
+
+export function updateIceServers(servers: RTCIceServer[]) {
+  const valid = servers.filter(server => server && typeof server.username === "string" && typeof server.credential === "string" && (Array.isArray(server.urls) ? server.urls : [server.urls]).every(url => typeof url === "string" && /^turns?:[^\s]+$/.test(url))).slice(0, 4);
+  PC_CONFIG.iceServers = [STUN, ...turnServers(), ...valid];
+  hasTurn = PC_CONFIG.iceServers.length > 1;
+  PC_CONFIG.iceTransportPolicy = hasTurn && icePolicy === "relay" ? "relay" : "all";
+}
 
 /* ------------------------------- VIDEO ---------------------------------- */
 

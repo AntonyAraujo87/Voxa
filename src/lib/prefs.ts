@@ -28,6 +28,7 @@ export interface Prefs {
   micDeviceId: string;
   noiseSuppression: boolean;
   systemAudio: boolean;
+  systemAudioMode: "system" | "application" | "exclude-voxa";
   camDeviceId: string;
   outputDeviceId: string;
   outputMode: "natural" | "nivelado";
@@ -55,6 +56,7 @@ const DEFAULTS: Prefs = {
   micDeviceId: "default",
   noiseSuppression: false,
   systemAudio: false,
+  systemAudioMode: "system",
   camDeviceId: "default",
   outputDeviceId: "default",
   outputMode: "natural",
@@ -69,50 +71,63 @@ const DEFAULTS: Prefs = {
   overlayPos: null,
 };
 
-export function loadPrefs(): Prefs {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return { ...DEFAULTS, userId: crypto.randomUUID() };
-    const parsed = JSON.parse(raw) as Partial<Prefs>;
-    return {
-      ...DEFAULTS,
-      ...parsed,
-      userId: parsed.userId || crypto.randomUUID(),
-      tuning: { ...DEFAULTS.tuning, ...(parsed.tuning ?? {}) },
-      volumes: { ...(parsed.volumes ?? {}) },
-      streamVolumes: { ...(parsed.streamVolumes ?? {}) },
-      hotkeys: { ...(parsed.hotkeys ?? {}) },
-    };
-  } catch {
-    return { ...DEFAULTS };
+function validate(value: unknown): Prefs {
+  const p = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const result: Prefs = structuredClone(DEFAULTS);
+  for (const key of ["name", "token", "micDeviceId", "camDeviceId", "outputDeviceId"] as const) {
+    if (typeof p[key] === "string" && p[key].length <= 4096) result[key] = p[key];
   }
+  result.name = result.name.slice(0, 32);
+  result.userId = typeof p.userId === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(p.userId) ? p.userId : crypto.randomUUID();
+  if (typeof p.color === "string" && /^#[0-9a-f]{6}$/i.test(p.color)) result.color = p.color;
+  for (const key of ["noiseSuppression", "systemAudio", "membersOpen", "showStats", "pushToTalk", "sounds", "overlayEnabled"] as const) {
+    if (typeof p[key] === "boolean") result[key] = p[key];
+  }
+  if (p.outputMode === "nivelado") result.outputMode = p.outputMode;
+  if (p.systemAudioMode === "application" || p.systemAudioMode === "exclude-voxa") result.systemAudioMode = p.systemAudioMode;
+  const tuning = p.tuning && typeof p.tuning === "object" ? p.tuning as Record<string, unknown> : {};
+  const allowed = { video: ["lan","alta","nitida","fluida","equilibrada","economica"], audio: ["voz","estudio"], codec: ["hardware","eficiencia","compatibilidade"], content: ["jogo","leitura"] };
+  for (const key of Object.keys(allowed) as (keyof TuningState)[]) {
+    if (typeof tuning[key] === "string" && allowed[key].includes(tuning[key])) Object.assign(result.tuning, { [key]: tuning[key] });
+  }
+  for (const key of ["volumes", "streamVolumes"] as const) {
+    if (p[key] && typeof p[key] === "object") for (const [id, volume] of Object.entries(p[key]).slice(0, 1000)) {
+      if (/^[a-zA-Z0-9_-]{1,64}$/.test(id) && typeof volume === "number" && Number.isFinite(volume)) result[key][id] = Math.max(0, Math.min(2, volume));
+    }
+  }
+  const hotkeys = p.hotkeys && typeof p.hotkeys === "object" ? p.hotkeys as HotkeyPrefs : {};
+  for (const action of ["mute", "deafen", "share", "talk"] as const) {
+    const c = hotkeys[action];
+    if (c === null) result.hotkeys[action] = null;
+    else if (c && typeof c.code === "string" && /^[A-Za-z0-9]{1,32}$/.test(c.code)) result.hotkeys[action] = {code:c.code, ctrl:c.ctrl === true, shift:c.shift === true, alt:c.alt === true, label:typeof c.label === "string" ? c.label.slice(0,80) : c.code};
+  }
+  const pos = p.overlayPos as {x?:unknown;y?:unknown} | null;
+  if (pos && typeof pos.x === "number" && typeof pos.y === "number" && Number.isFinite(pos.x) && Number.isFinite(pos.y)) result.overlayPos = {x:pos.x,y:pos.y};
+  return result;
 }
 
 let pending: number | null = null;
-let cache: Prefs = DEFAULTS;
+let cache: Prefs | null = null;
 
-/** Grava com debounce: mexer no slider de volume nao pode escrever 60x/s. */
-export function savePrefs(patch: Partial<Prefs>) {
-  cache = { ...cache, ...patch };
-  if (pending !== null) return;
-  pending = window.setTimeout(() => {
-    pending = null;
-    try {
-      localStorage.setItem(KEY, JSON.stringify(cache));
-    } catch {
-      /* quota cheia ou storage bloqueado: preferencia se perde, app segue */
-    }
-  }, 400);
-}
-
-export function primePrefsCache(prefs: Prefs) {
-  cache = prefs;
-}
-
-/** Preferencias como estao AGORA, incluindo o que `savePrefs` ainda nao
- *  gravou. `loadPrefs` le o localStorage, que fica ate 400ms atrasado por
- *  causa do debounce: ler de la logo depois de salvar devolve o valor
- *  antigo. Use isto sempre que gravar e reler no mesmo gesto do usuario. */
-export function currentPrefs(): Prefs {
+export function loadPrefs(): Prefs {
+  if (cache) return cache;
+  try { cache = validate(JSON.parse(localStorage.getItem(KEY) ?? "null")); }
+  catch { cache = validate(null); }
   return cache;
 }
+
+export function flushPrefs() {
+  if (pending !== null) window.clearTimeout(pending);
+  pending = null;
+  if (!cache) return;
+  try { localStorage.setItem(KEY, JSON.stringify(cache)); } catch { /* memoria preservada se disco indisponivel */ }
+}
+
+export function savePrefs(patch: Partial<Prefs>) {
+  cache = validate({ ...loadPrefs(), ...patch });
+  if (pending === null) pending = window.setTimeout(flushPrefs, 400);
+}
+
+export function primePrefsCache(prefs: Prefs) { cache = validate(prefs); }
+export function currentPrefs(): Prefs { return loadPrefs(); }
+if (typeof window !== "undefined") window.addEventListener("pagehide", flushPrefs);

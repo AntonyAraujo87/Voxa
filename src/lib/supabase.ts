@@ -2,6 +2,7 @@ import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { registrarErro } from "./diagnostico";
 import { DEFAULT_CHANNELS, type Channel } from "./config";
 import type { ChatMessage } from "./signaling";
+import { historyCursor } from "./historyCursor";
 
 /* ---------------------------------------------------------------------------
    Persistencia opcional do historico de texto.
@@ -53,6 +54,9 @@ export function observarHistorico(fn: (e: EstadoHistorico) => void) {
 }
 
 let clientPromise: Promise<SupabaseClient | null> | null = null;
+let cachedClient: SupabaseClient | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let authGeneration = 0;
 
 /**
  * Quanto esperar antes de tentar de novo depois de uma falha.
@@ -73,7 +77,10 @@ let clientPromise: Promise<SupabaseClient | null> | null = null;
 const ESPERA_PARA_TENTAR_DE_NOVO = 30_000;
 
 function esquecerDepois() {
-  setTimeout(() => {
+  if (retryTimer) clearTimeout(retryTimer);
+  const generation = authGeneration;
+  retryTimer = setTimeout(() => {
+    if (generation !== authGeneration) return;
     clientPromise = null;
   }, ESPERA_PARA_TENTAR_DE_NOVO);
 }
@@ -94,6 +101,7 @@ function esquecerDepois() {
 let guildToken = "";
 
 export function setGuildToken(token: string) {
+  if (guildToken !== token) { authGeneration++; clientPromise = null; roomIds.clear(); if (retryTimer) clearTimeout(retryTimer); }
   guildToken = token;
 }
 
@@ -150,10 +158,11 @@ function db(): Promise<SupabaseClient | null> {
   if (!supabaseEnabled) return Promise.resolve(null);
 
   if (!clientPromise) {
+    const generation = authGeneration;
     clientPromise = (async () => {
       try {
         const { createClient } = await import("@supabase/supabase-js");
-        const client = createClient(URL!, KEY!, {
+        const client = cachedClient ?? createClient(URL!, KEY!, {
           auth: {
             // A sessao anonima e persistida para que o mesmo dispositivo
             // continue sendo o mesmo usuario depois de reiniciar o app.
@@ -162,10 +171,12 @@ function db(): Promise<SupabaseClient | null> {
             storageKey: "voxa:supabase-auth",
           },
           realtime: { params: { eventsPerSecond: 2 } },
-          global: { headers: { "x-client-info": "voxa" } },
+          global: { headers: { "x-client-info": "voxa" }, fetch: (input, init) => fetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000) }) },
         });
 
+        cachedClient = client;
         const session = await ensureSession(client);
+        if (generation !== authGeneration) return null;
         if (!session) {
           registrarErro(
             "supabase:sessao",
@@ -183,12 +194,15 @@ function db(): Promise<SupabaseClient | null> {
         // Nao entrar tambem merece nova tentativa: pode ser o SQL de
         // hardening que acabou de rodar, ou o banco que estava fora do ar
         // neste instante. Sem isso, o historico so voltaria no proximo boot.
-        if (await joinGuild(client)) definirEstado("ok");
+        const joined = await joinGuild(client);
+        if (generation !== authGeneration) return null;
+        if (joined) definirEstado("ok");
         else {
           // Sessao existe mas nao entrou nas salas: as politicas devolvem
           // lista vazia, entao na pratica nao ha historico.
           definirEstado("indisponivel");
           esquecerDepois();
+          return null;
         }
         return client;
       } catch {
@@ -231,7 +245,8 @@ export async function loadChannels(): Promise<Channel[]> {
       .select("id,slug,name,kind,topic,position")
       .order("position", { ascending: true });
 
-    if (error || !data?.length) return DEFAULT_CHANNELS;
+    if (error || !data?.length) { definirEstado("indisponivel"); esquecerDepois(); return DEFAULT_CHANNELS; }
+    definirEstado("ok");
 
     roomIds.clear();
     for (const r of data) roomIds.set(r.slug as string, r.id as string);
@@ -260,11 +275,14 @@ export async function loadChannels(): Promise<Channel[]> {
 export async function loadMessages(
   channelSlug: string,
   limit = 60,
-  antesDe?: string
+  antesDe?: string,
+  antesId?: string
 ): Promise<ChatMessage[]> {
   const sb = await db();
+  if (!supabaseEnabled) return [];
+  if (!roomUuid(channelSlug)) await loadChannels();
   const uuid = roomUuid(channelSlug);
-  if (!sb || !uuid) return [];
+  if (!sb || !uuid || estado !== "ok") throw new Error("Historico indisponivel");
 
   try {
     // A view junta o autor sem expor auth.users e roda com security_invoker,
@@ -276,13 +294,17 @@ export async function loadMessages(
       )
       .eq("room_id", uuid)
       .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
       .limit(limit);
 
-    if (antesDe) query = query.lt("created_at", antesDe);
+    const cursor = historyCursor(antesDe, antesId);
+    if (cursor) query = query.or(cursor);
+    else if (antesDe) query = query.lt("created_at", antesDe);
 
     const { data, error } = await query;
 
-    if (error || !data) return [];
+    if (error || !data) throw new Error(error?.message ?? "Historico indisponivel");
+    definirEstado("ok");
 
     return data
       .map((m) => ({
@@ -299,23 +321,24 @@ export async function loadMessages(
         attachmentSize: (m.attachment_size as number) ?? undefined,
       }))
       .reverse();
-  } catch {
-    return [];
-  }
+  } catch (error) { definirEstado("indisponivel"); registrarErro("supabase:leitura", error); esquecerDepois(); throw error; }
 }
 
 export async function saveMessage(msg: ChatMessage) {
   const sb = await db();
+  if (!roomUuid(msg.channelId) && sb) await loadChannels();
   const uuid = roomUuid(msg.channelId);
-  if (!sb || !uuid) return;
+  if (!sb || !uuid) return supabaseEnabled ? false : undefined;
 
   try {
     const userId = await currentUserId(sb);
-    if (!userId) return;
+    if (!userId) return false;
 
     // author_id vem da sessao, nunca do objeto da UI. A politica de RLS exige
     // que ele seja igual a auth.uid(), entao nem adiantaria mentir aqui.
     const { error } = await sb.from("messages").insert({
+      id: msg.id,
+      created_at: msg.createdAt,
       room_id: uuid,
       author_id: userId,
       content: msg.content,
@@ -330,11 +353,13 @@ export async function saveMessage(msg: ChatMessage) {
     // — foi assim que "imagem sem legenda desaparece no dia seguinte" passou
     // despercebido. Nao vira toast (falha de rede e comum e a mensagem ja foi
     // entregue ao vivo), mas fica no diagnostico.
-    if (error) registrarErro("supabase:saveMessage", error.message);
+    if (error) { registrarErro("supabase:saveMessage", error.message); return false; }
+    return true;
   } catch (err) {
     // Offline ou limite de flood: a mensagem ja foi entregue em tempo real,
     // apenas nao vira historico.
     registrarErro("supabase:saveMessage", err);
+    return false;
   }
 }
 
@@ -355,7 +380,7 @@ const TAMANHO_MAX_ANEXO = 8 * 1024 * 1024; // mesmo teto do bucket, attachments.
  * guardar arquivo) ou quando o upload falha por qualquer motivo — rede,
  * politica de RLS, tipo/tamanho recusado pelo bucket.
  */
-export async function uploadAttachment(file: File): Promise<UploadedAttachment | null> {
+export async function uploadAttachment(file: File, channelSlug: string): Promise<UploadedAttachment | null> {
   const sb = await db();
   if (!sb) return null;
   if (file.size > TAMANHO_MAX_ANEXO) return null;
@@ -367,7 +392,11 @@ export async function uploadAttachment(file: File): Promise<UploadedAttachment |
     // Path comeca com o proprio uid: e exatamente o que a politica de INSERT
     // do bucket exige, e evita duas pessoas colidirem no mesmo nome de arquivo.
     const extensao = file.name.includes(".") ? file.name.split(".").pop() : "";
-    const caminho = `${userId}/${crypto.randomUUID()}${extensao ? "." + extensao : ""}`;
+    if (!roomUuid(channelSlug)) await loadChannels();
+    const room = roomUuid(channelSlug);
+    if (!room) return null;
+    const safeExtension = /^[a-zA-Z0-9]{1,12}$/.test(extensao ?? "") ? extensao : "";
+    const caminho = `${userId}/${room}/${crypto.randomUUID()}${safeExtension ? "." + safeExtension : ""}`;
 
     const { error } = await sb.storage.from("chat-attachments").upload(caminho, file, {
       contentType: file.type || "application/octet-stream",
@@ -418,4 +447,20 @@ export async function upsertUser(username: string, color: string): Promise<Store
   } catch {
     return null;
   }
+}
+
+/** A URL persistida identifica o objeto; o acesso exige sessao e expira. */
+export async function resolveAttachmentUrl(value: string): Promise<string | null> {
+  if (!URL) return null;
+  try {
+    const url = new globalThis.URL(value), expected = new globalThis.URL(URL);
+    const prefix = "/storage/v1/object/public/chat-attachments/";
+    if (url.origin !== expected.origin || !url.pathname.startsWith(prefix)) return null;
+    const object = decodeURIComponent(url.pathname.slice(prefix.length));
+    if (!object || object.split("/").some(part => part === "." || part === "..")) return null;
+    const client = await db();
+    if (!client) return null;
+    const { data, error } = await client.storage.from("chat-attachments").createSignedUrl(object, 300);
+    return error ? null : data.signedUrl;
+  } catch { return null; }
 }

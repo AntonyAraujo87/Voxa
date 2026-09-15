@@ -49,6 +49,7 @@ export interface CaptureSource {
   id: string;
   label: string;
   kind: "monitor" | "window";
+  process_id?: number | null;
 }
 
 export const listCaptureSources = () => invoke<CaptureSource[]>("list_capture_sources");
@@ -86,7 +87,11 @@ export async function relaunchApp(): Promise<void> {
   const { relaunch } = await import("@tauri-apps/plugin-process");
   await relaunch();
 }
-export const setPushToTalkNative = (enabled: boolean) => invoke("set_push_to_talk", { enabled });
+export async function setPushToTalkNative(enabled: boolean) {
+  if (!isDesktop) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_push_to_talk", { enabled });
+}
 
 /**
  * Pede ao Rust que devolva ao sistema as paginas de memoria ociosas — do
@@ -162,8 +167,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     };
   } catch (err) {
     // Sem rede, endpoint 404 ou assinatura invalida: nao e motivo pra alarme.
-    console.info("[update] indisponivel:", err);
-    return null;
+    throw err;
   }
 }
 
@@ -183,3 +187,5 @@ export const dragOverlay = () => invoke("overlay_drag");
 
 /** Posicao logica atual do overlay, pra guardar nas preferencias. */
 export const getOverlayPosition = () => invoke<[number, number]>("overlay_position");
+
+export const getActiveCaptureSource = () => invoke<string>("get_active_capture_source");

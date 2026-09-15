@@ -36,7 +36,8 @@ export class FilaPCM {
   }
 
   push(bloco: Float32Array) {
-    if (bloco.length === 0) return;
+    if (bloco.length === 0 || bloco.length % 2 !== 0) return;
+    if (bloco.length / 2 > this.maximo) bloco = bloco.slice(-this.maximo * 2);
     this.blocos.push(bloco);
     this.quadros += bloco.length / 2;
 
@@ -46,8 +47,8 @@ export class FilaPCM {
     while (this.quadros > this.maximo && this.blocos.length > 1) {
       const fora = this.blocos.shift()!;
       // Desconta so o que ainda restava do bloco descartado.
-      this.quadros -= (fora.length - (this.blocos.length === 0 ? this.posicao : 0)) / 2;
-      if (this.blocos.length === 0) this.posicao = 0;
+      this.quadros -= (fora.length - this.posicao) / 2;
+      this.posicao = 0;
     }
   }
 

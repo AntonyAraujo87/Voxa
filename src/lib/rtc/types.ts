@@ -22,6 +22,13 @@ export interface LocalTracks {
 export const NO_TRACKS: LocalTracks = { mic: null, screen: null, screenAudio: null };
 
 export interface PeerStats {
+  sampleAt?: number;
+  rttMeasured?: boolean;
+  lossMeasured?: boolean;
+  micOutBytes?: number;
+  micInBytes?: number;
+  screenAudioOutBytes?: number;
+  screenAudioInBytes?: number;
   outKbps: number;
   inKbps: number;
   /** Total de bytes de AUDIO trafegados nesta conexao, acumulado.
@@ -92,6 +99,7 @@ export interface PeerCallbacks {
 }
 
 export interface MeshOptions extends PeerCallbacks {
+  needsSpeaking?: () => boolean;
   selfId: () => string;
   onStats: (stats: Map<string, PeerStats>) => void;
   onSpeaking: (peerId: string, speaking: boolean) => void;

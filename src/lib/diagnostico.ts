@@ -1,5 +1,7 @@
 import { invoke, isDesktop } from "./desktop";
-import { SIGNALING_URL } from "./config";
+import { SIGNALING_URL, hasTurn } from "./config";
+import { estadoAudioDoSistema } from "./sysaudio";
+import type { Peer } from "./rtc/peer";
 import { estadoSaida } from "./audioOutput";
 import { useApp } from "../store/store";
 import { getPeerMedia } from "../store/mediaStore";
@@ -111,10 +113,12 @@ export async function montarRelatorio(): Promise<string> {
 
   const linhas = [
     "=== Voxa — diagnostico ===",
+    `build: ${typeof __VOXA_BUILD__ === "undefined" ? "teste" : `${__VOXA_BUILD__.version} fonte=${__VOXA_BUILD__.source} commit=${__VOXA_BUILD__.commit} data=${__VOXA_BUILD__.builtAt}`}`,
     `versao: ${info?.version ?? "(navegador)"}`,
     `sistema: ${info ? `${info.os} ${info.arch}` : navigator.userAgent}`,
     `historico: ${supabase}`,
     `signaling: ${SIGNALING_URL}`,
+    `TURN: ${hasTurn ? "configurado" : "NAO configurado (sem relay para redes que bloqueiam P2P)"}`,
     // O caminho por onde TODO o audio remoto sai. Se estiver parado, a
     // chamada fica muda com tudo o mais parecendo certo — conexao boa, anel
     // de "falando" aceso, video normal.
@@ -131,6 +135,8 @@ export async function montarRelatorio(): Promise<string> {
   // saindo daqui? o audio do outro esta chegando? a conexao fechou direto ou
   // esta em relay?
   const s = useApp.getState();
+  const audioSistema = estadoAudioDoSistema();
+  linhas.push(`som da transmissao: opcao=${s.systemAudio ? "ligada" : "desligada"} | captura=${audioSistema.estado} | blocos=${audioSistema.blocos} | quadros processados=${audioSistema.quadrosProcessados} | quadros com som=${audioSistema.quadrosComSom}`);
 
   // Estado do proprio microfone. Sem isto, "enviado=NADA" tem varias causas
   // possiveis e nenhuma delas aparece: mudo, ensurdecido, push-to-talk sem a
@@ -149,7 +155,7 @@ export async function montarRelatorio(): Promise<string> {
   // Onde a trilha parou: existe na malha? chegou ao canal daquele par?
   // Sem isto, "enviado=NADA" nao distingue "nao capturei" de "capturei e
   // nao consegui anexar" — que sao problemas completamente diferentes.
-  let envio: { temMic: boolean; pares: Record<string, { pronto: boolean; micNoCanal: boolean; micLigado: boolean | null; direcao: string }> } | null = null;
+  let envio: { temMic: boolean; pares: Record<string, ReturnType<Peer["estadoEnvio"]>> } | null = null;
   try {
     envio = (window as unknown as { __voxaEnvio?: () => typeof envio }).__voxaEnvio?.() ?? null;
   } catch {
@@ -157,13 +163,15 @@ export async function montarRelatorio(): Promise<string> {
   }
   if (envio) linhas.push(`trilha de microfone na malha: ${envio.temMic ? "sim" : "NAO"}`, "");
 
-  const pares = Object.entries(s.stats);
+  // Inclui pares ainda sem estatisticas RTP e usa o estado vivo da conexao.
+  const pares = [...new Set([...Object.keys(s.stats), ...Object.keys(envio?.pares ?? {})])];
   if (pares.length) {
     linhas.push(`--- ${pares.length} conexao(oes) ---`);
-    for (const [id, e] of pares) {
+    for (const id of pares) {
+      const e = s.stats[id];
       const nome = s.roster.find((r) => r.id === id)?.user.name ?? id.slice(0, 6);
-      const envia = e.audioOutBytes > 0 ? `${Math.round(e.audioOutBytes / 1024)}KB` : "NADA";
-      const recebe = e.audioInBytes > 0 ? `${Math.round(e.audioInBytes / 1024)}KB` : "NADA";
+      const envia = e?.audioOutBytes > 0 ? `${Math.round(e.audioOutBytes / 1024)}KB` : "NADA";
+      const recebe = e?.audioInBytes > 0 ? `${Math.round(e.audioInBytes / 1024)}KB` : "NADA";
       // `voz` responde a pergunta que os bytes nao respondem: o audio que
       // chegou pela rede foi realmente entregue ao reprodutor? Se chega byte
       // e aqui aparece "NAO", a trilha se perdeu entre a conexao e a saida.
@@ -171,10 +179,10 @@ export async function montarRelatorio(): Promise<string> {
       const voz = m.mic ? "ligada" : "NAO CHEGOU AO PLAYER";
       const env = envio?.pares[id];
       const canal = env
-        ? ` [pronto=${env.pronto} micNoCanal=${env.micNoCanal} ligado=${env.micLigado} dir=${env.direcao}]`
+        ? ` [pronto=${env.pronto} micNoCanal=${env.micNoCanal} ligado=${env.micLigado} dir=${env.direcao} somTelaNoCanal=${env.audioTelaNoCanal}]\n  ICE=${env.ice} SDP=${env.sinalizacao} coleta=${env.coleta} candidatos locais=${env.candidatosLocais} remotos=${env.candidatosRemotos} errosICE=${env.errosIce}`
         : "";
       linhas.push(
-        `${nome}: conexao=${e.connection} via=${e.path} audio enviado=${envia} recebido=${recebe} voz=${voz} rtt=${e.rttMs}ms perda=${e.lossPct.toFixed(1)}%${canal}`
+        `${nome}: conexao=${env?.conexao ?? e?.connection ?? "new"} via=${e?.path ?? "-"} audio enviado=${envia} recebido=${recebe} micBytes=${e?.micOutBytes ?? "?"}/${e?.micInBytes ?? "?"} somTelaBytes=${e?.screenAudioOutBytes ?? "?"}/${e?.screenAudioInBytes ?? "?"} voz=${voz} somTela=${m.screenAudio ? "ligado" : "sem trilha no player"} rtt=${e?.rttMeasured ? e.rttMs + "ms" : "nao medido"} perda=${e?.lossMeasured ? e.lossPct.toFixed(1) + "%" : "nao medida"} amostra=${e?.sampleAt ? Math.round((Date.now() - e.sampleAt) / 1000) + "s atras" : "ausente"}${canal}`
       );
     }
     linhas.push("");

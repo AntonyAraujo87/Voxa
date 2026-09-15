@@ -46,29 +46,17 @@ export function Overlay() {
   const [posicionando, setPosicionando] = useState(false);
 
   useEffect(() => {
-    let dispose: (() => void) | undefined;
-    void listenEvent<OverlayPeer[]>("overlay:roster", setPeers).then((off) => {
-      dispose = off;
+    let alive = true;
+    const disposers: (() => void)[] = [];
+    void Promise.all([
+      listenEvent<OverlayPeer[]>("overlay:roster", value => { if (alive) setPeers(value); }),
+      listenEvent<boolean>("overlay:posicionar", value => { if (alive) setPosicionando(value); }),
+    ]).then(off => {
+      if (!alive) { off.forEach(dispose => dispose()); return; }
+      disposers.push(...off);
+      void emitEvent("overlay:pronto", true);
     });
-    return () => dispose?.();
-  }, []);
-
-  useEffect(() => {
-    let dispose: (() => void) | undefined;
-    void listenEvent<boolean>("overlay:posicionar", setPosicionando).then((off) => {
-      dispose = off;
-    });
-    return () => dispose?.();
-  }, []);
-
-  // Esta janela nasce DEPOIS da principal, entao qualquer estado emitido
-  // antes daqui se perdeu — inclusive o roster, que so e reenviado quando
-  // muda. Sem este aviso, ligar o overlay no meio de uma conversa parada
-  // mostrava uma janela vazia ate alguem falar, e pedir "posicionar" com o
-  // overlay desligado abria uma janela que capturava clique sem explicar
-  // por que. O `listen` acima ja esta registrado quando isto roda.
-  useEffect(() => {
-    void emitEvent("overlay:pronto", true);
+    return () => { alive = false; disposers.forEach(dispose => dispose()); };
   }, []);
 
   /** Fixa onde esta: le a posicao, destrava o clique de volta e avisa a
@@ -113,7 +101,8 @@ export function Overlay() {
     w.__voxaOverlayPosicionar = setPosicionando;
   }, []);
 
-  const lista = posicionando && peers.length === 0 ? EXEMPLO : peers;
+  const todos = posicionando && peers.length === 0 ? EXEMPLO : peers;
+  const lista = [...todos].sort((a,b) => Number(b.speaking) - Number(a.speaking)).slice(0, 7);
 
   if (!posicionando && lista.length === 0) return null;
 
@@ -156,6 +145,7 @@ export function Overlay() {
         </div>
       ))}
 
+      {todos.length > lista.length && <span className="text-[11px] text-white">+{todos.length - lista.length} no canal</span>}
       {posicionando && (
         <button
           onPointerDown={(e) => e.stopPropagation()}

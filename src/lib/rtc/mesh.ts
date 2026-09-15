@@ -19,13 +19,14 @@ const SPEAKING_INTERVAL_MS = 150;
 const SPEAKING_THRESHOLD = 0.012;
 
 export class Mesh {
+  private viewers = new Map<string, boolean>();
+  private collecting = false;
   private peers = new Map<string, Peer>();
   /** peerId -> ultimo sinal em processamento, para serializar por par */
   private filas = new Map<string, Promise<void>>();
   private tracks: LocalTracks = { ...NO_TRACKS };
   private timers: number[] = [];
   private adaptive = new AdaptiveQuality();
-  private detachNetworkWatch: (() => void) | null = null;
 
   tuning: TuningState = { video: "alta", audio: "voz", codec: "hardware", content: "jogo" };
 
@@ -34,27 +35,10 @@ export class Mesh {
       window.setInterval(() => void this.collectStats(), STATS_INTERVAL_MS),
       window.setInterval(() => this.detectSpeaking(), SPEAKING_INTERVAL_MS)
     );
-    this.watchNetwork();
   }
 
-  /**
-   * Trocar de Wi-Fi para cabo, sair do alcance ou o roteador renovar o IP nao
-   * derrubam a pagina, mas invalidam os candidatos ICE. O navegador avisa; sem
-   * escutar esses eventos, a conexao ficaria morta ate alguem sair e voltar.
-   */
-  private watchNetwork() {
-    const recover = () => {
-      for (const peer of this.peers.values()) peer.recoverNow();
-    };
-
-    window.addEventListener("online", recover);
-    const conexao = (navigator as Navigator & { connection?: EventTarget }).connection;
-    conexao?.addEventListener("change", recover);
-
-    this.detachNetworkWatch = () => {
-      window.removeEventListener("online", recover);
-      conexao?.removeEventListener("change", recover);
-    };
+  recoverNetwork() {
+    for (const peer of this.peers.values()) peer.recoverNow();
   }
 
   get size() {
@@ -63,7 +47,7 @@ export class Mesh {
 
   /* ---------------------------- participantes --------------------------- */
 
-  addPeer(id: string, initiator: boolean): Peer {
+  addPeer(id: string, initiator: boolean, watching = true): Peer {
     const existing = this.peers.get(id);
     if (existing) return existing;
 
@@ -72,8 +56,9 @@ export class Mesh {
     const polite = this.opts.selfId() > id;
     const peer = new Peer(id, polite, () => this.tuning, this.opts);
     this.peers.set(id, peer);
+    this.viewers.set(id, watching);
 
-    if (initiator) peer.initiate(this.tracks, this.targets());
+    if (initiator) peer.initiate(this.tracksFor(id), this.targets());
     this.rebalance();
     return peer;
   }
@@ -84,6 +69,7 @@ export class Mesh {
 
     peer.close();
     this.peers.delete(id);
+    this.viewers.delete(id);
     // Sem isso a fila do par que saiu ficaria no mapa pra sempre, segurando
     // a referencia do Peer fechado junto.
     this.filas.delete(id);
@@ -101,8 +87,6 @@ export class Mesh {
   destroy() {
     for (const t of this.timers) window.clearInterval(t);
     this.timers = [];
-    this.detachNetworkWatch?.();
-    this.detachNetworkWatch = null;
     this.clear();
   }
 
@@ -122,13 +106,14 @@ export class Mesh {
    * que e o que faz a entrada numa sala cheia ser rapida.
    */
   async handleSignal(from: string, data: SignalPayload) {
+    if (from === this.opts.selfId()) return;
     const peer = this.peers.get(from) ?? this.addPeer(from, false);
 
     const anterior = this.filas.get(from) ?? Promise.resolve();
     const atual = anterior
       // Um sinal que falhou nao pode travar os seguintes.
       .catch(() => {})
-      .then(() => peer.handleSignal(data, this.tracks, this.targets()));
+      .then(() => { if (this.peers.get(from) === peer) return peer.handleSignal(data, this.tracksFor(from), this.targets()); });
 
     this.filas.set(from, atual);
     await atual;
@@ -150,7 +135,7 @@ export class Mesh {
 
   setMic(track: MediaStreamTrack | null) {
     this.tracks = { ...this.tracks, mic: track };
-    for (const peer of this.peers.values()) peer.attachTracks(this.tracks);
+    for (const peer of this.peers.values()) peer.attachTracks(this.tracksFor(peer.id));
   }
 
   async setScreen(video: MediaStreamTrack | null, audio: MediaStreamTrack | null) {
@@ -158,7 +143,7 @@ export class Mesh {
     // outra captura, que pode ter sido de um jogo bem mais pesado.
     if (video) this.adaptive.reset();
     this.tracks = { ...this.tracks, screen: video, screenAudio: audio };
-    for (const peer of this.peers.values()) peer.attachTracks(this.tracks);
+    for (const peer of this.peers.values()) peer.attachTracks(this.tracksFor(peer.id));
     await this.applyToAll();
   }
 
@@ -177,11 +162,25 @@ export class Mesh {
     await this.applyToAll();
   }
 
+  private get viewerCount() { return [...this.viewers.values()].filter(Boolean).length; }
+
+  private tracksFor(id: string): LocalTracks {
+    return this.viewers.get(id) === false ? { ...this.tracks, screen: null, screenAudio: null } : this.tracks;
+  }
+
+  setViewing(id: string, watching: boolean) {
+    const peer = this.peers.get(id);
+    if (!peer || this.viewers.get(id) === watching) return;
+    this.viewers.set(id, watching);
+    peer.attachTracks(this.tracksFor(id));
+    this.rebalance();
+  }
+
   private targets(): EncodingTargets {
     const preset = VIDEO_PRESETS[this.tuning.video];
     const degrau = this.adaptive.current;
     return {
-      maxBitrate: budgetPerPeer(this.tuning, this.peers.size),
+      maxBitrate: budgetPerPeer(this.tuning, this.viewerCount),
       maxFramerate: Math.min(preset.fps, degrau.fpsCap),
       scaleDownBy: degrau.scaleDownBy,
     };
@@ -193,7 +192,7 @@ export class Mesh {
     // O bitrate ja e dividido em `budgetPerPeer`, mas a CPU nao: avisar a
     // adaptacao permite ela comecar num degrau seguro em vez de esperar o
     // encoder atolar pra so entao reagir.
-    const decisao = this.adaptive.setViewers(this.peers.size);
+    const decisao = this.adaptive.setViewers(this.viewerCount);
     void this.applyToAll();
     if (decisao.changed && this.tracks.screen) {
       this.opts.onQuality?.(decisao.step.label, decisao.reason);
@@ -208,7 +207,7 @@ export class Mesh {
   /* ------------------------------- metricas ----------------------------- */
 
   private async collectStats() {
-    if (this.peers.size === 0) return;
+    if (this.peers.size === 0 || this.collecting) return;
 
     // Janela escondida e sem tela no ar: ninguem esta olhando as metricas e
     // nao ha encoder para adaptar. Enquanto compartilha, continua medindo —
@@ -216,17 +215,21 @@ export class Mesh {
     // adaptacao automatica mais importa.
     if (document.hidden && !this.tracks.screen) return;
 
+    this.collecting = true;
     const out = new Map<string, PeerStats>();
     await Promise.all(
       [...this.peers.values()].map(async (peer) => {
         try {
-          out.set(peer.id, await peer.collectStats());
+          const stats = await peer.collectStats();
+          if (this.peers.get(peer.id) === peer) out.set(peer.id, stats);
         } catch {
           /* par removido no meio da coleta */
         }
       })
     );
 
+    this.collecting = false;
+    for (const id of out.keys()) if (!this.peers.has(id)) out.delete(id);
     this.opts.onStats(out);
 
     // So adapta enquanto ha tela no ar: sem video, "limitado por CPU" nao
@@ -243,7 +246,7 @@ export class Mesh {
   private detectSpeaking() {
     // O anel de "falando" e puramente visual: com a janela escondida, medir
     // seria trabalho jogado fora 6 vezes por segundo.
-    if (document.hidden) {
+    if (document.hidden && !this.opts.needsSpeaking?.()) {
       // Mas quem estava falando no instante em que a janela sumiu ficava
       // marcado como falando pra sempre — o anel voltava aceso quando a
       // janela reaparecia, e so apagava se a pessoa falasse de novo.

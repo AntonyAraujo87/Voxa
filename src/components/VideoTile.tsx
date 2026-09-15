@@ -27,9 +27,9 @@ const LIMIT_LABEL: Record<string, string> = {
 const StatsOverlay = memo(function StatsOverlay({ stats }: { stats?: PeerStats }) {
   if (!stats) return null;
   const kbps = stats.inKbps || stats.outKbps;
-  const hw = /nvenc|qsv|mediafoundation|d3d|vaapi|videotoolbox|hardware/i.test(
-    stats.encoder + stats.decoder
-  );
+  const implementation = stats.inKbps > 0 ? stats.decoder : stats.encoder;
+  const hw = /nvenc|qsv|mediafoundation|d3d|vaapi|videotoolbox|hardware/i.test(implementation);
+  const measured = !!implementation && implementation !== "-";
 
   return (
     <div className="pointer-events-none absolute left-2 top-2 rounded bg-black/70 px-2 py-1.5 font-mono text-[11px] leading-tight text-ink-soft backdrop-blur-sm">
@@ -38,15 +38,15 @@ const StatsOverlay = memo(function StatsOverlay({ stats }: { stats?: PeerStats }
           {stats.fps} fps
         </span>
         <span>{(kbps / 1000).toFixed(1)} Mbps</span>
-        <span className={stats.rttMs < 60 ? "text-online" : "text-warn"}>{stats.rttMs} ms</span>
+        <span className={stats.rttMeasured && stats.rttMs < 60 ? "text-online" : "text-warn"}>{stats.rttMeasured ? `${stats.rttMs} ms` : "ping —"}</span>
       </div>
       <div className="flex gap-3 text-faint">
         <span>{stats.width ? `${stats.width}x${stats.height}` : "-"}</span>
         <span>{stats.codec}</span>
-        <span className={hw ? "text-online" : "text-warn"}>{hw ? "GPU" : "CPU"}</span>
+        <span title={implementation} className={hw ? "text-online" : "text-faint"}>{measured ? (hw ? "GPU" : "CPU") : "GPU/CPU —"}</span>
       </div>
       <div className="text-faint">
-        perda {stats.lossPct.toFixed(1)}% · jitter {stats.jitterMs}ms ·{" "}
+        perda {stats.lossMeasured ? `${stats.lossPct.toFixed(1)}%` : "—"} · jitter {stats.jitterMs}ms ·{" "}
         {LIMIT_LABEL[stats.limitation] ?? stats.limitation}
       </div>
       <div className={stats.path === "relay" ? "text-warn" : "text-faint"}>
