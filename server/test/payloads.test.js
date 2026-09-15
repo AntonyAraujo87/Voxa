@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { io } from 'socket.io-client';
 
 test('payloads JSON malformados nao derrubam signaling nem clientes validos', { timeout: 15000 }, async () => {
   const url = 'http://127.0.0.1:3213', token = 'payload-test-only';
-  const server = spawn(process.execPath, ['server/index.js'], {
+  const server = spawn(process.execPath, [fileURLToPath(new URL('../index.js', import.meta.url))], {
     env: { ...process.env, PORT: '3213', VOXA_TOKEN: token }, stdio: 'ignore',
   });
   const clients = [];

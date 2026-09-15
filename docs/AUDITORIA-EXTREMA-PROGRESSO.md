@@ -172,6 +172,13 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
   de cliente válido e servidor, descarte de tamanho malformado e anexos válidos.
   Nunca enviar esses probes ao Render público. Alteração precisa de rollout do
   servidor, com TRUST_PROXY/topologia conferidos, para proteger produção.
+- `npm run verify` completo passou (121 unitários/integração, 17 regressões,
+  10 SQL, 7 revisão, 11 recuperação, 5 captura). Correção enviada no commit
+  f27e030. O teste usa caminho absoluto calculado pelo próprio arquivo para
+  permitir execução também de dentro de server/. Confirmação do CI hospedado
+  ainda pendente: browser indisponível e leitura web de Actions retornou erro.
+- Automação atualizada para incluir commit/push após mudanças validadas e aviso
+  explícito se o envio falhar. A preferência persiste nas próximas retomadas.
 
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.
