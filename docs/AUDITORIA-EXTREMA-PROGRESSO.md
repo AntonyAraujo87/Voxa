@@ -189,6 +189,20 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
   07bb779 estava em andamento. API REST permite acompanhar sem o browser CUA;
   consultar o run do SHA final antes de afirmar sucesso do checkpoint mais novo.
 
+### Retomada automática em 15/9 — retry da identificação e TURN
+
+- Depois de uma primeira resposta hello perdida, o servidor já tinha registrado
+  o cliente, mas o retry devolvia apenas selfId/roster. Sem iceServers, o cliente
+  podia concluir login sem receber TURN nem iniciar sua renovação de credenciais.
+- Resposta de hello centralizada e completa também para clientes já identificados.
+  Não recria identidade, não sai do canal e não repete o broadcast de presença.
+- Dois testes com os handlers/Registry/RateLimiter reais reproduziram ausência
+  de ICE antes da correção. Agora verificam assinatura HMAC, validade, identidade,
+  canal e ausência de broadcast duplicado. 123 testes da suíte npm passaram,
+  incluindo integração Socket.IO com servidor local. Não foi contatado relay real.
+- Esta correção prepara o comportamento quando TURN estiver configurado; não
+  provisiona TURN nem altera Render. Manter pendências de cloud e teste físico.
+
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.
 Separar resultado automatizado de teste físico com dois PCs e redes distintas.

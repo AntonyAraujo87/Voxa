@@ -73,12 +73,17 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
   }, HELLO_TIMEOUT_MS);
 
   const broadcastRoster = () => io.to(GUILD).emit("roster", registry.roster());
+  const acknowledgeHello = (ack) => {
+    if (typeof ack === "function") ack({ selfId: socket.id, roster: registry.roster(), iceServers: turnCredentials(socket.id) });
+  };
 
   /* ------------------------------- identidade ---------------------------- */
 
   socket.on("hello", (payload = {}, ack) => {
     if (!guard("hello")) { if (typeof ack === "function") ack({ error: "limite-de-identificacao" }); return; }
-    if (identificado()) { if (typeof ack === "function") ack({ selfId: socket.id, roster: registry.roster() }); return; } // reapresentacao nao recria o cliente
+    // A primeira resposta pode se perder. O retry precisa trazer tambem TURN,
+    // sem recriar o cliente nem remover sua participacao no canal de voz.
+    if (identificado()) { acknowledgeHello(ack); return; }
 
     // Compatibilidade: clientes novos mandam o token no handshake e ja chegam
     // marcados; os antigos so o enviam aqui. Ambos precisam acertar.
@@ -101,7 +106,7 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
     registry.add(socket.id, user, socket.data.ip);
     socket.join(GUILD);
 
-    if (typeof ack === "function") ack({ selfId: socket.id, roster: registry.roster(), iceServers: turnCredentials(socket.id) });
+    acknowledgeHello(ack);
     broadcastRoster();
   });
 

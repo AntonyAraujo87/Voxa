@@ -29,6 +29,7 @@ certificação de ausência de falhas nem uma confirmação de implantação.**
 | Entradas malformadas | Objetos JSON no token legado e no tamanho de anexo não causam exceção por coerção | Queda reproduzida localmente e regressão Socket.IO após correção |
 | Banco | Leitura de perfis compartilhados, lock de entrada/mensagens, revogação em futura rotação do hash, índice de histórico | PGlite/PostgreSQL e leitura do catálogo de produção |
 | Reconexão | Retry contínuo com backoff, renovação TURN serializada, cancelamento de resposta antiga | Testes de ICE/TURN e recuperação após oito tentativas |
+| Retry do login | Hello repetido devolve TURN mesmo após perda da primeira resposta, preservando identidade/canal | 2 regressões dos handlers e HMAC das credenciais |
 | Suspensão | Detecção de pausa, mudança de rede e relógio retrocedendo; liberação do estado de PTT | Testes com relógio e eventos controlados |
 | Drivers após suspensão | Promises pendentes de áudio/microfone não bloqueiam novas recuperações de rede | Regressão com dispositivos indefinidamente pendentes |
 | Áudio por aplicativo | WASAPI inclui árvore de um processo ou exclui Voxa; falha não muda para captura de todo o PC | Compilação Rust e 5 verificações da política de captura |
@@ -52,7 +53,7 @@ para proteger produção; a branch de revisão não altera o serviço publicado.
 
 ## Validação realizada
 
-- 121 testes unitários/integração, 17 regressões de ciclo de vida/chat,
+- 123 testes unitários/integração, 17 regressões de ciclo de vida/chat,
   10 verificações SQL, 7 de revisão, 11 de renovação/retomada e 5 da política
   de captura passaram. Comando consolidado: `npm run verify`.
 - 12 verificações da interface com duas sessões e dispositivos sintéticos:
