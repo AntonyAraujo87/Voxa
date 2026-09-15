@@ -121,6 +121,14 @@ jobs:
       - name: Conferir dependencias do executavel empacotado
         run: node scripts/check-native.mjs src-tauri/target/release/voxa.exe src-tauri/target/release/nsis/x64/installer.nsi
 
+      - name: Instalar, atualizar e desinstalar na VM Windows
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          ./scripts/check-installer.ps1 -Version $version
+
       - name: Publicar a release validada e preservar a maior versao
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
