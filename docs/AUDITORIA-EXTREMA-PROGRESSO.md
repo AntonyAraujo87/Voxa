@@ -120,6 +120,20 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
 - Relatório consolidado: `docs/RELATORIO-AUDITORIA-EXTREMA.md`. Usuário ainda não
   respondeu sobre existência de conta Oracle; não existe VM/TURN. Pergunta já
   enviada, não duplicar nem habilitar serviço com cobrança por excedente.
+- Commit local confirmado: `bf3a9de`, 97 arquivos, branch
+  `codex/voxa-auditoria-extrema`. Suite unitária final confirmou 114/114.
+- `git push --set-upstream origin codex/voxa-auditoria-extrema` ficou pendente
+  no Git Credential Manager, sem saída. Consulta `git ls-remote` não encontrou
+  essa branch; tentativa interrompida via Ctrl+C. Não afirmar push ou PR criado.
+  Login no navegador não implica credencial Git válida no terminal.
+- Controle do navegador indisponível nesta retomada: `failed to write kernel
+  assets: O sistema não pode encontrar o caminho especificado (os error 3)`.
+  Reset seguido de `cua.getState()` repetiu o erro. Retomar GitHub/Render somente
+  depois que o controle/auth funcionar; não contornar por automação de UI externa.
+- O teste PE contra o binário real inicialmente parou no loader ausente no
+  diretório temporário; a verificação agora examina primeiro o manifest e
+  confirmou a duplicidade. O helper dev repõe o loader ao executar, mas isso
+  não prova instalação limpa e não autoriza distribuir o executável de debug.
 
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.

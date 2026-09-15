@@ -42,6 +42,11 @@ Correções das rodadas anteriores estão detalhadas em `REVISAO-0.5.29.md` e
 `CORRECOES-0.5.29.md`, incluindo lifecycle de mídia, renegociação simultânea,
 PCM/AudioWorklet, URLs assinadas, histórico, atalhos e proteções de release.
 
+Checkpoint salvo no commit local `bf3a9de`, branch `codex/voxa-auditoria-extrema`.
+Envio ao GitHub ficou pendente no gerenciador de credenciais e foi interrompido;
+a consulta remota não encontrou a branch. Nenhum PR foi criado. O controle de
+navegador falhou ao inicializar mesmo após reset nesta retomada.
+
 ## Validação realizada
 
 - 114 testes unitários/integração, 17 regressões de ciclo de vida/chat,
