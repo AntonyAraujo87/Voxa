@@ -151,7 +151,27 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
   frontend (38,88 s). Testes de plugin usam recursos controlados; não equivalem
   a instalação/auto-update real, que permanece pendente.
 - GitHub/TURN/instalador permanecem com as pendências já descritas. Não repetir
-  push que aguarda credenciais nem a geração de instalador recusada anteriormente.
+  push que aguarda credenciais sem resposta do usuário nem a geração de instalador recusada anteriormente.
+
+### Revisão solicitada em 15/9 — GitHub e entradas malformadas
+
+- **Preferência permanente do usuário:** depois de alterações validadas, fazer
+  commit e push ao GitHub nesta branch e confirmar o SHA remoto. Se auth/rede
+  impedir o envio, avisar claramente; não tratar commit local como publicação.
+  Enviar código não significa gerar instalador ou liberar versão em produção.
+- Usuário concluiu login Git Credential Manager. Push dos três commits anteriores
+  confirmado: remoto `codex/voxa-auditoria-extrema` em fb94cd0. Browser CUA ainda
+  falha ao inicializar; não há PR criado. CI agora inclui pushes `codex/**` para
+  validar mudanças da branch mesmo antes de abrir PR.
+- Encontrada queda do signaling por coerção de objeto JSON: `String(token)` no
+  hello legado podia lançar TypeError antes de autenticar; `Number(attachmentSize)`
+  tinha a mesma falha em anexos. Teste contra servidor local reproduziu desconexão
+  antes da correção. Token agora exige string; tamanho só converte número/string,
+  preservando compatibilidade com tamanho textual e rejeitando objetos.
+- Novo teste com Socket.IO real garante recusa de token malformado, sobrevivência
+  de cliente válido e servidor, descarte de tamanho malformado e anexos válidos.
+  Nunca enviar esses probes ao Render público. Alteração precisa de rollout do
+  servidor, com TRUST_PROXY/topologia conferidos, para proteger produção.
 
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.

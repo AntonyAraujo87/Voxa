@@ -41,7 +41,10 @@ function sanitizeAttachment(msg) {
 
   const name = sanitizeText(msg?.attachmentName, MAX_ATTACHMENT_NAME_LENGTH);
   const mime = sanitizeText(msg?.attachmentMime, MAX_ATTACHMENT_MIME_LENGTH);
-  const size = Number(msg?.attachmentSize);
+  // So converter primitivos: objetos JSON podem sobrescrever toString/valueOf
+  // com null e fazer Number(...) lancar, encerrando o servidor.
+  const rawSize = msg?.attachmentSize;
+  const size = typeof rawSize === "number" || typeof rawSize === "string" ? Number(rawSize) : NaN;
   if (!name || !mime || !Number.isFinite(size) || size <= 0 || size > MAX_ATTACHMENT_SIZE_BYTES) {
     return {};
   }
@@ -80,7 +83,7 @@ export function registerHandlers({ io, socket, registry, limiter, token, log }) 
     // Compatibilidade: clientes novos mandam o token no handshake e ja chegam
     // marcados; os antigos so o enviam aqui. Ambos precisam acertar.
     if (token && !socket.data.authed) {
-      if (!safeEqual(String(payload?.token ?? ""), token)) {
+      if (!safeEqual(payload?.token, token)) {
         if (typeof ack === "function") ack({ error: "token-invalido" });
         socket.disconnect(true);
         return;

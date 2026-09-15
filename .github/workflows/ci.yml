@@ -6,7 +6,7 @@ name: ci
 # automatico, a proxima regressao desse tipo so apareceria em producao.
 on:
   push:
-    branches: [main]
+    branches: [main, "codex/**"]
   pull_request:
   workflow_dispatch:
   workflow_call:

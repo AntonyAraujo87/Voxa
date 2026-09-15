@@ -10,7 +10,7 @@ certificação de ausência de falhas nem uma confirmação de implantação.**
    Isso pode manter dois participantes em `connecting`, sem áudio ou vídeo,
    mesmo com microfone e player funcionando. O código aceita credenciais
    temporárias; falta provisionar o relay e validar em redes distintas.
-2. **As correções estão locais.** GitHub latest continua em 0.5.27. O commit do
+2. **As correções estão na branch de auditoria no GitHub.** GitHub latest continua em 0.5.27. O commit do
    Render é 424c70f; seus arquivos de servidor são iguais aos do main e378d82.
    O número antigo decorre do deploy filtrado por `server/`. Nenhuma nova
    publicação do aplicativo foi confirmada nesta auditoria.
@@ -26,6 +26,7 @@ certificação de ausência de falhas nem uma confirmação de implantação.**
 | Organização | Atualizações e atalhos extraídos da sessão; concorrência de atualização controlada | Regressões de sessão |
 | Signaling | Express, rate limit HTTP, reserva de transporte antes do hello, teto por IP/total, IPv6 normalizado | Teste com 10 conexões WebSocket cruas e recusa da 11ª |
 | Handshake | SDP/ICE limitados aos campos necessários; sinais somente entre pares no mesmo canal | Integração Socket.IO local |
+| Entradas malformadas | Objetos JSON no token legado e no tamanho de anexo não causam exceção por coerção | Queda reproduzida localmente e regressão Socket.IO após correção |
 | Banco | Leitura de perfis compartilhados, lock de entrada/mensagens, revogação em futura rotação do hash, índice de histórico | PGlite/PostgreSQL e leitura do catálogo de produção |
 | Reconexão | Retry contínuo com backoff, renovação TURN serializada, cancelamento de resposta antiga | Testes de ICE/TURN e recuperação após oito tentativas |
 | Suspensão | Detecção de pausa, mudança de rede e relógio retrocedendo; liberação do estado de PTT | Testes com relógio e eventos controlados |
@@ -43,14 +44,15 @@ Correções das rodadas anteriores estão detalhadas em `REVISAO-0.5.29.md` e
 `CORRECOES-0.5.29.md`, incluindo lifecycle de mídia, renegociação simultânea,
 PCM/AudioWorklet, URLs assinadas, histórico, atalhos e proteções de release.
 
-Checkpoint salvo no commit local `bf3a9de`, branch `codex/voxa-auditoria-extrema`.
-Envio ao GitHub ficou pendente no gerenciador de credenciais e foi interrompido;
-a consulta remota não encontrou a branch. Nenhum PR foi criado. O controle de
-navegador falhou ao inicializar mesmo após reset nesta retomada.
+Checkpoints bf3a9de/a933630/fb94cd0 enviados ao GitHub após login do usuário em
+15/9, na branch `codex/voxa-auditoria-extrema`. O usuário pediu commit/push após
+cada alteração validada. Nenhum PR foi criado; o controle do navegador ainda
+falha ao inicializar. A correção de entradas malformadas exige rollout do servidor
+para proteger produção; a branch de revisão não altera o serviço publicado.
 
 ## Validação realizada
 
-- 120 testes unitários/integração, 17 regressões de ciclo de vida/chat,
+- 121 testes unitários/integração, 17 regressões de ciclo de vida/chat,
   10 verificações SQL, 7 de revisão, 11 de renovação/retomada e 5 da política
   de captura passaram. Comando consolidado: `npm run verify`.
 - 12 verificações da interface com duas sessões e dispositivos sintéticos:
