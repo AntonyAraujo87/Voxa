@@ -45,17 +45,15 @@ Correções das rodadas anteriores estão detalhadas em `REVISAO-0.5.29.md` e
 `CORRECOES-0.5.29.md`, incluindo lifecycle de mídia, renegociação simultânea,
 PCM/AudioWorklet, URLs assinadas, histórico, atalhos e proteções de release.
 
-Correções até 84cc21a enviadas ao GitHub e integradas na `main`.
-O usuário pediu commit/push após cada alteração validada. Controle do navegador
-restabelecido e checks do commit f7bb18b confirmados com sucesso. Render foi
-implantado manualmente nesse SHA, sem merge na main. Auto-Deploy ficou desligado
-para evitar a substituição pelo código antigo da main. Próximas publicações do
-servidor exigem selecionar explicitamente o SHA validado até reconciliar a main.
+Correções até 738a2e3 enviadas ao GitHub e integradas na `main`; tag v0.5.30
+confere com esse SHA. O usuário pediu commit/push após cada alteração validada.
+Render foi implantado manualmente em 84cc21a; Auto-Deploy continua desligado.
+Alterações posteriores desse intervalo são de empacotamento, testes e documentação.
 
 ## Validação realizada
 
-- 128 testes unitários/integração (última rodada com `npm test`), 17 regressões de ciclo de vida/chat,
-  10 verificações SQL, 7 de revisão, 11 de renovação/retomada e 5 da política
+- 131 testes unitários/integração, 17 regressões de ciclo de vida/chat,
+  12 verificações SQL, 7 de revisão, 11 de renovação/retomada e 5 da política
   de captura passaram. Comando consolidado: `npm run verify`.
 - 12 verificações da interface com duas sessões e dispositivos sintéticos:
   voz RTP bidirecional, vídeo ao assistir, desligamento ao sair, XSS como texto,
@@ -64,7 +62,7 @@ servidor exigem selecionar explicitamente o SHA validado até reconciliar a main
   quadros com sinal. O teste RTC local usou Chrome instalado via VOXA_TEST_BROWSER.
 - TypeScript, Rust fmt e clippy com warnings como erros passaram.
 - Desenvolvimento Tauri compilou e iniciou. A leitura dos recursos PE confirmou
-  dois manifests com identificador 24/1/1033: Common Controls e o manifest Tauri
+  dois manifests com identificador 24/1/1033: Common Controls e um manifest
   com `asInvoker`/`longPathAware`. O GCC 16 instalado acrescenta `default-manifest.o`
   em seus specs; há relato correspondente no WinLibs. A validação de distribuição
   agora recusa esse binário. Correção do toolchain local ainda pendente; não foi
@@ -86,16 +84,15 @@ limpos. Não houve teste de DDoS contra serviços públicos; testes de abuso for
   compartilhada concede acesso ao grupo e apelidos são autodeclarados.
 - **Render:** plano Free, Oregon, health `/health`, root `server`, build
   `npm ci --omit=dev`, start `node index.js`, TRUST_PROXY=1 salvo; ORIGIN e
-  VOXA_TOKEN preservados. Deploy `dep-dako0mad0e5s73a4fltg` confirmado Live,
-  commit f7bb18b, 31,5 s, logs confirmam proteção por token. Sem erros de build
+  VOXA_TOKEN preservados. Deploy `dep-daktnvvf3r2c738lctk0` confirmado Live,
+  commit 84cc21a, 30,2 s, logs confirmam proteção por token. Sem erros de build
   ou inicialização; npm informou zero vulnerabilidades nas dependências instaladas.
-  O provedor selecionou Node 26.8.2 pelo intervalo aberto >=18. Configuração do
-  código agora limitada a 24.x, alinhada ao CI; ainda exige novo deploy para
-  alterar produção. Auto-Deploy desativado pelo deploy por SHA.
+  Node 24.21.0 confirmado em produção, com engines limitado a 24.x e alinhado
+  ao CI. Auto-Deploy desativado pelo deploy por SHA.
   A configuração usa o último IP do X-Forwarded-For somente com peer privado;
   distribuição real das chaves por IP entre redes diferentes não foi medida.
   Não considerar a topologia de múltiplos proxies homologada por este smoke test.
-- **GitHub:** CI publicado #53 aprovado; chave de assinatura e variáveis de
+- **GitHub:** CI 35110443630 e validação da tag 0.5.30 aprovados; chave de assinatura e variáveis de
   signaling/Supabase presentes por nome. Valores não foram expostos. Permissões
   padrão do token somente leitura; Actions não pode aprovar PRs. Regra SHA ativada.
 - **Oracle:** usuário confirmou que não há VM/TURN existente; não há firewall
@@ -122,6 +119,11 @@ manifesto explícito (asInvoker, longPathAware e Common Controls) sem afrouxar
 o gate nem mover a tag existente. Testes de instalação limpa e upgrade NSIS/MSI
 na VM Windows são obrigatórios antes da promoção da release. Ainda pendentes
 nesta entrada. O bucket permanece público até distribuição compatível do cliente.
+Preflight somente leitura em 16/9: zero objetos, duas políticas (SELECT público,
+INSERT na pasta própria); can_read_profile/can_read_room presentes. Preparada
+attachments-private.sql para aplicar somente a parte Storage, sem repetir as
+migrações de identidade/chat. Testes locais passaram com acesso de membro,
+anexo legado e bloqueio anônimo/fora do grupo; não substituem teste da API hospedada.
 
 ## Próximas melhorias de maior impacto
 
@@ -156,6 +158,8 @@ devem aperfeiçoar esses recursos, sem apresentá-los como funcionalidades ausen
   — compatível com o problema reproduzido no desenvolvimento GNU local.
 - [Tauri: ciclo de vida de Update.close](https://v2.tauri.app/reference/javascript/updater/#close)
   — recurso nativo liberado quando a consulta é substituída ou a sessão é encerrada.
+- [Tauri: manifesto Windows explícito](https://docs.rs/tauri-build/latest/tauri_build/struct.WindowsAttributes.html#method.app_manifest)
+  — build.rs inclui o manifesto do Voxa preservando Common Controls.
 
 TLS/WSS protege o transporte da sinalização; não equivale a identidade verificada
 entre participantes. WebRTC cifra a mídia, mas segurança depende também da

@@ -276,6 +276,14 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
 - Validação local da correção: npm run verify passou (131 testes principais,
   17 regressões, 10 SQL, 7 revisão, 11 recuperação, 5 captura). cargo fmt --check
   e cargo check --offline --locked passaram. O XML também foi parseado como XML.
+- Correção enviada à main: 738a2e38f9d5214e5f8e7da1e0f8ef0c4c2de12a, mesmo SHA
+  da tag v0.5.30, ambos conferidos via ls-remote. CI 35110443630 e validação da
+  release 35110484493 passaram; job build 104843187120 em andamento.
+- Preflight read-only do Supabase em 16/9: bucket público, zero objetos/legados,
+  apenas as duas políticas esperadas e funções can_read_profile/can_read_room
+  existentes. Criada attachments-private.sql (somente Storage, com preflight).
+  Teste confere equivalência com audit-3.sql, idempotência, legado e bloqueio
+  de leitura anônima: 12 verificações SQL passaram. Migração ainda não aplicada.
 
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.

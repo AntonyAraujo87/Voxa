@@ -36,6 +36,14 @@ try {
   await db.exec('reset role');
   await db.exec(await readFile('supabase/audit-online.sql','utf8'));
   await db.exec(await readFile('supabase/audit-online.sql','utf8'));
+  // Caminho real de producao: online ja aplicado, depois somente Storage.
+  const storageOnly = await readFile('supabase/attachments-private.sql','utf8');
+  await db.exec(storageOnly);
+  await db.exec(storageOnly);
+  // O arquivo completo de bootstrap deve continuar equivalente ao cutover.
+  const fullAudit = await readFile('supabase/audit-3.sql','utf8');
+  const storageStart = 'create or replace function public.can_read_attachment';
+  assert.equal(storageOnly.slice(storageOnly.indexOf(storageStart)), fullAudit.slice(fullAudit.indexOf(storageStart)));
   await db.exec(await readFile('supabase/audit-3.sql','utf8'));
   await db.exec(await readFile('supabase/audit-3.sql','utf8')); // idempotencia
   checks++;
@@ -46,6 +54,12 @@ try {
   await db.query("insert into storage.objects(bucket_id,name) values('chat-attachments',$1)",[object]);
   await asUser(b);
   assert.equal((await db.query('select * from storage.objects')).rows.length,1); checks++;
+  await db.exec('reset role');
+  await db.query("insert into storage.objects(bucket_id,name) values('chat-attachments',$1)", [`${a}/legacy.png`]);
+  await asUser(b);
+  assert.equal((await db.query('select * from storage.objects')).rows.length,2); checks++;
+  await db.exec('reset role; set role anon');
+  assert.equal((await db.query('select * from storage.objects')).rows.length,0); checks++;
   await asUser(outsider);
   assert.equal((await db.query('select * from public.profiles')).rows.length,0);
   assert.equal((await db.query('select * from storage.objects')).rows.length,0);
