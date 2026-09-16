@@ -251,6 +251,32 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
   não foi iniciado outro deploy pelo painel. Não supor que o push muda o Render:
   Auto-Deploy continua desligado. Sem nova release/instalador/SQL/TURN.
 
+### Continuação em 16/9 — main, Render e gate de release
+
+- Usuário autorizou os itens 2, 3 e 5: atualizar Render, testar instalação/upgrade,
+  integrar main e publicar cliente antes da migração dos anexos. Essa autorização
+  substitui a restrição anterior de não gerar instalador.
+- Main integrada por fast-forward até 84cc21a, enviada e conferida no GitHub.
+  CI da main 35037912946 e da branch 35037864453: success.
+- Render: deploy dep-daktnvvf3r2c738lctk0, SHA 84cc21a, Live em 15/9 às
+  21:00:29 BRT. Node 24.21.0, npm ci --omit=dev. Health 200/{ok:true}, TLS 1.3
+  e handshake WSS conferidos. Auto-Deploy continua desligado; TURN inexistente.
+- Tag v0.5.29 criada. Run 35037954809 passou validações frontend/Rust e gerou
+  pacotes, mas o gate check-native bloqueou a publicação: manifesto continha
+  apenas Common Controls. O padrão de tauri-build 2.6.3 não declara asInvoker
+  nem longPathAware. O teste não foi relaxado; build.rs agora inclui manifesto
+  próprio com essas propriedades e preserva Common Controls.
+- Preparada 0.5.30 sem mover a tag anterior. Três regressões novas cobrem o
+  manifesto incompleto e a política do arquivo versionado. Validação do PE real
+  no runner MSVC e smoke dos instaladores ainda pendentes nesta entrada.
+- check-installer.ps1 roda apenas no runner Windows descartável: instalação,
+  startup WebView2, upgrade da 0.5.27, preservação de boot.json e desinstalação
+  para NSIS/MSI. Esse passo não executou na 0.5.29 devido ao gate anterior.
+- Não houve SQL novo, privacidade do bucket nem teste físico de voz nesta etapa.
+- Validação local da correção: npm run verify passou (131 testes principais,
+  17 regressões, 10 SQL, 7 revisão, 11 recuperação, 5 captura). cargo fmt --check
+  e cargo check --offline --locked passaram. O XML também foi parseado como XML.
+
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.
 Separar resultado automatizado de teste físico com dois PCs e redes distintas.

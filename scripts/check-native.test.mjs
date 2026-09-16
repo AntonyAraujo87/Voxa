@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, unlinkSync, rmdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, unlinkSync, rmdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { embeddedManifests, verifyNative } from './check-native.mjs';
@@ -57,4 +57,17 @@ test('manifest ausente nao passa na validacao', () => {
 });
 test('executavel pedindo administrador nao passa na validacao', () => {
   withExecutable([xml.replace('asInvoker', 'requireAdministrator')], file => assert.throws(() => verifyNative(file), /asInvoker/));
+});
+test('manifest padrao somente Common Controls bloqueia release', () => {
+  withExecutable(['<assembly><dependency>Microsoft.Windows.Common-Controls</dependency></assembly>'],
+    file => assert.throws(() => verifyNative(file), /asInvoker/));
+});
+test('manifest sem suporte a caminhos longos bloqueia release', () => {
+  withExecutable([xml.replace('<longPathAware>true</longPathAware>', '')],
+    file => assert.throws(() => verifyNative(file), /longPathAware/));
+});
+test('manifest versionado preserva controles nativos e satisfaz politica do PE', () => {
+  const manifest = readFileSync(new URL('../src-tauri/windows-app-manifest.xml', import.meta.url), 'utf8');
+  assert.match(manifest, /Microsoft.Windows.Common-Controls/);
+  withExecutable([manifest], file => assert.deepEqual(verifyNative(file), []));
 });

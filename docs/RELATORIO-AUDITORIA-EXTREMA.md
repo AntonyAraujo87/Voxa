@@ -1,6 +1,6 @@
 # Voxa — auditoria e implementação
 
-Atualizado em 15/09/2026. Versão de trabalho: 0.5.29. **Em andamento; não é uma
+Atualizado em 16/09/2026. Versão de trabalho: 0.5.30. **Em andamento; não é uma
 certificação de ausência de falhas. Signaling implantado em 15/9; cliente desktop ainda pendente.**
 
 ## Achados que afetam o uso agora
@@ -11,9 +11,9 @@ certificação de ausência de falhas. Signaling implantado em 15/9; cliente des
    mesmo com microfone e player funcionando. O código aceita credenciais
    temporárias; falta provisionar o relay e validar em redes distintas.
 2. **Signaling corrigido em produção; cliente ainda não distribuído.** Render
-   executa f7bb18b04541e6865b44460b3c7f65e0b8cfde51 desde 15/9 às 14:29 BRT.
-   GitHub latest continua em 0.5.27. As alterações desktop estão na branch
-   `codex/voxa-auditoria-extrema`; nenhum instalador/release novo foi gerado.
+   executa 84cc21ac1b87bd5f1eddd2beeda41ffe53d94eb4 desde 15/9 às 21:00 BRT.
+   GitHub latest continua em 0.5.27. As alterações desktop foram integradas na
+   `main`; os pacotes 0.5.29 foram gerados mas bloqueados antes da publicação.
 3. **Anexos ainda estão em bucket público.** O banco tem RLS e seis salas
    privadas, mas isso não protege URLs públicas dos arquivos. O cliente novo
    resolve URLs assinadas; fechar o bucket exige distribuir esse cliente antes,
@@ -45,7 +45,7 @@ Correções das rodadas anteriores estão detalhadas em `REVISAO-0.5.29.md` e
 `CORRECOES-0.5.29.md`, incluindo lifecycle de mídia, renegociação simultânea,
 PCM/AudioWorklet, URLs assinadas, histórico, atalhos e proteções de release.
 
-Correções até f7bb18b enviadas ao GitHub na branch `codex/voxa-auditoria-extrema`.
+Correções até 84cc21a enviadas ao GitHub e integradas na `main`.
 O usuário pediu commit/push após cada alteração validada. Controle do navegador
 restabelecido e checks do commit f7bb18b confirmados com sucesso. Render foi
 implantado manualmente nesse SHA, sem merge na main. Auto-Deploy ficou desligado
@@ -109,6 +109,19 @@ limpos. Não houve teste de DDoS contra serviços públicos; testes de abuso for
   Verificador corrigido para rejeitar HTTP inesperado, JSON inválido, health
   negativo, corpo excessivo/truncado e prazo excedido, além de falha TLS.
   Cinco testes locais novos passaram; leitura pública repetida passou também.
+
+## Atualização de implantação — 16/9/2026
+
+Main integrada até 84cc21a e CI aprovado. Render recebeu esse SHA em
+dep-daktnvvf3r2c738lctk0, Live desde 15/9 às 21:00:29 BRT, com Node 24.21.0.
+Health HTTPS e handshake WSS passaram. Auto-Deploy segue desligado e não há TURN.
+
+A publicação v0.5.29 foi bloqueada corretamente pelo gate do executável: o
+manifesto padrão do Tauri contém só Common Controls. Preparada a 0.5.30 com
+manifesto explícito (asInvoker, longPathAware e Common Controls) sem afrouxar
+o gate nem mover a tag existente. Testes de instalação limpa e upgrade NSIS/MSI
+na VM Windows são obrigatórios antes da promoção da release. Ainda pendentes
+nesta entrada. O bucket permanece público até distribuição compatível do cliente.
 
 ## Próximas melhorias de maior impacto
 
