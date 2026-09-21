@@ -1,7 +1,7 @@
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import assert from 'node:assert/strict';
 
@@ -11,6 +11,12 @@ globalThis.document = { hidden: false };
 globalThis.window = { setTimeout, clearTimeout, addEventListener() {} };
 const { useApp, Peer, Signaling, SignalingRequestError, historyCursor } = createRequire(import.meta.url)(resolve('work/review-regression-subject.cjs'));
 let checks = 0;
+const installerGate = await readFile('scripts/check-installer.ps1', 'utf8');
+assert.doesNotMatch(installerGate, /\$builtExe|igual ao build/,
+  'Nao comparar PE de NSIS com target posteriormente remendado para MSI');
+assert.match(installerGate, /ProductVersion/);
+assert.match(installerGate, /Check-Installed -ExpectedHash \$nsisHash/);
+assert.match(installerGate, /Check-Installed -ExpectedHash \$msiHash/); checks++;
 const msg = { id: 'one', channelId: 'geral', authorId: 'me', authorName: 'Alice', authorColor: '#fff', content: 'mensagem', createdAt: '2026-09-09T00:00:00.000Z' };
 useApp.setState({ messages: {}, activeText: 'geral', me: { id: 'me', name: 'Alice', color: '#fff' }, unread: {}, mentions: {} });
 useApp.getState().pushMessage({ ...msg, pending: true, failed: false });

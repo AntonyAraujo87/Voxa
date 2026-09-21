@@ -1,6 +1,6 @@
 # Voxa — auditoria e implementação
 
-Atualizado em 16/09/2026. Versão de trabalho: 0.5.30. **Em andamento; não é uma
+Atualizado em 21/09/2026. Versão de trabalho: 0.5.31. **Em andamento; não é uma
 certificação de ausência de falhas. Signaling implantado em 15/9; cliente desktop ainda pendente.**
 
 ## Achados que afetam o uso agora
@@ -53,7 +53,7 @@ Alterações posteriores desse intervalo são de empacotamento, testes e documen
 ## Validação realizada
 
 - 131 testes unitários/integração, 17 regressões de ciclo de vida/chat,
-  12 verificações SQL, 7 de revisão, 11 de renovação/retomada e 5 da política
+  12 verificações SQL, 8 de revisão, 11 de renovação/retomada e 5 da política
   de captura passaram. Comando consolidado: `npm run verify`.
 - 12 verificações da interface com duas sessões e dispositivos sintéticos:
   voz RTP bidirecional, vídeo ao assistir, desligamento ao sair, XSS como texto,
@@ -119,6 +119,10 @@ manifesto explícito (asInvoker, longPathAware e Common Controls) sem afrouxar
 o gate nem mover a tag existente. Testes de instalação limpa e upgrade NSIS/MSI
 na VM Windows são obrigatórios antes da promoção da release. Ainda pendentes
 nesta entrada. O bucket permanece público até distribuição compatível do cliente.
+O smoke da 0.5.30 encontrou um falso negativo no SHA: Tauri remenda o PE com o
+tipo de bundle, portanto a variante instalada pelo NSIS difere da cópia depois
+remendada para MSI. O gate passou a comparar instalações repetidas do mesmo
+pacote e mantém as verificações de versão, manifesto, dependências e WebView2.
 Preflight somente leitura em 16/9: zero objetos, duas políticas (SELECT público,
 INSERT na pasta própria); can_read_profile/can_read_room presentes. Preparada
 attachments-private.sql para aplicar somente a parte Storage, sem repetir as

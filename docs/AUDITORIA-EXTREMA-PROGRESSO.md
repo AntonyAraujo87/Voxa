@@ -274,7 +274,7 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
   para NSIS/MSI. Esse passo não executou na 0.5.29 devido ao gate anterior.
 - Não houve SQL novo, privacidade do bucket nem teste físico de voz nesta etapa.
 - Validação local da correção: npm run verify passou (131 testes principais,
-  17 regressões, 10 SQL, 7 revisão, 11 recuperação, 5 captura). cargo fmt --check
+  17 regressões, 12 SQL, 8 revisão, 11 recuperação, 5 captura). cargo fmt --check
   e cargo check --offline --locked passaram. O XML também foi parseado como XML.
 - Correção enviada à main: 738a2e38f9d5214e5f8e7da1e0f8ef0c4c2de12a, mesmo SHA
   da tag v0.5.30, ambos conferidos via ls-remote. CI 35110443630 e validação da
@@ -284,6 +284,18 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
   existentes. Criada attachments-private.sql (somente Storage, com preflight).
   Teste confere equivalência com audit-3.sql, idempotência, legado e bloqueio
   de leitura anônima: 12 verificações SQL passaram. Migração ainda não aplicada.
+
+### Falha do smoke 0.5.30 e correção
+
+- O log integral do job 104843187120 confirmou: build, upload do draft e
+  check-native passaram. O NSIS instalou; o gate falhou somente ao comparar o
+  executável instalado com target/release/voxa.exe.
+- Essa comparação era inválida: o bundler Tauri remenda o PE com o tipo do
+  pacote antes de cada bundle. O arquivo final de target estava na variante MSI,
+  enquanto o NSIS continha a variante NSIS do mesmo código.
+- O gate agora exige versão exata, manifesto/dependências válidos, startup com
+  WebView2 e SHA-256 idêntico entre duas instalações do mesmo NSIS ou MSI.
+  Mantém a detecção de pacote inconsistente sem comparar variantes legítimas.
 
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.
