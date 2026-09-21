@@ -296,6 +296,10 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
 - O gate agora exige versão exata, manifesto/dependências válidos, startup com
   WebView2 e SHA-256 idêntico entre duas instalações do mesmo NSIS ou MSI.
   Mantém a detecção de pacote inconsistente sem comparar variantes legítimas.
+- Run 35617897233 da 0.5.31: validação, build, check-native e smoke completo dos
+  instaladores passaram. A etapa final falhou porque /releases/tags/v0.5.31
+  devolveu 404 para o draft criado no mesmo job. A 0.5.32 passa a localizar o
+  draft pela listagem autenticada, validando unicidade, assets e ordem semântica.
 
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.

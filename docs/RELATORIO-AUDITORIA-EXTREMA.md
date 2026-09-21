@@ -1,6 +1,6 @@
 # Voxa — auditoria e implementação
 
-Atualizado em 21/09/2026. Versão de trabalho: 0.5.31. **Em andamento; não é uma
+Atualizado em 21/09/2026. Versão de trabalho: 0.5.32. **Em andamento; não é uma
 certificação de ausência de falhas. Signaling implantado em 15/9; cliente desktop ainda pendente.**
 
 ## Achados que afetam o uso agora
@@ -123,6 +123,9 @@ O smoke da 0.5.30 encontrou um falso negativo no SHA: Tauri remenda o PE com o
 tipo de bundle, portanto a variante instalada pelo NSIS difere da cópia depois
 remendada para MSI. O gate passou a comparar instalações repetidas do mesmo
 pacote e mantém as verificações de versão, manifesto, dependências e WebView2.
+O smoke completo da 0.5.31 passou; a promoção falhou porque o endpoint por tag
+retornou 404 para o draft. A promoção agora encontra a tag na listagem autenticada
+de releases, que inclui drafts, e recusa ausência ou duplicidade antes do PATCH.
 Preflight somente leitura em 16/9: zero objetos, duas políticas (SELECT público,
 INSERT na pasta própria); can_read_profile/can_read_room presentes. Preparada
 attachments-private.sql para aplicar somente a parte Storage, sem repetir as
