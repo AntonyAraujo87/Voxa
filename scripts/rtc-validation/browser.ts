@@ -136,7 +136,15 @@ async function testCase(bothInitiate: boolean, iteration: number) {
     await waitFor(stable, `${stage}: stable/connected`);
     await waitFor(async () => {
       const s = await snapshot();
-      return ['a', 'b'].every(side => s[side].audioOut > (previous?.[side].audioOut ?? 0) + 100 && s[side].audioIn > (previous?.[side].audioIn ?? 0) + 100 && s[side].videoIn > (previous?.[side].videoIn ?? 0) + 100);
+      return ['a', 'b'].every(side => {
+        const audioMids = [s[side].sections[0]?.mid, s[side].sections[2]?.mid];
+        const audioReady = audioMids.every(mid => ['inbound-rtp', 'outbound-rtp'].every(type => {
+          const current = s[side].rtp.find((r: any) => r.kind === 'audio' && r.mid === mid && r.type === type)?.bytes ?? 0;
+          const before = previous?.[side].rtp.find((r: any) => r.kind === 'audio' && r.mid === mid && r.type === type)?.bytes ?? 0;
+          return current > before + 100;
+        }));
+        return audioReady && s[side].videoIn > (previous?.[side].videoIn ?? 0) + 100;
+      });
     }, `${stage}: bidirectional audio/video RTP`);
     const s = await snapshot();
     for (const side of ['a', 'b']) {

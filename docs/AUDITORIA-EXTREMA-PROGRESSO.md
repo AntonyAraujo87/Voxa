@@ -300,6 +300,10 @@ O usuário fará logins manualmente quando necessários. Nunca publicar segredos
   instaladores passaram. A etapa final falhou porque /releases/tags/v0.5.31
   devolveu 404 para o draft criado no mesmo job. A 0.5.32 passa a localizar o
   draft pela listagem autenticada, validando unicidade, assets e ordem semântica.
+- A primeira 0.5.32 foi bloqueada pelo RTC sintético: na primeira de duas
+  repetições, a soma dos dois fluxos de áudio superou o limiar antes de um deles
+  enviar 100 bytes; a segunda repetição passou. O wait agora exige progresso
+  individual de mic e áudio de tela, nos dois sentidos, antes das asserções.
 
 Ler este arquivo e o diff atual; não reiniciar as auditorias anteriores do zero.
 Registrar reprodução, correção e teste antes de declarar uma falha resolvida.

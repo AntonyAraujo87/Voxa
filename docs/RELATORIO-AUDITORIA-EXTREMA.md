@@ -1,6 +1,6 @@
 # Voxa — auditoria e implementação
 
-Atualizado em 21/09/2026. Versão de trabalho: 0.5.32. **Em andamento; não é uma
+Atualizado em 21/09/2026. Versão de trabalho: 0.5.33. **Em andamento; não é uma
 certificação de ausência de falhas. Signaling implantado em 15/9; cliente desktop ainda pendente.**
 
 ## Achados que afetam o uso agora
