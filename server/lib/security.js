@@ -104,66 +104,12 @@ export class RateLimiter {
   }
 }
 
-/* ------------------------------ sanitizacao ------------------------------- */
-
-// Faixas removidas do texto, descritas por code point para que nenhum editor
-// ou normalizacao de arquivo consiga corrompe-las silenciosamente:
-//   0000-0008, 000B-001F, 007F  controle (quebra de linha e tab ficam)
-//   00AD                        soft hyphen invisivel
-//   200B-200F, 2060-2064, FEFF  zero-width e joiners
-//   202A-202E                   marcas bidirecionais
-// As bidi sao as mais traicoeiras: invertem visualmente a ordem do texto e
-// permitem forjar uma mensagem que aparenta ter sido escrita por outra pessoa.
-const FAIXAS_PROIBIDAS = [
-  [0x0000, 0x0008],
-  [0x000b, 0x001f],
-  [0x007f, 0x007f],
-  [0x00ad, 0x00ad],
-  [0x200b, 0x200f],
-  [0x202a, 0x202e],
-  [0x2060, 0x2064],
-  [0xfeff, 0xfeff],
-];
-
-let cacheRegex = null;
-function PERIGOSOS() {
-  if (!cacheRegex) {
-    const classe = FAIXAS_PROIBIDAS.map(([ini, fim]) =>
-      ini === fim
-        ? String.fromCharCode(ini)
-        : String.fromCharCode(ini) + "-" + String.fromCharCode(fim)
-    ).join("");
-    cacheRegex = new RegExp("[" + classe + "]", "g");
-  }
-  return cacheRegex;
-}
-
-export function sanitizeText(value, maxLength) {
-  if (typeof value !== "string") return "";
-  return value
-    .normalize("NFC")
-    .replace(PERIGOSOS(), "")
-    .replace(/\r\n?/g, "\n")
-    // Muros de linhas vazias empurram o historico dos outros para fora da tela.
-    .replace(/\n{4,}/g, "\n\n\n")
-    .trim()
-    .slice(0, maxLength);
-}
-
-export function sanitizeName(value, fallback = "anon") {
-  const limpo = sanitizeText(value, 32).replace(/\s+/g, " ");
-  return limpo.length >= 2 ? limpo : fallback;
-}
-
-/** Aceita apenas cores no formato #rgb / #rrggbb. */
-export function sanitizeColor(value, fallback = "#5865F2") {
-  return typeof value === "string" && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value) ? value : fallback;
-}
-
 /** Ids de canal e de usuario: alfanumerico, hifen, underscore e ponto. */
 export function sanitizeId(value, maxLength = 64) {
   if (typeof value !== "string") return "";
-  return value.replace(/[^a-zA-Z0-9._:-]/g, "").slice(0, maxLength);
+  return value.length > 0 && value.length <= maxLength && /^[a-zA-Z0-9._:-]+$/.test(value)
+    ? value
+    : "";
 }
 
 /**

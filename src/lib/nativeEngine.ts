@@ -18,7 +18,6 @@ export class NativeEngine {
   prepare(role: StreamRole) { return invoke<PreparedEndpoint>("engine_prepare", { role }); }
   connectPeer(endpoint: string, sessionKey: string, peerId: string) { return invoke<void>("engine_connect_peer", { endpoint, sessionKey, peerId }); }
   disconnectPeer() { return invoke<void>("engine_disconnect_peer"); }
-  openRenderer() { return invoke<void>("engine_open_renderer"); }
   status() { return invoke<EngineStatus>("engine_status"); }
   async stop() { this.matchmaking?.close(); this.matchmaking = null; await invoke("engine_stop"); }
 }

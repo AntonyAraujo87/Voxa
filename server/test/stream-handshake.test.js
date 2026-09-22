@@ -18,11 +18,11 @@ test("real signaling pairs host and viewer without relaying media", {timeout:15_
   const sockets=[];
   try {
     await waitHealth(url);
-    const connect=(id)=>new Promise((resolve,reject)=>{const socket=io(url,{transports:["websocket"],auth:{token:"test-room"}});sockets.push(socket);socket.once("connect",async()=>{try{assert.equal((await emit(socket,"hello",{deviceId:id})).ok,true);resolve(socket);}catch(error){reject(error);}});socket.once("connect_error",reject);});
-    const attacker=await connect("attacker-device");
+    const connect=()=>new Promise((resolve,reject)=>{const socket=io(url,{transports:["websocket"],auth:{token:"test-room"}});sockets.push(socket);socket.once("connect",async()=>{try{assert.equal((await emit(socket,"hello",{})).ok,true);resolve(socket);}catch(error){reject(error);}});socket.once("connect_error",reject);});
+    const attacker=await connect();
     const reflected=await emit(attacker,"stream:join",{room:"attack",role:"host",endpoint:"203.0.113.55:41000",localEndpoint:"192.168.1.50:41000"});
     assert.match(reflected.error,/corresponde/);
-    const host=await connect("host-device"); const viewer=await connect("viewer-device");
+    const host=await connect(); const viewer=await connect();
     assert.equal((await emit(host,"stream:join",{room:"race",role:"host",endpoint:"127.0.0.1:41000",localEndpoint:"192.168.1.10:41000"})).ok,true);
     const hostAnnouncement=new Promise(resolve=>host.once("stream:peer",resolve));
     const joined=await emit(viewer,"stream:join",{room:"race",role:"viewer",endpoint:"127.0.0.1:42000",localEndpoint:"192.168.1.20:42000"});

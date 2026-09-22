@@ -140,4 +140,7 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 // Uma excecao nao tratada encerra o processo para o supervisor reinicia-lo em
 // estado limpo. Registramos somente o tipo para evitar dados sensiveis.
 process.on("uncaughtException", (err) => { log.warn("excecao nao tratada:", err?.name); process.exit(1); });
-process.on("unhandledRejection", (err) => log.warn("promessa rejeitada:", err?.name));
+process.on("unhandledRejection", (err) => {
+  log.warn("promessa rejeitada:", err?.name);
+  process.exit(1);
+});

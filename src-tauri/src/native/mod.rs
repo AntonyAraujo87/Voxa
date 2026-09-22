@@ -271,17 +271,6 @@ pub fn engine_status(engine: State<'_, NativeEngine>) -> Result<EngineStatus, St
 }
 
 #[tauri::command]
-pub async fn engine_open_renderer(
-    app: AppHandle,
-    engine: State<'_, NativeEngine>,
-) -> Result<(), String> {
-    renderer::open(&app)?;
-    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
-    inner.status.renderer = "native-window";
-    Ok(())
-}
-
-#[tauri::command]
 pub fn minimize_main(app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.minimize();
@@ -292,6 +281,7 @@ pub fn minimize_main(app: AppHandle) {
 pub fn hide_main(app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
+        crate::lifecycle::release_memory();
     }
 }
 

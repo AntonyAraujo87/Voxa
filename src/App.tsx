@@ -6,14 +6,6 @@ import { Matchmaking, type PeerAnnouncement } from "./lib/signaling";
 const DEFAULT_SIGNALING =
   (import.meta.env.VITE_SIGNALING_URL as string | undefined) ?? "http://localhost:3001";
 
-function initialIdentity() {
-  const stored = localStorage.getItem("voxa-device-id");
-  if (stored) return stored;
-  const id = crypto.randomUUID();
-  localStorage.setItem("voxa-device-id", id);
-  return id;
-}
-
 const emptyStatus: EngineStatus = {
   phase: "idle", role: null, localEndpoint: null, publicEndpoint: null,
   peerEndpoint: null, rttMs: 0, lossPct: 0, bitrateKbps: 0,
@@ -31,6 +23,7 @@ export default function App() {
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
   const [message, setMessage] = useState("Pronto para conectar");
   const [busy, setBusy] = useState(false);
+  const roomValid = /^[a-zA-Z0-9._:-]{1,64}$/.test(room);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -41,7 +34,7 @@ export default function App() {
 
   async function connect(event: FormEvent) {
     event.preventDefault();
-    if (!room.trim() || busy) return;
+    if (!roomValid || busy) return;
     setBusy(true);
     setMessage("Abrindo o socket UDP nativo...");
     let matchmaking: Matchmaking | null = null;
@@ -49,7 +42,7 @@ export default function App() {
       localStorage.setItem("voxa-room", room.trim());
       const endpoint = await engine.prepare(role);
       matchmaking = new Matchmaking(serverUrl, {
-        id: initialIdentity(), token,
+        token,
         onPeer: async (peer: PeerAnnouncement) => {
           setMessage("Perfurando o NAT e autenticando o par...");
           await engine.connectPeer(peer.endpoint, peer.sessionKey, peer.peerId);
@@ -105,7 +98,7 @@ export default function App() {
               <strong>Conectar</strong><span>Assistir outro PC</span>
             </button>
           </div>
-          <label>Sala<input value={room} onChange={(event) => setRoom(event.target.value)} maxLength={64} placeholder="ex.: sala-do-jogo" disabled={active} /></label>
+          <label>Sala<input value={room} onChange={(event) => setRoom(event.target.value)} maxLength={64} pattern="[a-zA-Z0-9._:-]+" title="Use letras, números, ponto, dois-pontos, hífen ou sublinhado" placeholder="ex.: sala-do-jogo" disabled={active} /></label>
           <label>Senha da sala<input value={token} onChange={(event) => setToken(event.target.value)} type="password" maxLength={256} placeholder="Obrigatória no servidor público" disabled={active} /></label>
           <details>
             <summary>Servidor de matchmaking</summary>
@@ -113,7 +106,7 @@ export default function App() {
           </details>
           {active
             ? <button className="primary danger" type="button" onClick={stop} disabled={busy}>Encerrar</button>
-            : <button className="primary" type="submit" disabled={busy || !room.trim()}>{busy ? "Conectando..." : role === "host" ? "Começar transmissão" : "Conectar ao host"}</button>}
+            : <button className="primary" type="submit" disabled={busy || !roomValid}>{busy ? "Conectando..." : role === "host" ? "Começar transmissão" : "Conectar ao host"}</button>}
         </form>
       </section>
       <section className="telemetry" aria-live="polite">

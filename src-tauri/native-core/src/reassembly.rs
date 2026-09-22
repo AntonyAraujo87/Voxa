@@ -2,7 +2,8 @@ use std::{
     collections::HashMap,
     time::{Duration, Instant},
 };
-const FRAME_DEADLINE: Duration = Duration::from_millis(85);
+const DELTA_DEADLINE: Duration = Duration::from_millis(250);
+const KEYFRAME_DEADLINE: Duration = Duration::from_millis(1500);
 const MAX_PENDING_FRAMES: usize = 3;
 
 struct PendingFrame {
@@ -83,8 +84,14 @@ impl Reassembler {
     }
     pub fn expire(&mut self) -> usize {
         let before = self.pending.len();
-        self.pending
-            .retain(|_, frame| frame.created.elapsed() <= FRAME_DEADLINE);
+        self.pending.retain(|_, frame| {
+            let deadline = if frame.keyframe {
+                KEYFRAME_DEADLINE
+            } else {
+                DELTA_DEADLINE
+            };
+            frame.created.elapsed() <= deadline
+        });
         before - self.pending.len()
     }
 }
@@ -107,5 +114,10 @@ mod tests {
             assert!(r.push(id, 0, 2, false, 0, b"x").unwrap().is_none());
         }
         assert!(r.push(4, 0, 2, false, 0, b"x").is_err());
+    }
+    #[test]
+    fn keyframes_get_enough_time_for_udp_pacing() {
+        assert!(KEYFRAME_DEADLINE > DELTA_DEADLINE);
+        assert!(KEYFRAME_DEADLINE >= Duration::from_secs(1));
     }
 }

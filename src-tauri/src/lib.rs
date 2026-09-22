@@ -29,7 +29,6 @@ pub fn run() {
             native::engine_disconnect_peer,
             native::engine_stop,
             native::engine_status,
-            native::engine_open_renderer,
             native::minimize_main,
             native::hide_main,
             diagnostico::read_panic_log,

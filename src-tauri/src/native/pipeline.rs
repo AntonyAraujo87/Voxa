@@ -103,7 +103,9 @@ fn run_device_session(
             continue;
         };
         let requested = transport.target_bitrate();
-        if transport.take_keyframe_request() || requested < bitrate.saturating_mul(4) / 5 {
+        let bitrate_changed =
+            requested < bitrate.saturating_mul(4) / 5 || requested > bitrate.saturating_mul(5) / 4;
+        if transport.take_keyframe_request() || bitrate_changed {
             bitrate = requested;
             encoder =
                 HardwareH264Encoder::open(&capture.device, desc.Width, desc.Height, FPS, bitrate)?;

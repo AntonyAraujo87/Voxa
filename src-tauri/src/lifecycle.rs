@@ -140,6 +140,6 @@ pub fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
         }
         api.prevent_close();
         let _ = window.hide();
-        // O stream pode continuar ativo; o motor nativo controla sua memoria.
+        release_memory();
     }
 }

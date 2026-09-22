@@ -8,7 +8,8 @@
 - STUN IPv4 e reutilização do mesmo socket para hole punching.
 - Cabeçalho binário versionado, MTU de 1200 bytes e ChaCha20-Poly1305.
 - Chaves derivadas por direção, `stream_id` aleatório e janela antirreplay.
-- Reagrupamento fora de ordem, limite de 24 MiB/frame e prazo de 85 ms.
+- Reagrupamento fora de ordem, limite de aproximadamente 4,4 MiB/frame e prazos
+  de 250 ms para frames delta e 1,5 s para keyframes.
 - Descarte sem retransmissão, pedido de IDR limitado a quatro por segundo.
 - AIMD de bitrate entre 0,8 e 35 Mbps com resposta a perda e RTT.
 - DXGI Desktop Duplication devolvendo textura D3D11 sem leitura pela CPU.

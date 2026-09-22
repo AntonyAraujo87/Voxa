@@ -9,7 +9,6 @@ export interface PeerAnnouncement {
 }
 
 interface Options {
-  id: string;
   token: string;
   onPeer: (peer: PeerAnnouncement) => void | Promise<void>;
   onPeerLeft: () => void;
@@ -49,7 +48,7 @@ export class Matchmaking {
   }
 
   private async performJoin({ room, role, endpoint }: { room: string; role: StreamRole; endpoint: PreparedEndpoint }) {
-    await this.emit("hello", { deviceId: this.options.id, token: this.options.token });
+    await this.emit("hello", { token: this.options.token });
     const response = await this.emit("stream:join", {
       room,
       role,

@@ -20,8 +20,7 @@ export function registerHandlers({ io, socket, registry, limiter, token }) {
     if (!guard("hello")) return ack?.({ error: "Muitas tentativas" });
     if (identified()) return ack?.({ ok: true });
     if (token && !socket.data.authed && !safeEqual(payload?.token, token)) { ack?.({ error: "Senha inválida" }); return socket.disconnect(true); }
-    const deviceId = sanitizeId(payload?.deviceId, 64); if (!deviceId) return ack?.({ error: "Identidade inválida" });
-    clearTimeout(timer); registry.identify(socket.id, deviceId, socket.data.ip); ack?.({ ok: true });
+    clearTimeout(timer); registry.identify(socket.id, socket.data.ip); ack?.({ ok: true });
   });
   socket.on("stream:join", (payload = {}, ack) => {
     if (!identified()) return ack?.({ error: "nao-identificado" });

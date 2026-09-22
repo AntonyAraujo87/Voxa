@@ -172,6 +172,21 @@ pub async fn spawn_receiver(
         let mut last_feedback = Instant::now();
         let mut last_keyframe_request = Instant::now() - Duration::from_secs(1);
         while !recv_stop.load(Ordering::Acquire) {
+            let expired = frames.expire();
+            if expired > 0 {
+                if let Ok(mut inner) = recv_state.lock() {
+                    inner.status.dropped_frames += expired as u64;
+                }
+                request_keyframe(
+                    &recv_socket,
+                    &send_key,
+                    &recv_sequence,
+                    stream_id,
+                    &recv_state,
+                    &mut last_keyframe_request,
+                )
+                .await;
+            }
             match time::timeout(Duration::from_millis(20), recv_socket.recv(&mut buffer)).await {
                 Ok(Ok(len)) => {
                     if let Ok(packet) = protocol::open(&receive_key, &buffer[..len]) {
@@ -290,23 +305,7 @@ pub async fn spawn_receiver(
                     }
                 }
                 Ok(Err(_)) => break,
-                Err(_) => {
-                    let expired = frames.expire();
-                    if expired > 0 {
-                        if let Ok(mut inner) = recv_state.lock() {
-                            inner.status.dropped_frames += expired as u64;
-                        }
-                        request_keyframe(
-                            &recv_socket,
-                            &send_key,
-                            &recv_sequence,
-                            stream_id,
-                            &recv_state,
-                            &mut last_keyframe_request,
-                        )
-                        .await;
-                    }
-                }
+                Err(_) => {}
             }
         }
     });

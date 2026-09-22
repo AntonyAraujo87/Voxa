@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 export class StreamRegistry {
   #clients = new Map();
   #rooms = new Map();
-  identify(socketId, deviceId, ip) { this.#clients.set(socketId, { socketId, deviceId, ip, room: null, role: null, endpoint: null, localEndpoint: null }); }
+  identify(socketId, ip) { this.#clients.set(socketId, { socketId, ip, room: null, role: null, endpoint: null, localEndpoint: null }); }
   get(socketId) { return this.#clients.get(socketId); }
   join(socketId, roomId, role, endpoint, localEndpoint) {
     const client = this.#clients.get(socketId); if (!client) return { error: "nao-identificado" };

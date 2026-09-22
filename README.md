@@ -16,7 +16,8 @@ Painel Tauri ──WSS──> matchmaking Node/Render
 ```
 
 O protocolo usa datagramas de até 1200 bytes, ChaCha20-Poly1305, chaves distintas
-por direção, contador antirreplay, reagrupamento fora de ordem e prazo de 85 ms.
+por direção, contador antirreplay e reagrupamento fora de ordem. Frames delta
+incompletos expiram em 250 ms; keyframes recebem até 1,5 s por serem maiores.
 Frames atrasados ou incompletos são descartados e geram pedido de keyframe, sem
 retransmissão. O bitrate cai rápido com perda/RTT e sobe gradualmente.
 
