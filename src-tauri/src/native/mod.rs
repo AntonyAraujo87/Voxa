@@ -2,7 +2,19 @@ mod transport;
 
 #[cfg(target_os = "windows")]
 pub mod capture;
+#[cfg(target_os = "windows")]
+pub mod converter;
+#[cfg(target_os = "windows")]
+pub mod decoder;
+#[cfg(target_os = "windows")]
+pub mod encoder;
+#[cfg(target_os = "windows")]
+pub mod pipeline;
+#[cfg(target_os = "windows")]
+pub mod presenter;
 pub mod renderer;
+#[cfg(target_os = "windows")]
+pub mod viewer;
 
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -35,6 +47,8 @@ pub struct EngineStatus {
     renderer: &'static str,
     capture: &'static str,
     encoder: &'static str,
+    decoder: &'static str,
+    decoded_frames: u64,
 }
 
 impl Default for EngineStatus {
@@ -54,6 +68,8 @@ impl Default for EngineStatus {
             renderer: "closed",
             capture: "idle",
             encoder: "idle",
+            decoder: "idle",
+            decoded_frames: 0,
         }
     }
 }
@@ -78,10 +94,11 @@ pub struct NativeEngine {
 
 #[tauri::command]
 pub async fn engine_prepare(
+    app: AppHandle,
     role: StreamRole,
     engine: State<'_, NativeEngine>,
 ) -> Result<PreparedEndpoint, String> {
-    engine_stop(engine.clone()).await?;
+    engine_stop(app, engine.clone()).await?;
     {
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
         inner.status.phase = "binding";
@@ -101,20 +118,25 @@ pub async fn engine_prepare(
         .map_err(|error| format!("Não foi possível descobrir a rota UDP pública: {error}"))?
         .to_string();
     #[cfg(target_os = "windows")]
-    let capture_state = if role == StreamRole::Host {
-        if capture::probe().is_ok() {
+    let (capture_state, encoder_state) = if role == StreamRole::Host {
+        let capture_state = if capture::probe().is_ok() {
             "dxgi-ready"
         } else {
             "dxgi-unavailable"
-        }
+        };
+        let encoder_state = match encoder::hardware_h264_encoder_count() {
+            Ok(count) if count > 0 => "hardware-detected",
+            _ => "hardware-unavailable",
+        };
+        (capture_state, encoder_state)
     } else {
-        "disabled"
+        ("disabled", "decoder-pending")
     };
     #[cfg(not(target_os = "windows"))]
-    let capture_state = if role == StreamRole::Host {
-        "unsupported-os"
+    let (capture_state, encoder_state) = if role == StreamRole::Host {
+        ("unsupported-os", "hardware-unavailable")
     } else {
-        "disabled"
+        ("disabled", "decoder-pending")
     };
     let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
     inner.socket = Some(socket);
@@ -122,11 +144,7 @@ pub async fn engine_prepare(
     inner.status.local_endpoint = Some(local.clone());
     inner.status.public_endpoint = Some(public.clone());
     inner.status.capture = capture_state;
-    inner.status.encoder = if role == StreamRole::Host {
-        "hardware-pending"
-    } else {
-        "decoder-pending"
-    };
+    inner.status.encoder = encoder_state;
     Ok(PreparedEndpoint {
         local,
         public: Some(public),
@@ -135,6 +153,7 @@ pub async fn engine_prepare(
 
 #[tauri::command]
 pub async fn engine_connect_peer(
+    app: AppHandle,
     endpoint: String,
     session_key: String,
     peer_id: String,
@@ -155,32 +174,60 @@ pub async fn engine_connect_peer(
         previous.stop();
     }
     let key = protocol::session_key(&session_key)?;
-    let control = match spawn_receiver(socket, peer, key, role, peer_id, engine.inner.clone()).await
-    {
-        Ok(control) => control,
-        Err(error) => {
-            if let Ok(mut inner) = engine.inner.lock() {
-                inner.status.phase = "failed";
+    let mut control =
+        match spawn_receiver(socket, peer, key, role, peer_id, engine.inner.clone()).await {
+            Ok(control) => control,
+            Err(error) => {
+                if let Ok(mut inner) = engine.inner.lock() {
+                    inner.status.phase = "failed";
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-    };
+        };
+    if let Ok(mut inner) = engine.inner.lock() {
+        inner.status.phase = "connected";
+    }
+    #[cfg(target_os = "windows")]
+    if role == StreamRole::Host {
+        let pipeline = pipeline::spawn(control.handle(), engine.inner.clone());
+        control.attach_native_thread(pipeline);
+    } else {
+        let hwnd = match renderer::open(&app).and_then(|_| renderer::hwnd(&app)) {
+            Ok(hwnd) => hwnd.0 as isize,
+            Err(error) => {
+                control.stop();
+                if let Ok(mut inner) = engine.inner.lock() {
+                    inner.status.phase = "failed";
+                }
+                return Err(error);
+            }
+        };
+        let pipeline = viewer::spawn(control.handle(), engine.inner.clone(), hwnd);
+        control.attach_native_thread(pipeline);
+    }
     let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
     inner.transport = Some(control);
-    inner.status.phase = if role == StreamRole::Host {
-        "streaming"
-    } else {
-        "connected"
-    };
     Ok(())
 }
 
 #[tauri::command]
-pub async fn engine_disconnect_peer(engine: State<'_, NativeEngine>) -> Result<(), String> {
-    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
-    if let Some(control) = inner.transport.take() {
+pub async fn engine_disconnect_peer(
+    app: AppHandle,
+    engine: State<'_, NativeEngine>,
+) -> Result<(), String> {
+    let control = engine
+        .inner
+        .lock()
+        .map_err(|_| "Estado indisponível")?
+        .transport
+        .take();
+    if let Some(control) = control {
         control.stop();
     }
+    if let Some(window) = app.get_window("stream") {
+        let _ = window.hide();
+    }
+    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
     inner.status.peer_endpoint = None;
     inner.status.phase = if inner.socket.is_some() {
         "waiting"
@@ -191,11 +238,20 @@ pub async fn engine_disconnect_peer(engine: State<'_, NativeEngine>) -> Result<(
 }
 
 #[tauri::command]
-pub async fn engine_stop(engine: State<'_, NativeEngine>) -> Result<(), String> {
-    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
-    if let Some(control) = inner.transport.take() {
+pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Result<(), String> {
+    let control = engine
+        .inner
+        .lock()
+        .map_err(|_| "Estado indisponível")?
+        .transport
+        .take();
+    if let Some(control) = control {
         control.stop();
     }
+    if let Some(window) = app.get_window("stream") {
+        let _ = window.hide();
+    }
+    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
     inner.socket = None;
     inner.status = EngineStatus {
         phase: "stopped",

@@ -3,18 +3,19 @@ use std::{
     time::{Duration, Instant},
 };
 const FRAME_DEADLINE: Duration = Duration::from_millis(85);
-const MAX_FRAGMENTS: usize = 4096;
-const MAX_FRAME_BYTES: usize = 24 * 1024 * 1024;
+const MAX_PENDING_FRAMES: usize = 3;
 
 struct PendingFrame {
     created: Instant,
     keyframe: bool,
+    timestamp_us: u64,
     parts: Vec<Option<Vec<u8>>>,
     bytes: usize,
 }
 pub struct CompleteFrame {
     pub id: u64,
     pub keyframe: bool,
+    pub timestamp_us: u64,
     pub bytes: Vec<u8>,
 }
 #[derive(Default)]
@@ -29,12 +30,16 @@ impl Reassembler {
         index: u16,
         count: u16,
         keyframe: bool,
+        timestamp_us: u64,
         data: &[u8],
     ) -> Result<Option<CompleteFrame>, String> {
         let count = count as usize;
         let index = index as usize;
-        if count == 0 || count > MAX_FRAGMENTS || index >= count {
+        if count == 0 || count > crate::protocol::MAX_FRAGMENTS || index >= count {
             return Err("Fragmentação inválida".into());
+        }
+        if !self.pending.contains_key(&frame_id) && self.pending.len() >= MAX_PENDING_FRAMES {
+            return Err("Muitos frames incompletos".into());
         }
         let frame = self
             .pending
@@ -42,16 +47,20 @@ impl Reassembler {
             .or_insert_with(|| PendingFrame {
                 created: Instant::now(),
                 keyframe,
+                timestamp_us,
                 parts: vec![None; count],
                 bytes: 0,
             });
-        if frame.parts.len() != count {
+        if frame.parts.len() != count
+            || frame.keyframe != keyframe
+            || frame.timestamp_us != timestamp_us
+        {
             self.pending.remove(&frame_id);
             return Err("Contagem de fragmentos mudou".into());
         }
         if frame.parts[index].is_none() {
             frame.bytes += data.len();
-            if frame.bytes > MAX_FRAME_BYTES {
+            if frame.bytes > crate::protocol::MAX_ENCODED_FRAME {
                 self.pending.remove(&frame_id);
                 return Err("Frame excedeu o limite".into());
             }
@@ -68,6 +77,7 @@ impl Reassembler {
         Ok(Some(CompleteFrame {
             id: frame_id,
             keyframe: frame.keyframe,
+            timestamp_us: frame.timestamp_us,
             bytes,
         }))
     }
@@ -85,8 +95,17 @@ mod tests {
     #[test]
     fn completes_out_of_order() {
         let mut r = Reassembler::default();
-        assert!(r.push(1, 1, 2, false, b"b").unwrap().is_none());
-        let f = r.push(1, 0, 2, false, b"a").unwrap().unwrap();
+        assert!(r.push(1, 1, 2, false, 99, b"b").unwrap().is_none());
+        let f = r.push(1, 0, 2, false, 99, b"a").unwrap().unwrap();
         assert_eq!(f.bytes, b"ab");
+        assert_eq!(f.timestamp_us, 99);
+    }
+    #[test]
+    fn bounds_incomplete_frame_memory() {
+        let mut r = Reassembler::default();
+        for id in 1..=3 {
+            assert!(r.push(id, 0, 2, false, 0, b"x").unwrap().is_none());
+        }
+        assert!(r.push(4, 0, 2, false, 0, b"x").is_err());
     }
 }

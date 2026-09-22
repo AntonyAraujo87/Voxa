@@ -30,13 +30,15 @@ LAN, usa o mapeamento descoberto por STUN e perfuração UDP simultânea.
 - Matchmaking autenticado, limitado por IP e sem perfis/chat.
 - Socket UDP Tokio, descoberta STUN e hole punching.
 - Túnel autenticado, antirreplay, heartbeat/RTT, fragmentação e keyframe request.
-- Captura DXGI Desktop Duplication entrega `ID3D11Texture2D` sem mapear para CPU.
-- Janela de stream é uma janela Tauri nativa sem WebView.
+- Captura DXGI, conversão BGRA→NV12 e entrada no encoder H.264 permanecem na GPU.
+- O host usa Media Foundation hardware, suporta MFT assíncrono e envia o bitstream pelo túnel.
+- O espectador decodifica H.264 por hardware para uma textura NV12 e apresenta por
+  D3D11 em swapchain `flip-discard`, fora do WebView.
+- A configuração de codec, dimensões e FPS viaja autenticada e é repetida para
+  tolerar perda UDP.
 
-O backend de encode/decode por hardware ainda precisa ser ligado entre a textura
-DXGI e o túnel. Enquanto o painel mostrar `hardware-pending` ou `decoder-pending`,
-o app valida a rota nativa, mas não transmite imagem. A decisão é deliberada:
-nenhum fallback silencioso para captura web ou encode por CPU será usado.
+O host não usa fallback de captura web nem encode por CPU. A cadeia nativa compila,
+mas ainda precisa ser validada em dois PCs físicos e GPUs NVENC, AMF e QuickSync.
 
 ## Desenvolvimento
 

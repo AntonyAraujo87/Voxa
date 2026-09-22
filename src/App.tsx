@@ -19,6 +19,7 @@ const emptyStatus: EngineStatus = {
   peerEndpoint: null, rttMs: 0, lossPct: 0, bitrateKbps: 0,
   receivedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
   renderer: "closed", capture: "idle", encoder: "idle",
+  decoder: "idle", decodedFrames: 0,
 };
 
 export default function App() {
@@ -52,8 +53,7 @@ export default function App() {
         onPeer: async (peer: PeerAnnouncement) => {
           setMessage("Perfurando o NAT e autenticando o par...");
           await engine.connectPeer(peer.endpoint, peer.sessionKey, peer.peerId);
-          if (role === "viewer") await engine.openRenderer();
-          setMessage(role === "host" ? "Rota nativa pronta; codificador em integração" : "Rota nativa pronta; decodificador em integração");
+          setMessage(role === "host" ? "Pipeline H.264 nativo iniciado" : "Decoder e janela D3D11 iniciados");
         },
         onPeerLeft: () => {
           setMessage("O outro computador desconectou. Aguardando reconexão...");
@@ -123,8 +123,8 @@ export default function App() {
           <Metric label="RTT" value={`${status.rttMs} ms`} />
           <Metric label="Perda" value={`${status.lossPct.toFixed(1)}%`} />
           <Metric label="Bitrate" value={`${status.bitrateKbps} kbps`} />
-          <Metric label="Frames" value={`${status.receivedFrames} / ${status.droppedFrames} descartados`} />
-          <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.renderer}`} />
+          <Metric label="Frames" value={`${status.decodedFrames} exibidos · ${status.droppedFrames} descartados`} />
+          <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.decoder} · ${status.renderer}`} />
         </div>
       </section>
     </main>

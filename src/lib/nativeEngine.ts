@@ -2,14 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Matchmaking } from "./signaling";
 
 export type StreamRole = "host" | "viewer";
-export type EnginePhase = "idle" | "binding" | "waiting" | "punching" | "connected" | "streaming" | "stopped" | "failed";
+export type EnginePhase = "idle" | "binding" | "waiting" | "punching" | "connected" | "decoding" | "streaming" | "stopped" | "failed";
 export interface PreparedEndpoint { local: string; public: string | null; }
 export interface EngineStatus {
   phase: EnginePhase; role: StreamRole | null; localEndpoint: string | null;
   publicEndpoint: string | null; peerEndpoint: string | null; rttMs: number;
   lossPct: number; bitrateKbps: number; receivedFrames: number;
   droppedFrames: number; keyframeRequests: number; renderer: string;
-  capture: string; encoder: string;
+  capture: string; encoder: string; decoder: string; decodedFrames: number;
 }
 
 export class NativeEngine {

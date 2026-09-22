@@ -7,6 +7,10 @@ use sha2::{Digest, Sha256};
 
 pub const MAX_DATAGRAM: usize = 1200;
 pub const HEADER_LEN: usize = 42;
+pub const TAG_LEN: usize = 16;
+pub const MAX_PAYLOAD: usize = MAX_DATAGRAM - HEADER_LEN - TAG_LEN;
+pub const MAX_FRAGMENTS: usize = 4096;
+pub const MAX_ENCODED_FRAME: usize = MAX_PAYLOAD * MAX_FRAGMENTS;
 const MAGIC: &[u8; 4] = b"VOXA";
 const VERSION: u8 = 1;
 
@@ -21,6 +25,7 @@ pub enum Kind {
     Feedback = 6,
     Keyframe = 7,
     Input = 8,
+    Config = 9,
 }
 
 impl TryFrom<u8> for Kind {
@@ -35,8 +40,54 @@ impl TryFrom<u8> for Kind {
             6 => Ok(Self::Feedback),
             7 => Ok(Self::Keyframe),
             8 => Ok(Self::Input),
+            9 => Ok(Self::Config),
             _ => Err("Tipo de pacote desconhecido".into()),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamConfig {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u16,
+}
+
+impl StreamConfig {
+    const CODEC_H264: u8 = 1;
+    const WIRE_LEN: usize = 12;
+
+    pub fn encode(self) -> Result<[u8; Self::WIRE_LEN], String> {
+        if self.width == 0
+            || self.height == 0
+            || !self.width.is_multiple_of(2)
+            || !self.height.is_multiple_of(2)
+            || self.width > 16_384
+            || self.height > 16_384
+            || self.fps == 0
+            || self.fps > 240
+        {
+            return Err("Configuração de vídeo fora dos limites".into());
+        }
+        let mut bytes = [0u8; Self::WIRE_LEN];
+        bytes[0] = Self::CODEC_H264;
+        bytes[2..6].copy_from_slice(&self.width.to_be_bytes());
+        bytes[6..10].copy_from_slice(&self.height.to_be_bytes());
+        bytes[10..12].copy_from_slice(&self.fps.to_be_bytes());
+        Ok(bytes)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() != Self::WIRE_LEN || bytes[0] != Self::CODEC_H264 || bytes[1] != 0 {
+            return Err("Configuração de stream incompatível".into());
+        }
+        let config = Self {
+            width: u32::from_be_bytes(bytes[2..6].try_into().unwrap()),
+            height: u32::from_be_bytes(bytes[6..10].try_into().unwrap()),
+            fps: u16::from_be_bytes(bytes[10..12].try_into().unwrap()),
+        };
+        config.encode()?;
+        Ok(config)
     }
 }
 
@@ -56,6 +107,19 @@ pub struct Packet {
     pub kind: Kind,
     pub meta: Meta,
     pub payload: Vec<u8>,
+}
+
+pub fn fragment_count(frame_len: usize) -> Result<u16, String> {
+    let count = frame_len.saturating_add(MAX_PAYLOAD - 1) / MAX_PAYLOAD;
+    if count == 0 || count > MAX_FRAGMENTS || frame_len > MAX_ENCODED_FRAME {
+        return Err("Frame codificado fora do limite do protocolo".into());
+    }
+    Ok(count as u16)
+}
+
+pub fn fragments(frame: &[u8]) -> Result<impl Iterator<Item = &[u8]>, String> {
+    fragment_count(frame.len())?;
+    Ok(frame.chunks(MAX_PAYLOAD))
 }
 
 pub fn session_key(encoded: &str) -> Result<[u8; 32], String> {
@@ -122,10 +186,10 @@ impl ReplayGuard {
 }
 
 pub fn seal(key: &[u8; 32], kind: Kind, meta: Meta, payload: &[u8]) -> Result<Vec<u8>, String> {
-    if payload.len() + HEADER_LEN + 16 > MAX_DATAGRAM {
+    if payload.len() > MAX_PAYLOAD {
         return Err("Fragmento maior que o MTU seguro".into());
     }
-    let cipher_len = payload.len() + 16;
+    let cipher_len = payload.len() + TAG_LEN;
     let mut header = Vec::with_capacity(HEADER_LEN);
     header.extend_from_slice(MAGIC);
     header.extend_from_slice(&[VERSION, kind as u8, u8::from(meta.keyframe), 0]);
@@ -151,7 +215,7 @@ pub fn seal(key: &[u8; 32], kind: Kind, meta: Meta, payload: &[u8]) -> Result<Ve
 }
 
 pub fn open(key: &[u8; 32], datagram: &[u8]) -> Result<Packet, String> {
-    if datagram.len() < HEADER_LEN + 16 || &datagram[..4] != MAGIC || datagram[4] != VERSION {
+    if datagram.len() < HEADER_LEN + TAG_LEN || &datagram[..4] != MAGIC || datagram[4] != VERSION {
         return Err("Cabeçalho UDP inválido".into());
     }
     let kind = Kind::try_from(datagram[5])?;
@@ -243,5 +307,34 @@ mod tests {
     fn directions_never_share_a_key() {
         let (a, b) = directional_keys(&[4; 32]);
         assert_ne!(a, b);
+    }
+    #[test]
+    fn fragments_at_the_encrypted_mtu_boundary() {
+        let frame = vec![9u8; MAX_PAYLOAD * 2 + 1];
+        let parts = fragments(&frame)
+            .unwrap()
+            .map(<[u8]>::len)
+            .collect::<Vec<_>>();
+        assert_eq!(parts, [MAX_PAYLOAD, MAX_PAYLOAD, 1]);
+        assert_eq!(fragment_count(frame.len()).unwrap(), 3);
+        assert!(fragment_count(0).is_err());
+    }
+
+    #[test]
+    fn stream_config_round_trip_and_limits() {
+        let config = StreamConfig {
+            width: 2560,
+            height: 1440,
+            fps: 120,
+        };
+        assert_eq!(StreamConfig::decode(&config.encode().unwrap()).unwrap(), config);
+        assert!(StreamConfig::decode(&[1, 0]).is_err());
+        assert!(StreamConfig {
+            width: 1921,
+            height: 1080,
+            fps: 60,
+        }
+        .encode()
+        .is_err());
     }
 }

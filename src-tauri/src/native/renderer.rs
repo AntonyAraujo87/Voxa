@@ -1,4 +1,6 @@
 use tauri::{AppHandle, Manager};
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::HWND;
 
 pub fn open(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_window("stream") {
@@ -14,4 +16,13 @@ pub fn open(app: &AppHandle) -> Result<(), String> {
         .build()
         .map(|_| ())
         .map_err(|e| format!("Não foi possível abrir a janela nativa: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+pub fn hwnd(app: &AppHandle) -> Result<HWND, String> {
+    app.get_window("stream")
+        .ok_or("Janela nativa de stream ausente")?
+        .hwnd()
+        .map(|handle| HWND(handle.0))
+        .map_err(|e| format!("Handle da janela nativa: {e}"))
 }

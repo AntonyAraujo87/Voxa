@@ -13,22 +13,23 @@
 - AIMD de bitrate entre 0,8 e 35 Mbps com resposta a perda e RTT.
 - DXGI Desktop Duplication devolvendo textura D3D11 sem leitura pela CPU.
 - Janela nativa separada para o espectador.
+- Pacing de pacotes, fila de um frame e descarte do frame antigo sob pressão.
+- Conversão BGRA→NV12 pelo D3D11 Video Processor e encoder H.264 Media Foundation.
+- Suporte a encoders MFT síncronos e assíncronos com timeout de driver.
+- Configuração H.264/dimensões/FPS autenticada e repetida no túnel UDP.
+- Decoder H.264 Media Foundation com superfície DXGI e apresentação D3D11
+  `flip-discard` na janela nativa.
 
 ## Próxima integração obrigatória
 
-1. **Encode:** registrar `ID3D11Texture2D` diretamente no NVENC; converter BGRA
-   para NV12/P010 em compute shader; configurar H.264 low-latency, GOP curto,
-   sem B-frames e reconfiguração de bitrate sem reiniciar a sessão.
-2. **Fallbacks:** AMF e QuickSync/Media Foundation com a mesma interface de
-   textura. Falha explícita se não existir codec por hardware.
-3. **Envio:** fragmentar cada access unit H.264/H.265 no `transport`, marcar IDR
-   e usar pacing por deadline em vez de despejar um frame inteiro no socket.
-4. **Decode/render:** decoder D3D11 hardware e swap chain flip-discard na janela
-   nativa; fila de um frame, descarte do mais antigo e apresentação imediata.
-5. **Feedback:** número de sequência recebido/perdido, atraso interframe, fila do
+1. **Ajuste do encode:** aplicar GOP curto, desativar B-frames e alterar bitrate
+   via `ICodecAPI` sem reiniciar o MFT; acrescentar P010/H.265 quando suportado.
+2. **Render robusto:** resize sem recriar a sessão, letterbox, fullscreen,
+   recuperação de device-lost e seleção correta de GPU/monitor.
+3. **Feedback:** atraso interframe, fila do
    socket e tempo encode/decode para dirigir bitrate, resolução e FPS.
-6. **Rede hostil:** rendezvous UDP/QUIC e relay cego para NAT simétrico/CGNAT.
-7. **Input:** somente API oficial em modo usuário, com consentimento local,
+4. **Rede hostil:** rendezvous UDP/QUIC e relay cego para NAT simétrico/CGNAT.
+5. **Input:** somente API oficial em modo usuário, com consentimento local,
    indicador persistente, lista de teclas bloqueadas e botão de emergência.
 
 ## Critério para chamar de transmissão pronta
