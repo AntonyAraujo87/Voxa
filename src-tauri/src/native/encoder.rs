@@ -6,8 +6,11 @@ use windows::{
     Win32::{
         Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D},
         Media::MediaFoundation::{
-            IMFActivate, IMFDXGIDeviceManager, IMFMediaEventGenerator, IMFMediaType, IMFTransform,
-            METransformHaveOutput, METransformNeedInput, MFCreateDXGIDeviceManager,
+            eAVEncCommonRateControlMode_LowDelayVBR, CODECAPI_AVEncCommonMeanBitRate,
+            CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVDefaultBPictureCount,
+            CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
+            ICodecAPI, IMFActivate, IMFDXGIDeviceManager, IMFMediaEventGenerator, IMFMediaType,
+            IMFTransform, METransformHaveOutput, METransformNeedInput, MFCreateDXGIDeviceManager,
             MFCreateDXGISurfaceBuffer, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
             MFMediaType_Video, MFSampleExtension_CleanPoint, MFShutdown, MFStartup, MFTEnumEx,
             MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFSTARTUP_LITE,
@@ -20,7 +23,10 @@ use windows::{
             MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
             MF_VERSION,
         },
-        System::Com::CoTaskMemFree,
+        System::{
+            Com::CoTaskMemFree,
+            Variant::{VARIANT, VT_BOOL, VT_UI4},
+        },
     },
 };
 
@@ -89,6 +95,7 @@ pub struct HardwareH264Encoder {
     activation: IMFActivate,
     output_capacity: u32,
     events: Option<IMFMediaEventGenerator>,
+    codec_api: Option<ICodecAPI>,
     _runtime: MediaFoundation,
 }
 
@@ -145,6 +152,21 @@ impl HardwareH264Encoder {
                 )
                 .map_err(|e| format!("Encoder recusou o gerenciador D3D11: {e}"))?;
 
+            let codec_api: Option<ICodecAPI> = transform.cast().ok();
+            if let Some(codec) = &codec_api {
+                // Some vendor MFTs expose only a subset. Apply every low-latency
+                // control they accept and keep the hardware path available.
+                let _ = set_bool(codec, &CODECAPI_AVLowLatencyMode, true);
+                let _ = set_u32(codec, &CODECAPI_AVEncMPVDefaultBPictureCount, 0);
+                let _ = set_u32(codec, &CODECAPI_AVEncMPVGOPSize, fps.max(1));
+                let _ = set_u32(
+                    codec,
+                    &CODECAPI_AVEncCommonRateControlMode,
+                    eAVEncCommonRateControlMode_LowDelayVBR.0 as u32,
+                );
+                let _ = set_u32(codec, &CODECAPI_AVEncCommonMeanBitRate, bitrate);
+            }
+
             let output = media_type(MFVideoFormat_H264, width, height, fps, Some(bitrate))?;
             let input = media_type(MFVideoFormat_NV12, width, height, fps, None)?;
             transform
@@ -175,9 +197,26 @@ impl HardwareH264Encoder {
                 activation,
                 output_capacity: stream.cbSize.max(width.saturating_mul(height)),
                 events,
+                codec_api,
                 _runtime: runtime,
             })
         }
+    }
+
+    pub fn set_bitrate(&self, bitrate: u32) -> Result<(), String> {
+        let codec = self
+            .codec_api
+            .as_ref()
+            .ok_or("Encoder não expõe ICodecAPI")?;
+        unsafe { set_u32(codec, &CODECAPI_AVEncCommonMeanBitRate, bitrate) }
+    }
+
+    pub fn force_keyframe(&self) -> Result<(), String> {
+        let codec = self
+            .codec_api
+            .as_ref()
+            .ok_or("Encoder não expõe ICodecAPI")?;
+        unsafe { set_bool(codec, &CODECAPI_AVEncVideoForceKeyFrame, true) }
     }
 
     pub fn transform(&self) -> &IMFTransform {
@@ -271,6 +310,22 @@ impl HardwareH264Encoder {
 pub struct EncodedAccessUnit {
     pub bytes: Vec<u8>,
     pub keyframe: bool,
+}
+
+unsafe fn set_u32(codec: &ICodecAPI, property: &GUID, value: u32) -> Result<(), String> {
+    let mut variant = VARIANT::default();
+    let data = unsafe { &mut variant.Anonymous.Anonymous };
+    data.vt = VT_UI4;
+    data.Anonymous.ulVal = value;
+    unsafe { codec.SetValue(property, &variant) }.map_err(|e| format!("ICodecAPI: {e}"))
+}
+
+unsafe fn set_bool(codec: &ICodecAPI, property: &GUID, value: bool) -> Result<(), String> {
+    let mut variant = VARIANT::default();
+    let data = unsafe { &mut variant.Anonymous.Anonymous };
+    data.vt = VT_BOOL;
+    data.Anonymous.boolVal.0 = if value { -1 } else { 0 };
+    unsafe { codec.SetValue(property, &variant) }.map_err(|e| format!("ICodecAPI: {e}"))
 }
 
 unsafe fn wait_for(events: &IMFMediaEventGenerator, expected: u32) -> Result<(), String> {

@@ -53,7 +53,7 @@ fn run_session(
         if transport.stopped() {
             return Ok(());
         }
-        if let Some(config) = transport.take_config() {
+        if let Some(config) = transport.current_config() {
             break config;
         }
         if config_wait.elapsed() >= Duration::from_secs(1) {
@@ -79,7 +79,7 @@ fn run_session(
     }
     let mut duration = 10_000_000i64 / i64::from(config.fps);
     while !transport.stopped() {
-        if let Some(new_config) = transport.take_config() {
+        if let Some(new_config) = transport.current_config() {
             if new_config != config {
                 config = new_config;
                 decoder = HardwareH264Decoder::open(
@@ -159,7 +159,11 @@ fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext), String> {
 
 fn fail(state: &Arc<Mutex<Inner>>, decoder: &'static str, error: &str) {
     if let Ok(mut inner) = state.lock() {
-        inner.status.phase = "failed";
+        inner.status.phase = if decoder == "recovering" {
+            "recovering"
+        } else {
+            "failed"
+        };
         inner.status.decoder = decoder;
     }
     eprintln!(

@@ -1,5 +1,8 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { NativeEngine, type EngineStatus, type StreamRole } from "./lib/nativeEngine";
 import { Matchmaking, type PeerAnnouncement } from "./lib/signaling";
 
@@ -12,6 +15,7 @@ const emptyStatus: EngineStatus = {
   receivedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
   renderer: "closed", capture: "idle", encoder: "idle",
   decoder: "idle", decodedFrames: 0,
+  verificationCode: null,
 };
 
 export default function App() {
@@ -23,6 +27,8 @@ export default function App() {
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
   const [message, setMessage] = useState("Pronto para conectar");
   const [busy, setBusy] = useState(false);
+  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
+  const [updateMessage, setUpdateMessage] = useState("Verificar atualização");
   const roomValid = /^[a-zA-Z0-9._:-]{1,64}$/.test(room);
 
   useEffect(() => {
@@ -31,6 +37,58 @@ export default function App() {
     }, 500);
     return () => window.clearInterval(timer);
   }, [engine]);
+
+  useEffect(() => {
+    const unlisten = listen("stream-window-closed", async () => {
+      setBusy(true);
+      await engine.stop().catch(() => undefined);
+      setStatus(await engine.status().catch(() => emptyStatus));
+      setMessage("Janela de transmissão fechada");
+      setBusy(false);
+    });
+    return () => { void unlisten.then((dispose) => dispose()); };
+  }, [engine]);
+
+  useEffect(() => {
+    let disposed = false;
+    void check({ timeout: 8_000 }).then((update) => {
+      if (disposed) { void update?.close(); return; }
+      setAvailableUpdate(update);
+      setUpdateMessage(update ? `Atualizar para ${update.version}` : "Voxa atualizado");
+    }).catch(() => setUpdateMessage("Verificar atualização"));
+    return () => { disposed = true; };
+  }, []);
+
+  async function checkForUpdate() {
+    setUpdateMessage("Procurando atualização...");
+    try {
+      await availableUpdate?.close();
+      setAvailableUpdate(null);
+      const update = await check({ timeout: 10_000 });
+      setAvailableUpdate(update);
+      setUpdateMessage(update ? `Atualizar para ${update.version}` : "Voxa atualizado");
+    } catch (error) {
+      setUpdateMessage(error instanceof Error ? error.message : "Falha ao verificar atualização");
+    }
+  }
+
+  async function installUpdate() {
+    if (!availableUpdate || active || busy) return;
+    setBusy(true);
+    try {
+      let received = 0;
+      let total = 0;
+      await availableUpdate.downloadAndInstall((event) => {
+        if (event.event === "Started") total = event.data.contentLength ?? 0;
+        if (event.event === "Progress") received += event.data.chunkLength;
+        setUpdateMessage(total > 0 ? `Baixando ${Math.min(100, Math.round(received * 100 / total))}%` : "Baixando atualização...");
+      }, { timeout: 120_000 });
+      await relaunch();
+    } catch (error) {
+      setUpdateMessage(error instanceof Error ? error.message : "Falha ao instalar atualização");
+      setBusy(false);
+    }
+  }
 
   async function connect(event: FormEvent) {
     event.preventDefault();
@@ -45,14 +103,17 @@ export default function App() {
         token,
         onPeer: async (peer: PeerAnnouncement) => {
           setMessage("Perfurando o NAT e autenticando o par...");
-          await engine.connectPeer(peer.endpoint, peer.sessionKey, peer.peerId);
+          await engine.connectPeer(peer);
           setMessage(role === "host" ? "Pipeline H.264 nativo iniciado" : "Decoder e janela D3D11 iniciados");
         },
-        onPeerLeft: () => {
-          setMessage("O outro computador desconectou. Aguardando reconexão...");
-          void engine.disconnectPeer();
+        onPeerLeft: async () => {
+          setMessage("O outro computador desconectou. Renovando as chaves...");
+          await engine.disconnectPeer();
+          const refreshed = await engine.prepare(role);
+          if (matchmaking) await matchmaking.join(room.trim(), role, refreshed);
         },
         onError: setMessage,
+        refreshEndpoint: (reconnectingRole) => engine.prepare(reconnectingRole),
       });
       engine.attachMatchmaking(matchmaking);
       await matchmaking.join(room.trim(), role, endpoint);
@@ -105,7 +166,7 @@ export default function App() {
             <label>URL<input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} inputMode="url" disabled={active} /></label>
           </details>
           {active
-            ? <button className="primary danger" type="button" onClick={stop} disabled={busy}>Encerrar</button>
+            ? <><button className="primary" type="button" onClick={() => void engine.toggleFullscreen().catch((error) => setMessage(String(error)))} disabled={busy || role !== "viewer"}>Tela cheia</button><button className="primary danger" type="button" onClick={stop} disabled={busy}>Encerrar</button></>
             : <button className="primary" type="submit" disabled={busy || !roomValid}>{busy ? "Conectando..." : role === "host" ? "Começar transmissão" : "Conectar ao host"}</button>}
         </form>
       </section>
@@ -116,9 +177,17 @@ export default function App() {
           <Metric label="RTT" value={`${status.rttMs} ms`} />
           <Metric label="Perda" value={`${status.lossPct.toFixed(1)}%`} />
           <Metric label="Bitrate" value={`${status.bitrateKbps} kbps`} />
+          <Metric label="Código E2E" value={status.verificationCode ?? "—"} />
           <Metric label="Frames" value={`${status.decodedFrames} exibidos · ${status.droppedFrames} descartados`} />
           <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.decoder} · ${status.renderer}`} />
         </div>
+        {status.verificationCode && <small>Compare o Código E2E nos dois computadores antes de confiar na sessão.</small>}
+      </section>
+      <section className="card update-card">
+        <button type="button" onClick={availableUpdate ? installUpdate : checkForUpdate} disabled={busy || active}>
+          {updateMessage}
+        </button>
+        {active && availableUpdate && <small>Encerre a transmissão antes de atualizar.</small>}
       </section>
     </main>
   );

@@ -4,9 +4,9 @@
 
 - Exclusão do produto social, Supabase e mídia WebRTC.
 - Painel React restrito a hospedar, conectar, encerrar e mostrar telemetria.
-- Matchmaking de dois pares com chave aleatória de 256 bits por sala.
-- STUN IPv4 e reutilização do mesmo socket para hole punching.
-- Cabeçalho binário versionado, MTU de 1200 bytes e ChaCha20-Poly1305.
+- Matchmaking de dois pares que repassa somente chaves públicas X25519.
+- Fallback entre múltiplos STUN IPv4 e reutilização do mesmo socket para hole punching.
+- Cabeçalho binário versionado, MTU interno de 1178 bytes e ChaCha20-Poly1305.
 - Chaves derivadas por direção, `stream_id` aleatório e janela antirreplay.
 - Reagrupamento fora de ordem, limite de aproximadamente 4,4 MiB/frame e prazos
   de 250 ms para frames delta e 1,5 s para keyframes.
@@ -20,16 +20,18 @@
 - Configuração H.264/dimensões/FPS autenticada e repetida no túnel UDP.
 - Decoder H.264 Media Foundation com superfície DXGI e apresentação D3D11
   `flip-discard` na janela nativa.
+- Relay UDP cego opcional para CGNAT, corrida automática entre rota direta e relay.
+- `ICodecAPI` para low-latency, GOP curto, zero B-frames, IDR e bitrate dinâmico.
+- Resize, letterbox, fullscreen e reconstrução de device/decoder após falha D3D11.
+- Updater assinado verificado e instalado pelo painel.
 
 ## Próxima integração obrigatória
 
-1. **Ajuste do encode:** aplicar GOP curto, desativar B-frames e alterar bitrate
-   via `ICodecAPI` sem reiniciar o MFT; acrescentar P010/H.265 quando suportado.
-2. **Render robusto:** resize sem recriar a sessão, letterbox, fullscreen,
-   recuperação de device-lost e seleção correta de GPU/monitor.
+1. **Codec futuro:** acrescentar P010/H.265/AV1 quando suportado e negociar capacidade.
+2. **Render futuro:** seleção correta de GPU/monitor e troca de monitor durante a sessão.
 3. **Feedback:** atraso interframe, fila do
    socket e tempo encode/decode para dirigir bitrate, resolução e FPS.
-4. **Rede hostil:** rendezvous UDP/QUIC e relay cego para NAT simétrico/CGNAT.
+4. **Rede hostil:** medir disponibilidade/custo do relay e adicionar relay regional.
 5. **Input:** somente API oficial em modo usuário, com consentimento local,
    indicador persistente, lista de teclas bloqueadas e botão de emergência.
 

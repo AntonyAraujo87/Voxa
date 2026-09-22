@@ -105,8 +105,7 @@ fn run_device_session(
         let requested = transport.target_bitrate();
         let bitrate_changed =
             requested < bitrate.saturating_mul(4) / 5 || requested > bitrate.saturating_mul(5) / 4;
-        if transport.take_keyframe_request() || bitrate_changed {
-            bitrate = requested;
+        if transport.take_keyframe_request() && encoder.force_keyframe().is_err() {
             encoder =
                 HardwareH264Encoder::open(&capture.device, desc.Width, desc.Height, FPS, bitrate)?;
             transport.queue_config(StreamConfig {
@@ -114,6 +113,23 @@ fn run_device_session(
                 height: desc.Height,
                 fps: FPS as u16,
             });
+        }
+        if bitrate_changed {
+            bitrate = requested;
+            if encoder.set_bitrate(bitrate).is_err() {
+                encoder = HardwareH264Encoder::open(
+                    &capture.device,
+                    desc.Width,
+                    desc.Height,
+                    FPS,
+                    bitrate,
+                )?;
+                transport.queue_config(StreamConfig {
+                    width: desc.Width,
+                    height: desc.Height,
+                    fps: FPS as u16,
+                });
+            }
         }
         let nv12 = converter.convert(&frame.texture)?;
         let timestamp_100ns = started.elapsed().as_nanos().saturating_div(100) as i64;

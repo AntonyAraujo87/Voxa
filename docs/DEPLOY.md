@@ -14,6 +14,8 @@ Variáveis necessárias:
 | `TRUST_PROXY=1` | Usa o último IP de `X-Forwarded-For` atrás do Render |
 | `ORIGIN` | Origem permitida para o Socket.IO |
 | `VITE_SIGNALING_URL` | URL WSS gravada no painel durante o build |
+| `VOXA_RELAY_PUBLIC_ENDPOINT` | `IP:3479` da VM UDP; vazio desativa o fallback |
+| `VOXA_RELAY_SECRET` | Segredo aleatório de 32+ caracteres, idêntico no Render e na VM |
 
 Execute `node scripts/check-deployment.mjs` depois do deploy. O health não expõe
 salas, IPs, endpoints ou chaves.
@@ -24,10 +26,21 @@ O socket Rust usa STUN para descobrir o mapeamento externo e mantém o mesmo soc
 durante a perfuração e a sessão. O endpoint é trocado pelo canal WSS autenticado.
 Pares no mesmo IP público recebem o endereço LAN.
 
-O Render hospeda o controle HTTP/WSS, não o tráfego UDP. NAT simétrico e CGNAT
-podem impedir uma rota direta. Para cobertura ampla será preciso hospedar um
-relay UDP/QUIC pequeno em uma VM. O relay deve encaminhar datagramas cifrados sem
-conhecer a chave da sala e impor cotas por sessão/IP.
+O Render hospeda o controle HTTP/WSS, não recebe UDP. Para NAT simétrico e CGNAT,
+use uma VM Oracle Cloud Ampere A1 Always Free (sujeita à disponibilidade e aos
+limites da conta) ou qualquer Linux com IP público:
+
+```bash
+git clone https://github.com/AntonyAraujo87/Voxa.git
+cd Voxa
+npm ci --prefix server
+VOXA_RELAY_PORT=3479 VOXA_RELAY_SECRET='gere-um-segredo-aleatorio-longo' npm run relay --prefix server
+```
+
+Abra somente UDP/3479 no firewall da VCN e no firewall do sistema. No Render,
+configure `VOXA_RELAY_PUBLIC_ENDPOINT=IP_PUBLICO:3479`, sem configurar
+`VOXA_RELAY_PORT`, e use o mesmo `VOXA_RELAY_SECRET`. O relay encaminha apenas datagramas ChaCha20-Poly1305, expira
+sessões inativas, limita pacotes por IP e não conhece a chave X25519.
 
 ## Release
 

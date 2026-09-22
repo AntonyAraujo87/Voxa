@@ -18,6 +18,17 @@ pub fn open(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Não foi possível abrir a janela nativa: {e}"))
 }
 
+pub fn toggle_fullscreen(app: &AppHandle) -> Result<bool, String> {
+    let window = app
+        .get_window("stream")
+        .ok_or("Janela nativa de stream ausente")?;
+    let fullscreen = !window.is_fullscreen().map_err(|e| e.to_string())?;
+    window
+        .set_fullscreen(fullscreen)
+        .map_err(|e| e.to_string())?;
+    Ok(fullscreen)
+}
+
 #[cfg(target_os = "windows")]
 pub fn hwnd(app: &AppHandle) -> Result<HWND, String> {
     app.get_window("stream")

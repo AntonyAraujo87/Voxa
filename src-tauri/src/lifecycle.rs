@@ -7,7 +7,7 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, WindowEvent,
+    AppHandle, Emitter, Manager, WindowEvent,
 };
 
 /// Devolve ao sistema as paginas de memoria que o processo nao esta usando.
@@ -128,8 +128,13 @@ fn restore(app: &AppHandle) {
 
 /// Fechar esconde na bandeja em vez de encerrar; o transporte pode continuar.
 pub fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
-    // Somente a janela principal vira bandeja. A janela nativa do stream fecha
-    // normalmente e pode ser criada novamente pelo motor.
+    if window.label() == "stream" {
+        if matches!(event, WindowEvent::CloseRequested { .. }) {
+            let _ = window.app_handle().emit("stream-window-closed", ());
+        }
+        return;
+    }
+    // Somente a janela principal vira bandeja.
     if window.label() != "main" {
         return;
     }

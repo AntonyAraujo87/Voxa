@@ -11,9 +11,11 @@
  *   lib/handlers.js  o que cada evento faz
  */
 import { createServer } from "node:http";
+import { isIP } from "node:net";
 import { Server } from "socket.io";
 import { createHttpApp } from "./lib/http.js";
 import { Admission } from "./lib/admission.js";
+import { startUdpRelay } from "./lib/relay.js";
 
 import { StreamRegistry } from "./lib/state.js";
 import { registerHandlers } from "./lib/handlers.js";
@@ -28,6 +30,15 @@ import {
 
 const PORT = Number(process.env.PORT || 3001);
 const ORIGIN = process.env.ORIGIN || "*";
+const RELAY_PORT = Number(process.env.VOXA_RELAY_PORT || 0);
+const RELAY_PUBLIC_ENDPOINT = process.env.VOXA_RELAY_PUBLIC_ENDPOINT || "";
+const RELAY_SECRET = process.env.VOXA_RELAY_SECRET || "";
+if (RELAY_PUBLIC_ENDPOINT && !validUdpEndpoint(RELAY_PUBLIC_ENDPOINT)) {
+  throw new Error("VOXA_RELAY_PUBLIC_ENDPOINT deve ser um IP:porta UDP válido");
+}
+if ((RELAY_PUBLIC_ENDPOINT || RELAY_PORT > 0) && RELAY_SECRET.length < 32) {
+  throw new Error("VOXA_RELAY_SECRET deve ter pelo menos 32 caracteres");
+}
 
 /**
  * Senha da sala. Sem ela, qualquer um que descubra o endereco entra e escuta.
@@ -50,8 +61,9 @@ const log = {
 
 if (!TOKEN) log.warn("AVISO: rodando sem VOXA_TOKEN — servidor aberto.");
 
-const registry = new StreamRegistry();
+const registry = new StreamRegistry(RELAY_PUBLIC_ENDPOINT, RELAY_SECRET);
 const limiter = new RateLimiter();
+const relay = RELAY_PORT > 0 ? startUdpRelay({ port: RELAY_PORT, secret: RELAY_SECRET, log }) : null;
 
 /* ------------------------------- HTTP ------------------------------------- */
 
@@ -133,6 +145,7 @@ httpServer.listen(PORT, () => {
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
     clearInterval(sweeper);
+    relay?.close();
     io.close(() => httpServer.close(() => process.exit(0)));
   });
 }
@@ -144,3 +157,10 @@ process.on("unhandledRejection", (err) => {
   log.warn("promessa rejeitada:", err?.name);
   process.exit(1);
 });
+
+function validUdpEndpoint(value) {
+  const match = /^\[([^\]]+)]:(\d+)$/.exec(value) ?? /^([^:]+):(\d+)$/.exec(value);
+  if (!match || !isIP(match[1])) return false;
+  const port = Number(match[2]);
+  return port >= 1 && port <= 65535;
+}

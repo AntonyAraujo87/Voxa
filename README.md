@@ -9,13 +9,13 @@ reprodução pertencem ao processo Rust; não existem tags HTML de áudio ou ví
 ```text
 Painel Tauri ──WSS──> matchmaking Node/Render
      │                        │
-     └── comando IPC          └── troca endpoint + chave efêmera
+     └── comando IPC          └── troca endpoint + chave pública X25519
              │
         Motor Rust
  DXGI texture ─> codec HW ─> fragmentos UDP cifrados ─> decoder HW ─> janela nativa
 ```
 
-O protocolo usa datagramas de até 1200 bytes, ChaCha20-Poly1305, chaves distintas
+O protocolo usa datagramas internos de até 1178 bytes, ChaCha20-Poly1305, chaves distintas
 por direção, contador antirreplay e reagrupamento fora de ordem. Frames delta
 incompletos expiram em 250 ms; keyframes recebem até 1,5 s por serem maiores.
 Frames atrasados ou incompletos são descartados e geram pedido de keyframe, sem
@@ -29,12 +29,16 @@ LAN, usa o mapeamento descoberto por STUN e perfuração UDP simultânea.
 
 - Painel mínimo de hospedar/conectar e telemetria.
 - Matchmaking autenticado, limitado por IP e sem perfis/chat.
-- Socket UDP Tokio, descoberta STUN e hole punching.
+- Socket UDP Tokio, fallback entre Cloudflare e dois servidores Google STUN e hole punching.
+- X25519 efêmero entre os computadores; o signaling nunca cria nem recebe a chave de mídia.
+- Relay UDP cego opcional para NAT simétrico/CGNAT, disputado em paralelo com a rota direta.
 - Túnel autenticado, antirreplay, heartbeat/RTT, fragmentação e keyframe request.
 - Captura DXGI, conversão BGRA→NV12 e entrada no encoder H.264 permanecem na GPU.
 - O host usa Media Foundation hardware, suporta MFT assíncrono e envia o bitstream pelo túnel.
+- O encoder solicita low-latency, GOP de 1 s, zero B-frames e bitrate dinâmico por `ICodecAPI`.
 - O espectador decodifica H.264 por hardware para uma textura NV12 e apresenta por
-  D3D11 em swapchain `flip-discard`, fora do WebView.
+  D3D11 em swapchain `flip-discard`, com resize, letterbox, fullscreen e recriação após device-lost.
+- O painel verifica, baixa e instala updates assinados sem interromper uma transmissão ativa.
 - A configuração de codec, dimensões e FPS viaja autenticada e é repetida para
   tolerar perda UDP.
 
@@ -60,11 +64,11 @@ deve entrar em uma variável `VITE_*`.
 
 ## Limitações de rede
 
-STUN não atravessa todo NAT simétrico/CGNAT. O Render Web Service não oferece
-uma porta UDP pública para relay. Produção universal exige um rendezvous/relay UDP
-em uma VM com quota de banda ou uma rota QUIC/UDP equivalente. Um relay de vídeo
-gratuito e ilimitado não existe; o modo direto continua gratuito quando o NAT
-permite.
+O Render Web Service continua hospedando apenas WSS/HTTP. Para NAT simétrico e
+CGNAT, execute `npm run relay --prefix server` numa VM com UDP público e configure
+o endpoint no Render. A rota direta continua preferida e não consome banda da VM.
+O código E2E de seis dígitos exibido nos dois PCs deve coincidir; isso detecta
+substituição maliciosa das chaves públicas pelo servidor de signaling.
 
 Detalhes de implantação estão em [docs/DEPLOY.md](docs/DEPLOY.md) e a sequência
 técnica está em [docs/NATIVE-STREAMING-ROADMAP.md](docs/NATIVE-STREAMING-ROADMAP.md).

@@ -5,14 +5,18 @@ export interface PeerAnnouncement {
   peerId: string;
   role: StreamRole;
   endpoint: string;
-  sessionKey: string;
+  publicKey: string;
+  relayEndpoint: string | null;
+  relaySession: string | null;
+  relayAuth: string | null;
 }
 
 interface Options {
   token: string;
   onPeer: (peer: PeerAnnouncement) => void | Promise<void>;
-  onPeerLeft: () => void;
+  onPeerLeft: () => void | Promise<void>;
   onError: (message: string) => void;
+  refreshEndpoint: (role: StreamRole) => Promise<PreparedEndpoint>;
 }
 
 type Ack = { ok?: boolean; error?: string; peer?: PeerAnnouncement };
@@ -21,6 +25,7 @@ export class Matchmaking {
   private readonly socket: Socket;
   private desired: { room: string; role: StreamRole; endpoint: PreparedEndpoint } | null = null;
   private rejoinArmed = false;
+  private closed = false;
   constructor(url: string, private readonly options: Options) {
     this.socket = io(url, {
       transports: ["websocket"],
@@ -32,11 +37,17 @@ export class Matchmaking {
     this.socket.on("stream:peer", (peer: PeerAnnouncement) => {
       void Promise.resolve(options.onPeer(peer)).catch((error) => options.onError(messageOf(error)));
     });
-    this.socket.on("stream:peer-left", options.onPeerLeft);
+    this.socket.on("stream:peer-left", () => {
+      void Promise.resolve(options.onPeerLeft()).catch((error) => options.onError(messageOf(error)));
+    });
     this.socket.on("connect_error", (error) => options.onError(error.message || "Servidor indisponível"));
     this.socket.on("connect", () => {
       if (this.rejoinArmed && this.desired) {
-        void this.performJoin(this.desired).catch((error) => options.onError(messageOf(error)));
+        void options.refreshEndpoint(this.desired.role).then((endpoint) => {
+          if (this.closed || !this.desired) return;
+          this.desired = { ...this.desired, endpoint };
+          return this.performJoin(this.desired);
+        }).catch((error) => options.onError(messageOf(error)));
       }
     });
   }
@@ -54,11 +65,12 @@ export class Matchmaking {
       role,
       endpoint: endpoint.public ?? endpoint.local,
       localEndpoint: endpoint.local,
+      publicKey: endpoint.publicKey,
     });
     if (response.peer) await this.options.onPeer(response.peer);
   }
 
-  close() { this.socket.disconnect(); }
+  close() { this.closed = true; this.desired = null; this.socket.disconnect(); }
 
   private emit(event: string, payload: unknown): Promise<Ack> {
     return new Promise((resolve, reject) => {
