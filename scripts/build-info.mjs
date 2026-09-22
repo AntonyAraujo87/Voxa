@@ -17,5 +17,5 @@ export function buildInfo(env) {
   for(const path of ['package.json','package-lock.json','src-tauri/Cargo.toml','src-tauri/Cargo.lock','src-tauri/tauri.conf.json','server/index.js']) hash.update(readFileSync(path));
   let commit='unavailable';
   try { commit=execFileSync('git',['rev-parse','--short','HEAD'],{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim(); } catch {}
-  return {version:JSON.parse(readFileSync('package.json','utf8')).version, commit, source:hash.digest('hex').slice(0,16), builtAt:new Date().toISOString(), history:Boolean(env.VITE_SUPABASE_URL&&env.VITE_SUPABASE_ANON_KEY), staticTurn:Boolean(env.VITE_TURN_URLS)};
+  return {version:JSON.parse(readFileSync('package.json','utf8')).version, commit, source:hash.digest('hex').slice(0,16), builtAt:new Date().toISOString()};
 }

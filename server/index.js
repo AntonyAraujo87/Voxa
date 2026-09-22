@@ -1,8 +1,8 @@
 /**
  * VOXA — Signaling Server
  * ---------------------------------------------------------------------------
- * Responsabilidade UNICA: handshake WebRTC (SDP/ICE), presenca e relay de chat.
- * Nenhum byte de audio ou video passa por aqui — tudo e P2P entre os clientes.
+ * Responsabilidade unica: autenticar a sala e trocar endpoints UDP.
+ * Nenhum frame ou comando de input passa por este processo.
  *
  * Express limita HTTP; Engine.IO limita transportes antes da autenticacao.
  * O que este arquivo faz e apenas montar as pecas:
@@ -15,7 +15,7 @@ import { Server } from "socket.io";
 import { createHttpApp } from "./lib/http.js";
 import { Admission } from "./lib/admission.js";
 
-import { Registry } from "./lib/state.js";
+import { StreamRegistry } from "./lib/state.js";
 import { registerHandlers } from "./lib/handlers.js";
 import {
   MAX_HANDSHAKES_PER_MIN,
@@ -38,8 +38,8 @@ const TOKEN = process.env.VOXA_TOKEN || "";
 /**
  * Logs deliberadamente pobres.
  *
- * Um servidor de sinalizacao ve SDP (que carrega os IPs de todo mundo), ids de
- * sala e apelidos. Nada disso precisa ir para disco, e em plataforma gratuita
+ * O servidor ve endpoints UDP, ids de sala e ids efemeros de dispositivos.
+ * Nada disso precisa ir para disco, e em plataforma gratuita
  * os logs costumam ser legiveis por terceiros. Registramos contagens e falhas,
  * nunca conteudo, nunca IP, nunca stack trace de excecao vinda da rede.
  */
@@ -50,7 +50,7 @@ const log = {
 
 if (!TOKEN) log.warn("AVISO: rodando sem VOXA_TOKEN — servidor aberto.");
 
-const registry = new Registry();
+const registry = new StreamRegistry();
 const limiter = new RateLimiter();
 
 /* ------------------------------- HTTP ------------------------------------- */
@@ -74,9 +74,9 @@ const io = new Server(httpServer, {
   // Handshake e mensagens curtas: websocket direto, sem polling.
   transports: ["websocket"],
   perMessageDeflate: false,
-  // Um SDP com muitos candidatos passa de 10 KB; 256 KB e folga suficiente e
-  // corta payload gigante usado para inflar memoria do processo.
-  maxHttpBufferSize: 256 * 1024,
+  // Os eventos carregam apenas endpoints e uma chave curta. O limite reduz o
+  // custo de payloads usados para inflar memoria do processo.
+  maxHttpBufferSize: 16 * 1024,
   pingInterval: 20000,
   pingTimeout: 25000,
   connectTimeout: 20000,
@@ -137,7 +137,7 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
   });
 }
 
-// Uma excecao nao tratada nao pode derrubar a sala inteira. Registramos o tipo
-// e seguimos: o processo continua servindo quem ja esta conectado.
+// Uma excecao nao tratada encerra o processo para o supervisor reinicia-lo em
+// estado limpo. Registramos somente o tipo para evitar dados sensiveis.
 process.on("uncaughtException", (err) => { log.warn("excecao nao tratada:", err?.name); process.exit(1); });
 process.on("unhandledRejection", (err) => log.warn("promessa rejeitada:", err?.name));

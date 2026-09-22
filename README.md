@@ -1,81 +1,67 @@
-# Voxa
+# Voxa Stream
 
-Aplicativo Windows para conversar por voz, compartilhar tela/câmera e trocar
-mensagens com amigos. Usa Tauri 2, React, WebView2 e WebRTC. O servidor Node com
-Socket.IO cuida da identificação, sinalização e chat ao vivo; o Supabase opcional
-guarda histórico e anexos.
+O Voxa 0.6 é um projeto de streaming P2P para Windows. O Tauri/React funciona
+somente como painel de conexão. Captura, transporte, telemetria e a janela de
+reprodução pertencem ao processo Rust; não existem tags HTML de áudio ou vídeo.
 
-O código está na versão **0.5.29**. O estado das correções e dos testes está em
-[CORRECOES-0.5.29.md](docs/CORRECOES-0.5.29.md). Isso não significa que exista
-um instalador publicado dessa versão.
+## Arquitetura atual
 
-## Voz e transmissão
+```text
+Painel Tauri ──WSS──> matchmaking Node/Render
+     │                        │
+     └── comando IPC          └── troca endpoint + chave efêmera
+             │
+        Motor Rust
+ DXGI texture ─> codec HW ─> fragmentos UDP cifrados ─> decoder HW ─> janela nativa
+```
 
-Cada par negocia microfone, vídeo e som da transmissão separadamente. Os volumes
-de voz e compartilhamento são independentes, com ganho até 200%; ganhos elevados
-podem distorcer. Há mudo, ensurdecimento, push-to-talk e efeitos de soundboard.
+O protocolo usa datagramas de até 1200 bytes, ChaCha20-Poly1305, chaves distintas
+por direção, contador antirreplay, reagrupamento fora de ordem e prazo de 85 ms.
+Frames atrasados ou incompletos são descartados e geram pedido de keyframe, sem
+retransmissão. O bitrate cai rápido com perda/RTT e sobe gradualmente.
 
-Os presets definem resolução, framerate e orçamento de upload. Jogo prefere
-conservar framerate; Leitura prefere resolução. Codec e aceleração dependem do
-runtime, dispositivo e rede: selecionar um preset não garante FPS nem uso de GPU.
+O matchmaking aceita exatamente um `host` e um `viewer` por sala. Ele não recebe
+frames nem input. Para pares no mesmo IP público, anuncia o endpoint LAN; fora da
+LAN, usa o mapeamento descoberto por STUN e perfuração UDP simultânea.
 
-Clientes atualizados recebem vídeo e som da transmissão ao escolher **Assistir**.
-A voz continua independente da grade. O orçamento de vídeo é dividido pelos
-espectadores. Clientes antigos sem esse controle mantêm o envio compatível.
+## Estado funcional
 
-## Rede e custos
+- Painel mínimo de hospedar/conectar e telemetria.
+- Matchmaking autenticado, limitado por IP e sem perfis/chat.
+- Socket UDP Tokio, descoberta STUN e hole punching.
+- Túnel autenticado, antirreplay, heartbeat/RTT, fragmentação e keyframe request.
+- Captura DXGI Desktop Duplication entrega `ID3D11Texture2D` sem mapear para CPU.
+- Janela de stream é uma janela Tauri nativa sem WebView.
 
-A mídia tenta viajar diretamente entre os computadores. Quando a rede impede
-isso, um TURN configurado pode retransmiti-la. A sinalização não transporta
-áudio/vídeo, mas o TURN transporta e pode gerar custos de tráfego. Usar apenas
-STUN não garante conexão entre redes.
+O backend de encode/decode por hardware ainda precisa ser ligado entre a textura
+DXGI e o túnel. Enquanto o painel mostrar `hardware-pending` ou `decoder-pending`,
+o app valida a rota nativa, mas não transmite imagem. A decisão é deliberada:
+nenhum fallback silencioso para captura web ou encode por CPU será usado.
 
-A arquitetura full mesh aumenta conexões, upload e processamento conforme o
-grupo cresce. Os limites de 12 participantes por canal de voz e 128 sockets são
-proteções, não uma certificação de desempenho. O servidor usa memória local e
-deve operar em uma instância. Grupos maiores precisam de medições e, possivelmente,
-de uma arquitetura com servidor de mídia (SFU).
-
-## Desenvolvimento e validação
+## Desenvolvimento
 
 ```bash
 npm ci
 npm ci --prefix server
-npm run dev:all
-```
-
-Copie `.env.example` para `.env` e configure a sinalização. A senha é digitada
-no login; não a coloque em variáveis `VITE_*`.
-
-```bash
 npm run verify
 npm run build
-npm run test:worklet
-npm run test:rtc
-npm run test:ui
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 ```
 
-Os testes de navegador usam Playwright. Instale seu Chromium com
-`npx playwright install chromium` ou indique um navegador disponível por
-`VOXA_TEST_BROWSER`. A mídia é sintética: os testes exercitam negociação, players
-e interface, sem provar o comportamento de dispositivos físicos. Os testes SQL
-usam PostgreSQL local com PGlite e não acessam o banco hospedado.
+Em Windows GNU, use um `target-dir` sem caracteres Unicode se o `dlltool` antigo
+estiver instalado. O CI usa `windows-latest` e valida Rust com Clippy.
 
-## Empacotamento e operação
+Copie `.env.example` para `.env`. A senha da sala é digitada no painel e nunca
+deve entrar em uma variável `VITE_*`.
 
-`npm run app:build` usa o fluxo Tauri. No Windows x64 com toolchain GNU,
-`npm run app:build:local` inclui a WebView2Loader.dll exigida pelo executável,
-inspeciona dependências e gera hashes dos artefatos. O perfil local não usa a
-assinatura do atualizador de produção. Compilar não comprova instalação/update.
+## Limitações de rede
 
-Consulte [DEPLOY.md](docs/DEPLOY.md) para servidor, TURN, banco e releases.
+STUN não atravessa todo NAT simétrico/CGNAT. O Render Web Service não oferece
+uma porta UDP pública para relay. Produção universal exige um rendezvous/relay UDP
+em uma VM com quota de banda ou uma rota QUIC/UDP equivalente. Um relay de vídeo
+gratuito e ilimitado não existe; o modo direto continua gratuito quando o NAT
+permite.
 
-## Limitações atuais
-
-- TURN precisa ser provisionado/configurado e validado entre redes.
-- A captura do WebView2 usa a fonte definida no início do processo; trocar exige
-  reiniciar. Títulos repetidos ou variáveis podem tornar a seleção ambígua.
-- O áudio nativo captura a saída padrão do Windows. Pode incluir o Voxa e outras
-  aplicações. Não há captura por processo ou troca dinâmica do dispositivo de loopback.
-- Testes locais não substituem dois PCs, jogos, instalação/update em Windows
-  limpo ou medição de carga com vários usuários.
+Detalhes de implantação estão em [docs/DEPLOY.md](docs/DEPLOY.md) e a sequência
+técnica está em [docs/NATIVE-STREAMING-ROADMAP.md](docs/NATIVE-STREAMING-ROADMAP.md).

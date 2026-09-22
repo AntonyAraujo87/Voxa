@@ -1,211 +1,136 @@
-import { useEffect, useState } from "react";
-import { TitleBar } from "./components/TitleBar";
-import { ServerRail } from "./components/ServerRail";
-import { ChannelSidebar } from "./components/ChannelSidebar";
-import { ChatPanel } from "./components/ChatPanel";
-import { StageGrid } from "./components/StageGrid";
-import { RemoteAudio } from "./components/RemoteAudio";
-import { MemberList } from "./components/MemberList";
-import { SettingsModal } from "./components/SettingsModal";
-import { SharePicker } from "./components/SharePicker";
-import { Toasts } from "./components/Toasts";
-import { LoginGate } from "./components/LoginGate";
-import { ErrorBoundary } from "./components/ErrorBoundary";
-import { useApp, type AppState } from "./store/store";
-import { session } from "./lib/session";
-import { currentPrefs, savePrefs } from "./lib/prefs";
-import { emitEvent, listenEvent, releaseMemory, isDesktop } from "./lib/desktop";
-import { iniciarDiagnostico } from "./lib/diagnostico";
-import type { OverlayPeer } from "./components/Overlay";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { NativeEngine, type EngineStatus, type StreamRole } from "./lib/nativeEngine";
+import { Matchmaking, type PeerAnnouncement } from "./lib/signaling";
+
+const DEFAULT_SIGNALING =
+  (import.meta.env.VITE_SIGNALING_URL as string | undefined) ?? "http://localhost:3001";
+
+function initialIdentity() {
+  const stored = localStorage.getItem("voxa-device-id");
+  if (stored) return stored;
+  const id = crypto.randomUUID();
+  localStorage.setItem("voxa-device-id", id);
+  return id;
+}
+
+const emptyStatus: EngineStatus = {
+  phase: "idle", role: null, localEndpoint: null, publicEndpoint: null,
+  peerEndpoint: null, rttMs: 0, lossPct: 0, bitrateKbps: 0,
+  receivedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
+  renderer: "closed", capture: "idle", encoder: "idle",
+};
 
 export default function App() {
-  const [ready, setReady] = useState(false);
-  const membersOpen = useApp((s) => s.membersOpen);
-  const activeVoice = useApp((s) => s.activeVoice);
-
-  // Preferencias salvas entram ANTES do primeiro render util.
-  useEffect(() => {
-    iniciarDiagnostico();
-    session.hydrate();
-  }, []);
-
-  // Persiste o que a UI muda direto no store, sem passar pela session.
-  useEffect(() => {
-    let last = useApp.getState();
-    return useApp.subscribe((s) => {
-      if (s.membersOpen !== last.membersOpen || s.showStats !== last.showStats) {
-        savePrefs({ membersOpen: s.membersOpen, showStats: s.showStats });
-      }
-      last = s;
-    });
-  }, []);
-
-  // Atalhos globais (Rust) + checagem de atualizacao, so depois de logado.
-  useEffect(() => {
-    if (!ready) return;
-    let alive = true;
-    let dispose: (() => void) | undefined;
-    void session.initHotkeys().then((off) => {
-      if (!alive) off(); else dispose = off;
-    });
-    const timer = window.setTimeout(() => void session.checkUpdate(), 4000);
-    return () => {
-      alive = false;
-      dispose?.();
-      window.clearTimeout(timer);
-    };
-  }, [ready]);
+  const engine = useMemo(() => new NativeEngine(), []);
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SIGNALING);
+  const [room, setRoom] = useState(localStorage.getItem("voxa-room") ?? "");
+  const [token, setToken] = useState("");
+  const [role, setRole] = useState<StreamRole>("viewer");
+  const [status, setStatus] = useState<EngineStatus>(emptyStatus);
+  const [message, setMessage] = useState("Pronto para conectar");
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!ready || isDesktop) return;
-    const defaults = {mute:{code:"KeyM",ctrl:true,shift:true,alt:false}, deafen:{code:"KeyD",ctrl:true,shift:true,alt:false}, share:{code:"KeyE",ctrl:true,shift:true,alt:false}, talk:{code:"F8",ctrl:false,shift:false,alt:false}};
-    const onKey = (event: KeyboardEvent) => {
-      if (event.repeat || (event.target as HTMLElement)?.closest("input,textarea,[contenteditable=true]")) return;
-      for (const action of ["mute","deafen","share","talk"] as const) {
-        const saved = currentPrefs().hotkeys[action];
-        const combo = saved === undefined ? defaults[action] : saved;
-        if (!combo || combo.code !== event.code || combo.ctrl !== event.ctrlKey || combo.shift !== event.shiftKey || combo.alt !== event.altKey) continue;
-        event.preventDefault();
-        if (action === "mute") session.toggleMute();
-        if (action === "deafen") session.toggleDeafen();
-        if (action === "share") void session.toggleShare();
-        if (action === "talk") session.setTalking(true);
-      }
-    };
-    const release = () => session.setTalking(false);
-    const onRelease = (event: KeyboardEvent) => { const saved = currentPrefs().hotkeys.talk; if (event.code === (saved === undefined ? "F8" : saved?.code)) release(); };
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("keyup", onRelease);
-    window.addEventListener("blur", release);
-    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("keyup", onRelease); window.removeEventListener("blur", release); release(); };
-  }, [ready]);
+    const timer = window.setInterval(() => {
+      void engine.status().then(setStatus).catch(() => undefined);
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [engine]);
 
-  useEffect(() => {
-    const bye = () => session.destroy();
-    window.addEventListener("beforeunload", bye);
-    return () => window.removeEventListener("beforeunload", bye);
-  }, []);
-
-  // Alimenta a janela overlay (processo de WebView separado, sem store
-  // proprio) com quem esta no canal de voz agora. So serializa e emite
-  // quando o resultado muda de verdade — "speaking" oscila o tempo todo,
-  // mas na maioria dos ticks ninguem come started/parou de falar.
-  useEffect(() => {
-    const montar = (s: AppState): OverlayPeer[] => {
-      if (!s.overlayEnabled || !s.activeVoice || !s.me) return [];
-      return s.roster
-        .filter((r) => r.voice === s.activeVoice)
-        .map((r) => ({
-          id: r.id,
-          name: r.user.name,
-          color: r.user.color,
-          speaking: !!s.speaking[r.id],
-          muted: r.id === s.selfSocketId ? s.muted : r.state.muted,
-        }));
-    };
-
-    let ultimo = "";
-    const emitir = (s: AppState) => {
-      const peers = montar(s);
-      const serial = JSON.stringify(peers);
-      if (serial === ultimo) return;
-      ultimo = serial;
-      void emitEvent("overlay:roster", peers);
-    };
-
-    emitir(useApp.getState());
-    const parar = useApp.subscribe(emitir);
-
-    // A janela do overlay avisa quando terminou de montar: como `emitir`
-    // ignora repeticao, sem isto ela nasceria vazia e so se preencheria na
-    // proxima mudanca de roster.
-    let dispose: (() => void) | undefined;
-    let disposed = false;
-    void listenEvent("overlay:pronto", () => {
-      ultimo = "";
-      emitir(useApp.getState());
-    }).then((off) => {
-      if (disposed) off(); else dispose = off;
-    });
-
-    return () => {
-      disposed = true;
-      parar();
-      dispose?.();
-    };
-  }, []);
-
-  // O app passa horas em segundo plano enquanto o jogo roda. Alguns segundos
-  // depois de sumir da tela, devolve ao Windows a memoria que nao esta usando.
-  // O atraso evita fazer isso num alt-tab rapido, quando a janela volta logo.
-  useEffect(() => {
-    let timer = 0;
-    const onVisibility = () => {
-      window.clearTimeout(timer);
-      if (document.hidden) {
-        timer = window.setTimeout(() => { if (!useApp.getState().activeVoice) void releaseMemory(); }, 5000);
-        return;
-      }
-      // Voltou a olhar: o canal aberto passa a estar lido de novo.
-      const { activeText, clearUnread } = useApp.getState();
-      clearUnread(activeText);
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, []);
-
-  if (!ready) {
-    return (
-      <div className="flex h-full flex-col">
-        <TitleBar />
-        <div className="min-h-0 flex-1">
-          <LoginGate onDone={() => setReady(true)} />
-        </div>
-      </div>
-    );
+  async function connect(event: FormEvent) {
+    event.preventDefault();
+    if (!room.trim() || busy) return;
+    setBusy(true);
+    setMessage("Abrindo o socket UDP nativo...");
+    let matchmaking: Matchmaking | null = null;
+    try {
+      localStorage.setItem("voxa-room", room.trim());
+      const endpoint = await engine.prepare(role);
+      matchmaking = new Matchmaking(serverUrl, {
+        id: initialIdentity(), token,
+        onPeer: async (peer: PeerAnnouncement) => {
+          setMessage("Perfurando o NAT e autenticando o par...");
+          await engine.connectPeer(peer.endpoint, peer.sessionKey, peer.peerId);
+          if (role === "viewer") await engine.openRenderer();
+          setMessage(role === "host" ? "Rota nativa pronta; codificador em integração" : "Rota nativa pronta; decodificador em integração");
+        },
+        onPeerLeft: () => {
+          setMessage("O outro computador desconectou. Aguardando reconexão...");
+          void engine.disconnectPeer();
+        },
+        onError: setMessage,
+      });
+      engine.attachMatchmaking(matchmaking);
+      await matchmaking.join(room.trim(), role, endpoint);
+      setMessage(role === "host" ? "Aguardando espectador..." : "Procurando o computador host...");
+      setStatus(await engine.status());
+    } catch (error) {
+      matchmaking?.close();
+      await engine.stop().catch(() => undefined);
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally { setBusy(false); }
   }
 
+  async function stop() {
+    setBusy(true);
+    await engine.stop().catch(() => undefined);
+    setStatus(await engine.status().catch(() => emptyStatus));
+    setMessage("Transmissão encerrada");
+    setBusy(false);
+  }
+
+  const active = status.phase !== "idle" && status.phase !== "stopped";
   return (
-    <div className="relative flex h-full flex-col">
-      <TitleBar />
-
-      <div className="flex min-h-0 flex-1">
-        <ServerRail />
-        <ErrorBoundary area="canais" compact>
-          <ChannelSidebar />
-        </ErrorBoundary>
-
-        {/* Cada painel tem seu proprio boundary: uma falha no player de video
-            nao pode levar junto o chat, e vice-versa. */}
-        <main className="flex min-w-0 flex-1">
-          <div className="flex min-w-0 flex-1 flex-col">
-            {/* RemoteAudio fica FORA do boundary de video e sempre montado
-                enquanto ha canal de voz: audio nao pode depender da UI de
-                transmissao, que na maior parte do tempo nao mostra nada. */}
-            {activeVoice && <ErrorBoundary area="audio" compact><RemoteAudio /></ErrorBoundary>}
-            {activeVoice && (
-              <ErrorBoundary area="video">
-                <StageGrid />
-              </ErrorBoundary>
-            )}
-            <ErrorBoundary area="chat">
-              <ChatPanel />
-            </ErrorBoundary>
+    <main className="shell">
+      <header className="titlebar" data-tauri-drag-region>
+        <div className="brand"><span className="brand-dot" /> VOXA STREAM</div>
+        <div className="window-actions">
+          <button aria-label="Minimizar" onClick={() => invoke("minimize_main")}>—</button>
+          <button aria-label="Fechar" onClick={() => invoke("hide_main")}>×</button>
+        </div>
+      </header>
+      <section className="hero">
+        <div className="eyebrow">NATIVE UDP ENGINE</div>
+        <h1>Controle simples.<br />Vídeo fora do navegador.</h1>
+        <p>O painel negocia a sessão. Captura, transporte e a janela de reprodução pertencem ao motor Rust.</p>
+      </section>
+      <section className="card">
+        <form onSubmit={connect}>
+          <div className="role-picker" aria-label="Modo de conexão">
+            <button type="button" className={role === "host" ? "selected" : ""} onClick={() => setRole("host")} disabled={active}>
+              <strong>Hospedar</strong><span>Transmitir este PC</span>
+            </button>
+            <button type="button" className={role === "viewer" ? "selected" : ""} onClick={() => setRole("viewer")} disabled={active}>
+              <strong>Conectar</strong><span>Assistir outro PC</span>
+            </button>
           </div>
-          {membersOpen && (
-            <ErrorBoundary area="lista de membros" compact>
-              <MemberList />
-            </ErrorBoundary>
-          )}
-        </main>
-      </div>
-
-      <SettingsModal />
-      <SharePicker />
-      <Toasts />
-    </div>
+          <label>Sala<input value={room} onChange={(event) => setRoom(event.target.value)} maxLength={64} placeholder="ex.: sala-do-jogo" disabled={active} /></label>
+          <label>Senha da sala<input value={token} onChange={(event) => setToken(event.target.value)} type="password" maxLength={256} placeholder="Obrigatória no servidor público" disabled={active} /></label>
+          <details>
+            <summary>Servidor de matchmaking</summary>
+            <label>URL<input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} inputMode="url" disabled={active} /></label>
+          </details>
+          {active
+            ? <button className="primary danger" type="button" onClick={stop} disabled={busy}>Encerrar</button>
+            : <button className="primary" type="submit" disabled={busy || !room.trim()}>{busy ? "Conectando..." : role === "host" ? "Começar transmissão" : "Conectar ao host"}</button>}
+        </form>
+      </section>
+      <section className="telemetry" aria-live="polite">
+        <div className={`status ${status.phase}`}><i />{message}</div>
+        <div className="metrics">
+          <Metric label="Rota" value={status.peerEndpoint ?? status.publicEndpoint ?? "—"} />
+          <Metric label="RTT" value={`${status.rttMs} ms`} />
+          <Metric label="Perda" value={`${status.lossPct.toFixed(1)}%`} />
+          <Metric label="Bitrate" value={`${status.bitrateKbps} kbps`} />
+          <Metric label="Frames" value={`${status.receivedFrames} / ${status.droppedFrames} descartados`} />
+          <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.renderer}`} />
+        </div>
+      </section>
+    </main>
   );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div><span>{label}</span><strong title={value}>{value}</strong></div>;
 }

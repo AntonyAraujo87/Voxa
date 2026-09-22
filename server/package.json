@@ -1,9 +1,9 @@
 {
   "name": "voxa-signaling",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Servidor de signaling WebRTC ultra-leve (handshake + chat realtime)",
+  "description": "Matchmaking seguro para o túnel UDP nativo do Voxa",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",

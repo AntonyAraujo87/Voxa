@@ -14,14 +14,7 @@ import { ipKeyGenerator } from "express-rate-limit";
 
 export const EVENT_LIMITS = {
   hello: { windowMs: 10_000, max: 5 },
-  // ICE chega em rajada durante o handshake — o teto precisa ser alto.
-  signal: { windowMs: 10_000, max: 400 },
-  "voice:join": { windowMs: 30_000, max: 15 },
-  "voice:leave": { windowMs: 30_000, max: 15 },
-  state: { windowMs: 10_000, max: 40 },
-  "chat:send": { windowMs: 5_000, max: 8 },
-  "chat:typing": { windowMs: 5_000, max: 6 },
-  "ice:config": { windowMs: 10_000, max: 5 },
+  "stream:join": { windowMs: 30_000, max: 10 },
 };
 
 /** Conexoes simultaneas do mesmo IP. Amigos na mesma casa compartilham IP. */

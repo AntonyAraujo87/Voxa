@@ -1,31 +1,10 @@
 <!doctype html>
-<html lang="pt-BR" class="dark">
+<html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!--
-      script-src precisa de 'wasm-unsafe-eval' pro RNNoise (WebAssembly) —
-      diretiva do CSP nivel 3, so libera compilar/instanciar WASM, bem mais
-      estreita que 'unsafe-eval' (que abriria eval() de JS arbitrario tambem).
-    -->
-    <!--
-      O `blob:` existe por causa do audio do sistema: o AudioWorklet dele e
-      montado em memoria (a fila de PCM entra por `toString()`, porque
-      worklet nao aceita `import`) e carregado como blob. Sem isso o worklet
-      simplesmente NAO CARREGA — a captura WASAPI abria, mandava audio e
-      nada tocava do outro lado, sem erro visivel fora do console. Foi assim
-      que a v0.5.0 saiu quebrada.
-
-      Vale nas duas diretivas de proposito: worklet cai em `script-src-elem`
-      (que herda de `script-src`) e Worker cai em `worker-src` — sao caminhos
-      diferentes e so um deles estava sendo testado.
-
-      O blob e montado de uma string constante do proprio bundle. Nao ha
-      caminho por onde conteudo de terceiro chegue nele: o app nao usa
-      innerHTML, nem eval, nem insere <script> com URL vinda de dados.
-    -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src *; media-src * blob: mediastream:; img-src * data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:" />
-    <title>Voxa</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://voxa-signaling.onrender.com wss://voxa-signaling.onrender.com ws://localhost:* http://localhost:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'" />
+    <title>Voxa Stream</title>
   </head>
   <body>
     <div id="root"></div>

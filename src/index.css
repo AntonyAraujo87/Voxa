@@ -1,103 +1,38 @@
-@import "tailwindcss";
-
-/* ---------------------------------------------------------------------------
-   Design tokens — paleta escura estilo Discord, expostas como CSS vars
-   pra o Tailwind v4 gerar utilitarios (bg-base, text-muted, etc).
---------------------------------------------------------------------------- */
-@theme {
-  --color-base-900: #1a1b1e; /* rail de servidores  */
-  --color-base-800: #1e1f22; /* fundo da janela     */
-  --color-base-700: #2b2d31; /* sidebar de canais   */
-  --color-base-600: #313338; /* area de chat        */
-  --color-base-500: #383a40; /* inputs / hover      */
-  --color-base-400: #404249; /* hover forte         */
-  --color-line: #26272b;
-
-  --color-ink: #f2f3f5;
-  --color-ink-soft: #dbdee1;
-  --color-muted: #949ba4;
-  --color-faint: #6d6f78;
-
-  --color-brand: #5865f2;
-  --color-brand-hover: #4752c4;
-  --color-online: #23a55a;
-  --color-danger: #f23f43;
-  --color-warn: #f0b232;
-  --color-stream: #a855f7;
-
-  --font-sans: "gg sans", "Inter", "Segoe UI Variable Display", "Segoe UI",
-    system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, monospace;
-
-  --animate-pop: pop 0.16s ease-out;
-}
-
-@keyframes pop {
-  from { opacity: 0; transform: translateY(4px) scale(0.985); }
-  to   { opacity: 1; transform: none; }
-}
-
-/* ---------------------------------------------------------------------------
-   Reset + performance
---------------------------------------------------------------------------- */
-* { min-width: 0; }
-
-html, body, #root {
-  height: 100%;
-  margin: 0;
-  overflow: hidden; /* app shell: quem rola sao os paineis internos */
-}
-
-body {
-  background: var(--color-base-800);
-  color: var(--color-ink-soft);
-  font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.4;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeSpeed;
-  user-select: none;
-  cursor: default;
-  overscroll-behavior: none;
-}
-
-input, textarea { user-select: text; }
-
-/* Video: manda a composicao pra GPU e evita repaint do layout inteiro */
-video {
-  display: block;
-  background: #000;
-  contain: strict;
-  transform: translateZ(0);
-  backface-visibility: hidden;
-  will-change: transform;
-}
-
-/* Scrollbar fina estilo Discord */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb {
-  background: #1a1b1e;
-  border-radius: 8px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-::-webkit-scrollbar-thumb:hover { background: #111214; background-clip: padding-box; }
-
-::selection { background: color-mix(in srgb, var(--color-brand) 45%, transparent); }
-
-button { font: inherit; cursor: pointer; }
-
-@utility drag-region {
-  -webkit-app-region: drag;
-}
-@utility no-drag {
-  -webkit-app-region: no-drag;
-}
-
-/* Camada de composicao isolada pra grade de video: re-render de chat
-   nunca invalida o layer do stream. */
-@utility gpu-layer {
-  contain: layout paint style;
-  transform: translateZ(0);
-}
+:root { color-scheme: dark; font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; background: #07090d; color: #f7f8fb; font-synthesis: none; }
+* { box-sizing: border-box; }
+html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
+body { min-height: 100vh; overflow: auto; background: radial-gradient(circle at 18% 8%, rgba(27,107,255,.18), transparent 34rem), radial-gradient(circle at 85% 75%, rgba(0,220,180,.1), transparent 30rem), #07090d; }
+button, input { font: inherit; } button { color: inherit; }
+.shell { width: min(940px, calc(100% - 40px)); margin: 0 auto; padding: 0 0 52px; }
+.titlebar { height: 56px; display: flex; align-items: center; justify-content: space-between; }
+.brand { display: flex; align-items: center; gap: 10px; font-size: 12px; font-weight: 800; letter-spacing: .16em; color: #b8c1d4; }
+.brand-dot { width: 11px; height: 11px; border-radius: 3px; background: #2f7dff; box-shadow: 0 0 22px #2f7dff; }
+.window-actions { display: flex; -webkit-app-region: no-drag; }
+.window-actions button { width: 42px; height: 34px; border: 0; background: transparent; color: #8b94a8; font-size: 18px; border-radius: 7px; }
+.window-actions button:hover { background: #1b202a; color: white; }
+.hero { padding: 54px 0 32px; }
+.eyebrow { color: #48a0ff; font-size: 12px; font-weight: 800; letter-spacing: .2em; margin-bottom: 12px; }
+h1 { margin: 0; max-width: 720px; font-size: clamp(42px, 7vw, 74px); line-height: .96; letter-spacing: -.055em; }
+.hero p { color: #98a3b8; max-width: 620px; font-size: 17px; line-height: 1.6; margin: 22px 0 0; }
+.card { border: 1px solid #222a38; border-radius: 18px; background: rgba(15,19,27,.9); box-shadow: 0 24px 80px rgba(0,0,0,.32); padding: 24px; }
+form { display: grid; gap: 18px; }
+.role-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.role-picker button { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; border: 1px solid #283142; background: #111722; border-radius: 12px; padding: 16px; text-align: left; }
+.role-picker button.selected { border-color: #2f7dff; background: rgba(47,125,255,.12); box-shadow: inset 0 0 0 1px rgba(47,125,255,.25); }
+.role-picker button span { color: #7f899d; font-size: 13px; }
+label { display: grid; gap: 8px; color: #b9c1d1; font-size: 13px; font-weight: 700; }
+input { width: 100%; border: 1px solid #283142; border-radius: 10px; background: #090d14; color: #f7f8fb; outline: none; padding: 13px 14px; }
+input:focus { border-color: #2f7dff; box-shadow: 0 0 0 3px rgba(47,125,255,.13); }
+input:disabled, button:disabled { opacity: .55; cursor: not-allowed; }
+details { color: #7f899d; font-size: 13px; } summary { cursor: pointer; margin-bottom: 12px; }
+.primary { border: 0; border-radius: 10px; background: linear-gradient(135deg,#2f7dff,#175fe2); padding: 14px 20px; font-weight: 800; cursor: pointer; box-shadow: 0 10px 30px rgba(47,125,255,.24); }
+.primary.danger { background: #b73142; box-shadow: none; }
+.telemetry { margin-top: 18px; border: 1px solid #1b2230; border-radius: 16px; background: rgba(10,13,19,.76); overflow: hidden; }
+.status { display: flex; align-items: center; gap: 10px; padding: 15px 18px; border-bottom: 1px solid #1b2230; color: #b9c1d1; }
+.status i { width: 8px; height: 8px; border-radius: 50%; background: #6a7487; }
+.status.connected i, .status.streaming i { background: #26d59b; box-shadow: 0 0 14px #26d59b; }
+.metrics { display: grid; grid-template-columns: repeat(3,1fr); }
+.metrics > div { display: grid; gap: 4px; padding: 16px 18px; border-right: 1px solid #1b2230; border-bottom: 1px solid #1b2230; overflow: hidden; }
+.metrics span { color: #687386; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; }
+.metrics strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+@media (max-width: 650px) { .shell { width: min(100% - 24px,940px); } .hero { padding-top: 30px; } .role-picker, .metrics { grid-template-columns: 1fr; } }

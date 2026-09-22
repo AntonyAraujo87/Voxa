@@ -1,7 +1,7 @@
 {
   "name": "voxa",
   "private": true,
-  "version": "0.5.33",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,42 +14,23 @@
     "app:build": "tauri build",
     "app:build:local": "node scripts/build-local.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test server/test/security.test.js server/test/admission.test.js server/test/handshake.test.js server/test/payloads.test.js server/test/hello-retry.test.js src/lib/rtc/nucleo.test.ts src/lib/rtc/peer.test.js src/lib/filaPcm.test.ts src/lib/mencao.test.ts scripts/check-native.test.mjs scripts/check-updates.test.mjs scripts/check-deployment.test.mjs scripts/promote-release.test.mjs",
-    "verify": "tsc --noEmit && npm test && npm run test:regressions && npm run test:sql && npm run test:review && npm run test:recovery && npm run test:capture",
-    "test:rtc": "node scripts/rtc-validation/run.mjs",
-    "test:regressions": "node scripts/check-regressions.mjs",
-    "test:sql": "node scripts/check-sql.mjs",
-    "test:worklet": "node scripts/check-worklet.mjs",
-    "test:ui": "node scripts/check-ui.mjs",
-    "test:review": "node scripts/check-review-regressions.mjs",
-    "test:recovery": "node scripts/check-recovery.mjs",
-    "test:capture": "node scripts/check-capture-policy.mjs"
+    "test": "node --test server/test/*.test.js scripts/check-native.test.mjs scripts/check-deployment.test.mjs scripts/promote-release.test.mjs",
+    "verify": "tsc --noEmit && npm test"
   },
   "dependencies": {
-    "@sapphi-red/web-noise-suppressor": "^0.4.0",
-    "@supabase/supabase-js": "^2.114.0",
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-global-shortcut": "^2.3.2",
-    "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.11.0",
-    "lucide-react": "^1.39.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "socket.io-client": "^4.8.3",
-    "zustand": "^5.0.15"
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.8",
-    "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "esbuild": "^0.28.2",
-    "playwright": "^1.62.1",
-    "sharp": "^0.35.4",
-    "tailwindcss": "^4.3.3",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
   },

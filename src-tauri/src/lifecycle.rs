@@ -1,7 +1,7 @@
 //! Ciclo de vida da janela: bandeja do sistema e consumo de memoria.
 //!
 //! O Voxa fica horas aberto em segundo plano enquanto o usuario joga. Nesse
-//! estado ele nao precisa de nada alem do audio e da conexao — a janela nem
+//! estado ele nao precisa de nada alem do motor de rede — a janela nem
 //! esta sendo desenhada. Aqui devolvemos ao sistema tudo o que da.
 
 use tauri::{
@@ -79,21 +79,6 @@ pub fn release_memory() {
     std::thread::spawn(trim_memory);
 }
 
-/// Pisca o icone na barra de tarefas.
-///
-/// Com o app escondido na bandeja durante o jogo, uma mensagem nova nao tinha
-/// como se anunciar: o badge de nao lidas so aparece para quem esta olhando a
-/// janela. Este e o mesmo aviso que o Windows usa para qualquer app que
-/// precisa de atencao — discreto, nativo, e o usuario ja sabe o que significa.
-#[tauri::command]
-pub fn flash_taskbar(app: AppHandle) {
-    use tauri::UserAttentionType;
-    if let Some(window) = app.get_webview_window("main") {
-        // Informational pisca uma vez; Critical fica piscando ate o foco.
-        let _ = window.request_user_attention(Some(UserAttentionType::Informational));
-    }
-}
-
 /// Icone na bandeja com menu de Abrir e Sair.
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     // Sem icone nao ha bandeja — mas isso nao pode derrubar o app inteiro.
@@ -141,14 +126,10 @@ fn restore(app: &AppHandle) {
     }
 }
 
-/// Fechar esconde na bandeja em vez de encerrar; a chamada de voz continua.
+/// Fechar esconde na bandeja em vez de encerrar; o transporte pode continuar.
 pub fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
-    // SO a janela principal. Este handler roda para TODAS as janelas do app, e
-    // o overlay tambem passa por aqui: como ele e fechado de propria vontade
-    // (`win.close()` quando o usuario desliga a opcao), o `prevent_close`
-    // abaixo apenas o escondia. A janela continuava existindo, o
-    // `get_webview_window("overlay")` seguia encontrando ela, e religar o
-    // overlay nao fazia mais nada — quebrado ate reiniciar o app.
+    // Somente a janela principal vira bandeja. A janela nativa do stream fecha
+    // normalmente e pode ser criada novamente pelo motor.
     if window.label() != "main" {
         return;
     }
@@ -159,6 +140,6 @@ pub fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
         }
         api.prevent_close();
         let _ = window.hide();
-        // A chamada pode continuar ativa; nao paginar a memoria de audio.
+        // O stream pode continuar ativo; o motor nativo controla sua memoria.
     }
 }

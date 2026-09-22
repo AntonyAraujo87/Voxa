@@ -1,0 +1,247 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use chacha20poly1305::{
+    aead::{Aead, Payload},
+    ChaCha20Poly1305, KeyInit, Nonce,
+};
+use sha2::{Digest, Sha256};
+
+pub const MAX_DATAGRAM: usize = 1200;
+pub const HEADER_LEN: usize = 42;
+const MAGIC: &[u8; 4] = b"VOXA";
+const VERSION: u8 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Kind {
+    Hello = 1,
+    HelloAck = 2,
+    Video = 3,
+    Ping = 4,
+    Pong = 5,
+    Feedback = 6,
+    Keyframe = 7,
+    Input = 8,
+}
+
+impl TryFrom<u8> for Kind {
+    type Error = String;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Hello),
+            2 => Ok(Self::HelloAck),
+            3 => Ok(Self::Video),
+            4 => Ok(Self::Ping),
+            5 => Ok(Self::Pong),
+            6 => Ok(Self::Feedback),
+            7 => Ok(Self::Keyframe),
+            8 => Ok(Self::Input),
+            _ => Err("Tipo de pacote desconhecido".into()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Meta {
+    pub stream_id: u32,
+    pub sequence: u64,
+    pub frame_id: u64,
+    pub fragment_index: u16,
+    pub fragment_count: u16,
+    pub timestamp_us: u64,
+    pub keyframe: bool,
+}
+
+#[derive(Debug)]
+pub struct Packet {
+    pub kind: Kind,
+    pub meta: Meta,
+    pub payload: Vec<u8>,
+}
+
+pub fn session_key(encoded: &str) -> Result<[u8; 32], String> {
+    let raw = URL_SAFE_NO_PAD
+        .decode(encoded.trim())
+        .map_err(|_| "Chave de sessão inválida")?;
+    raw.try_into()
+        .map_err(|_| "A chave de sessão deve ter 256 bits".into())
+}
+
+pub fn directional_keys(base: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+    fn derive(base: &[u8; 32], label: &[u8]) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(b"voxa-native-v1\0");
+        digest.update(label);
+        digest.update(base);
+        digest.finalize().into()
+    }
+    (
+        derive(base, b"host-to-viewer"),
+        derive(base, b"viewer-to-host"),
+    )
+}
+
+#[derive(Default)]
+pub struct ReplayGuard {
+    stream_id: Option<u32>,
+    highest: u64,
+    seen: u128,
+}
+
+impl ReplayGuard {
+    pub fn accept(&mut self, stream_id: u32, sequence: u64) -> bool {
+        if self.stream_id.is_none() {
+            self.stream_id = Some(stream_id);
+            self.highest = sequence;
+            self.seen = 1;
+            return true;
+        }
+        if self.stream_id != Some(stream_id) {
+            return false;
+        }
+        if sequence > self.highest {
+            let shift = (sequence - self.highest).min(128) as u32;
+            self.seen = if shift == 128 {
+                1
+            } else {
+                (self.seen << shift) | 1
+            };
+            self.highest = sequence;
+            return true;
+        }
+        let age = self.highest - sequence;
+        if age >= 128 {
+            return false;
+        }
+        let bit = 1u128 << age;
+        if self.seen & bit != 0 {
+            return false;
+        }
+        self.seen |= bit;
+        true
+    }
+}
+
+pub fn seal(key: &[u8; 32], kind: Kind, meta: Meta, payload: &[u8]) -> Result<Vec<u8>, String> {
+    if payload.len() + HEADER_LEN + 16 > MAX_DATAGRAM {
+        return Err("Fragmento maior que o MTU seguro".into());
+    }
+    let cipher_len = payload.len() + 16;
+    let mut header = Vec::with_capacity(HEADER_LEN);
+    header.extend_from_slice(MAGIC);
+    header.extend_from_slice(&[VERSION, kind as u8, u8::from(meta.keyframe), 0]);
+    header.extend_from_slice(&meta.stream_id.to_be_bytes());
+    header.extend_from_slice(&meta.sequence.to_be_bytes());
+    header.extend_from_slice(&meta.frame_id.to_be_bytes());
+    header.extend_from_slice(&meta.fragment_index.to_be_bytes());
+    header.extend_from_slice(&meta.fragment_count.to_be_bytes());
+    header.extend_from_slice(&meta.timestamp_us.to_be_bytes());
+    header.extend_from_slice(&(cipher_len as u16).to_be_bytes());
+    let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|_| "Chave inválida")?;
+    let encrypted = cipher
+        .encrypt(
+            Nonce::from_slice(&nonce(meta)),
+            Payload {
+                msg: payload,
+                aad: &header,
+            },
+        )
+        .map_err(|_| "Falha ao cifrar pacote")?;
+    header.extend_from_slice(&encrypted);
+    Ok(header)
+}
+
+pub fn open(key: &[u8; 32], datagram: &[u8]) -> Result<Packet, String> {
+    if datagram.len() < HEADER_LEN + 16 || &datagram[..4] != MAGIC || datagram[4] != VERSION {
+        return Err("Cabeçalho UDP inválido".into());
+    }
+    let kind = Kind::try_from(datagram[5])?;
+    let meta = Meta {
+        keyframe: datagram[6] & 1 != 0,
+        stream_id: u32::from_be_bytes(datagram[8..12].try_into().unwrap()),
+        sequence: u64::from_be_bytes(datagram[12..20].try_into().unwrap()),
+        frame_id: u64::from_be_bytes(datagram[20..28].try_into().unwrap()),
+        fragment_index: u16::from_be_bytes(datagram[28..30].try_into().unwrap()),
+        fragment_count: u16::from_be_bytes(datagram[30..32].try_into().unwrap()),
+        timestamp_us: u64::from_be_bytes(datagram[32..40].try_into().unwrap()),
+    };
+    let payload_len = u16::from_be_bytes(datagram[40..42].try_into().unwrap()) as usize;
+    if payload_len != datagram.len() - HEADER_LEN {
+        return Err("Tamanho UDP inconsistente".into());
+    }
+    let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|_| "Chave inválida")?;
+    let payload = cipher
+        .decrypt(
+            Nonce::from_slice(&nonce(meta)),
+            Payload {
+                msg: &datagram[HEADER_LEN..],
+                aad: &datagram[..HEADER_LEN],
+            },
+        )
+        .map_err(|_| "Pacote UDP não autenticado")?;
+    Ok(Packet {
+        kind,
+        meta,
+        payload,
+    })
+}
+
+fn nonce(meta: Meta) -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    nonce[..4].copy_from_slice(&meta.stream_id.to_be_bytes());
+    nonce[4..].copy_from_slice(&meta.sequence.to_be_bytes());
+    nonce
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn encrypted_packet_round_trip() {
+        let key = [7u8; 32];
+        let meta = Meta {
+            stream_id: 4,
+            sequence: 9,
+            frame_id: 12,
+            fragment_count: 1,
+            keyframe: true,
+            ..Default::default()
+        };
+        let encoded = seal(&key, Kind::Video, meta, b"frame").unwrap();
+        assert!(!encoded.windows(5).any(|bytes| bytes == b"frame"));
+        let decoded = open(&key, &encoded).unwrap();
+        assert_eq!(decoded.kind, Kind::Video);
+        assert_eq!(decoded.payload, b"frame");
+        assert!(decoded.meta.keyframe);
+    }
+    #[test]
+    fn tampering_is_rejected() {
+        let key = [1u8; 32];
+        let mut encoded = seal(
+            &key,
+            Kind::Ping,
+            Meta {
+                sequence: 1,
+                ..Default::default()
+            },
+            b"x",
+        )
+        .unwrap();
+        *encoded.last_mut().unwrap() ^= 1;
+        assert!(open(&key, &encoded).is_err());
+    }
+    #[test]
+    fn rejects_replay_and_accepts_reordering_once() {
+        let mut guard = ReplayGuard::default();
+        assert!(guard.accept(9, 10));
+        assert!(guard.accept(9, 12));
+        assert!(guard.accept(9, 11));
+        assert!(!guard.accept(9, 11));
+        assert!(!guard.accept(9, 10));
+        assert!(!guard.accept(10, 1));
+    }
+    #[test]
+    fn directions_never_share_a_key() {
+        let (a, b) = directional_keys(&[4; 32]);
+        assert_ne!(a, b);
+    }
+}

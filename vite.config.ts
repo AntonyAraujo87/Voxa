@@ -2,14 +2,13 @@ import { defineConfig, loadEnv } from "vite";
 // @ts-expect-error build helper executado pelo Node, fora do bundle do app
 import { buildInfo } from "./scripts/build-info.mjs";
 import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
 
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => ({
   define: { __VOXA_BUILD__: JSON.stringify(buildInfo({ ...loadEnv(mode, process.cwd(), "VITE_"), ...process.env })) },
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
 
   // Tauri: nao limpar a tela pra nao esconder os erros do Rust
   clearScreen: false,
@@ -26,7 +25,7 @@ export default defineConfig(({ mode }) => ({
     target: "chrome110",
     minify: "esbuild",
     sourcemap: false,
-    cssMinify: "lightningcss",
+    cssMinify: "esbuild",
   },
   esbuild: {
     legalComments: "none",

@@ -1,9 +1,6 @@
 name: ci
 
-# Roda em todo push e pull request. Existe porque a auditoria encontrou dois
-# bugs que passavam despercebidos justamente por serem silenciosos — token
-# aceito indevidamente e autoria de mensagem falsificavel. Sem um portao
-# automatico, a proxima regressao desse tipo so apareceria em producao.
+# Valida o painel, o matchmaking e o protocolo nativo em todo push e PR.
 on:
   push:
     branches: [main, "codex/**"]
@@ -40,18 +37,6 @@ jobs:
       - name: Testes do servidor
         run: npm run verify
 
-      - name: Chromium para testes de midia
-        run: npx playwright install --with-deps chromium
-
-      - name: AudioWorklet minificado
-        run: npm run test:worklet
-
-      - name: Voz e transmissao entre pares reais
-        run: npm run test:rtc
-
-      - name: Fluxo de interface com midia sintetica
-        run: npm run test:ui
-
   rust:
     name: Rust
     runs-on: windows-latest
@@ -80,4 +65,8 @@ jobs:
 
       - name: Clippy
         run: cargo clippy -- -D warnings
+        working-directory: src-tauri
+
+      - name: Testes do protocolo nativo
+        run: cargo test --manifest-path native-core/Cargo.toml
         working-directory: src-tauri
