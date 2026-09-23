@@ -21,9 +21,11 @@ incompletos expiram em 250 ms; keyframes recebem até 1,5 s por serem maiores.
 Frames atrasados ou incompletos são descartados e geram pedido de keyframe, sem
 retransmissão. O bitrate cai rápido com perda/RTT e sobe gradualmente.
 
-O matchmaking aceita exatamente um `host` e um `viewer` por sala. Ele não recebe
-frames nem input. Para pares no mesmo IP público, anuncia o endpoint LAN; fora da
-LAN, usa o mapeamento descoberto por STUN e perfuração UDP simultânea.
+O matchmaking aceita um `host` e até quatro `viewers` por sala. O host codifica
+cada frame uma vez e o distribui para sessões UDP independentes. Cada espectador
+possui segredo X25519, controle de congestionamento e alocação de relay próprios.
+O servidor não recebe frames nem input. Para pares no mesmo IP público, anuncia o
+endpoint LAN; fora da LAN, usa o mapeamento descoberto por STUN e perfuração UDP.
 
 ## Estado funcional
 
@@ -41,6 +43,8 @@ LAN, usa o mapeamento descoberto por STUN e perfuração UDP simultânea.
 - O painel verifica, baixa e instala updates assinados sem interromper uma transmissão ativa.
 - A configuração de codec, dimensões e FPS viaja autenticada e é repetida para
   tolerar perda UDP.
+- Até quatro espectadores simultâneos, com saída individual preservada quando
+  outro espectador desconecta e pedido automático de IDR para quem entra depois.
 
 O host não usa fallback de captura web nem encode por CPU. A cadeia nativa compila,
 mas ainda precisa ser validada em dois PCs físicos e GPUs NVENC, AMF e QuickSync.
@@ -69,8 +73,8 @@ deve entrar em uma variável `VITE_*`.
 O Render Web Service continua hospedando apenas WSS/HTTP. Para NAT simétrico e
 CGNAT, execute `npm run relay --prefix server` numa VM com UDP público e configure
 o endpoint no Render. A rota direta continua preferida e não consome banda da VM.
-O código E2E de seis dígitos exibido nos dois PCs deve coincidir; isso detecta
-substituição maliciosa das chaves públicas pelo servidor de signaling.
+Cada código E2E de seis dígitos exibido no host deve coincidir com o código do
+espectador correspondente; isso detecta substituição maliciosa das chaves públicas.
 
 Detalhes de implantação estão em [docs/DEPLOY.md](docs/DEPLOY.md) e a sequência
 técnica está em [docs/NATIVE-STREAMING-ROADMAP.md](docs/NATIVE-STREAMING-ROADMAP.md).

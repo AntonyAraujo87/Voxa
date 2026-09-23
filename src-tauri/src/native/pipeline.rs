@@ -2,7 +2,7 @@ use super::{
     capture::DxgiCapture,
     converter::GpuColorConverter,
     encoder::HardwareH264Encoder,
-    transport::{EncodedFrame, TransportHandle},
+    transport::{EncodedFrame, HostTransportHandle},
     Inner,
 };
 use std::{
@@ -17,13 +17,13 @@ use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITH
 const FPS: u32 = 60;
 
 pub(super) fn spawn(
-    transport: TransportHandle,
+    transport: HostTransportHandle,
     state: Arc<Mutex<Inner>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || run(transport, state))
 }
 
-fn run(transport: TransportHandle, state: Arc<Mutex<Inner>>) {
+fn run(transport: HostTransportHandle, state: Arc<Mutex<Inner>>) {
     let apartment = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     if let Err(error) = apartment.ok() {
         if let Ok(mut inner) = state.lock() {
@@ -59,7 +59,7 @@ impl Drop for ComApartment {
 }
 
 fn run_device_session(
-    transport: &TransportHandle,
+    transport: &HostTransportHandle,
     state: &Arc<Mutex<Inner>>,
 ) -> Result<(), String> {
     let capture = DxgiCapture::primary()?;
@@ -99,6 +99,10 @@ fn run_device_session(
     let duration_100ns = 10_000_000i64 / FPS as i64;
     let mut frame_id = 1u64;
     while !transport.stopped() {
+        if transport.peer_count() == 0 {
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
         let Some(frame) = capture.acquire(20)? else {
             continue;
         };

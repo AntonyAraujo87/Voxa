@@ -4,7 +4,7 @@
 
 - Exclusão do produto social, Supabase e mídia WebRTC.
 - Painel React restrito a hospedar, conectar, encerrar e mostrar telemetria.
-- Matchmaking de dois pares que repassa somente chaves públicas X25519.
+- Matchmaking de um host com até quatro espectadores que repassa somente chaves públicas X25519.
 - Fallback entre múltiplos STUN IPv4 e reutilização do mesmo socket para hole punching.
 - Cabeçalho binário versionado, MTU interno de 1178 bytes e ChaCha20-Poly1305.
 - Chaves derivadas por direção, `stream_id` aleatório e janela antirreplay.
@@ -24,19 +24,19 @@
 - `ICodecAPI` para low-latency, GOP curto, zero B-frames, IDR e bitrate dinâmico.
 - Resize, letterbox, fullscreen e reconstrução de device/decoder após falha D3D11.
 - Updater assinado verificado e instalado pelo painel.
+- Fan-out de vídeo codificado uma vez para até quatro sessões UDP, cada uma com
+  chave X25519, congestionamento e alocação de relay independentes.
 
 ## Próxima integração obrigatória
 
-1. **Multi-viewer:** permitir até quatro convidados por host, codificando uma vez e
-   mantendo chave X25519, congestionamento, rota direta/relay e permissões separados por convidado.
-2. **Input remoto:** enviar mouse, teclado e gamepad somente por APIs oficiais em
+1. **Input remoto:** enviar mouse, teclado e gamepad somente por APIs oficiais em
    modo usuário, com consentimento local, indicador persistente, lista de teclas
    bloqueadas e botão de emergência. O input permanece desativado na versão atual.
-3. **Codec futuro:** acrescentar P010/H.265/AV1 quando suportado e negociar capacidade.
-4. **Render futuro:** seleção correta de GPU/monitor e troca de monitor durante a sessão.
-5. **Feedback:** atraso interframe, fila do
+2. **Codec futuro:** acrescentar P010/H.265/AV1 quando suportado e negociar capacidade.
+3. **Render futuro:** seleção correta de GPU/monitor e troca de monitor durante a sessão.
+4. **Feedback:** atraso interframe, fila do
    socket e tempo encode/decode para dirigir bitrate, resolução e FPS.
-6. **Rede hostil:** medir disponibilidade/custo do relay e adicionar relay regional.
+5. **Rede hostil:** medir disponibilidade/custo do relay e adicionar relay regional.
 
 ## Critério para chamar de transmissão pronta
 

@@ -17,10 +17,13 @@ pub mod renderer;
 pub mod viewer;
 
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use tauri::{AppHandle, Manager, State};
 use tokio::net::UdpSocket;
-use transport::{spawn_receiver, TransportControl};
+use transport::{spawn_receiver, DatagramHub, HostTransportHandle, TransportControl};
 use voxa_native_core::{protocol, stun};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,6 +31,13 @@ use voxa_native_core::{protocol, stun};
 pub enum StreamRole {
     Host,
     Viewer,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerVerification {
+    peer_id: String,
+    code: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -50,6 +60,9 @@ pub struct EngineStatus {
     decoder: &'static str,
     decoded_frames: u64,
     verification_code: Option<String>,
+    connected_peers: usize,
+    max_peers: usize,
+    peer_verifications: Vec<PeerVerification>,
 }
 
 impl Default for EngineStatus {
@@ -72,6 +85,9 @@ impl Default for EngineStatus {
             decoder: "idle",
             decoded_frames: 0,
             verification_code: None,
+            connected_peers: 0,
+            max_peers: 4,
+            peer_verifications: Vec::new(),
         }
     }
 }
@@ -87,7 +103,11 @@ pub struct PreparedEndpoint {
 struct Inner {
     status: EngineStatus,
     socket: Option<Arc<UdpSocket>>,
-    transport: Option<TransportControl>,
+    datagrams: Option<DatagramHub>,
+    transports: HashMap<String, TransportControl>,
+    host_fanout: HostTransportHandle,
+    host_pipeline: Option<std::thread::JoinHandle<()>>,
+    verification_codes: HashMap<String, String>,
     key_exchange: Option<protocol::EphemeralKey>,
 }
 
@@ -152,6 +172,7 @@ pub async fn engine_prepare(
         ("disabled", "decoder-pending")
     };
     let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+    inner.datagrams = Some(DatagramHub::new(socket.clone()));
     inner.socket = Some(socket);
     inner.key_exchange = Some(key_exchange);
     inner.status.phase = "waiting";
@@ -191,6 +212,9 @@ pub async fn engine_connect_peer(
         relay_session,
         relay_auth,
     } = request;
+    if peer_id.is_empty() || peer_id.len() > 128 {
+        return Err("Identidade do computador inválida".into());
+    }
     let peer = endpoint.parse().map_err(|_| "Endpoint UDP inválido")?;
     let relay = match (relay_endpoint, relay_session, relay_auth) {
         (Some(endpoint), Some(session), Some(auth)) => {
@@ -206,40 +230,60 @@ pub async fn engine_connect_peer(
         (None, None, None) => None,
         _ => return Err("Configuração do relay incompleta".into()),
     };
-    let (socket, role, previous, key_exchange) = {
+    let (datagrams, role, previous, key, verification_code) = {
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+        let role = inner.status.role.ok_or("Modo ausente")?;
+        if role == StreamRole::Host
+            && !inner.transports.contains_key(&peer_id)
+            && inner.transports.len() >= inner.status.max_peers
+        {
+            return Err("Limite de espectadores atingido".into());
+        }
+        if role == StreamRole::Viewer
+            && !inner.transports.is_empty()
+            && !inner.transports.contains_key(&peer_id)
+        {
+            return Err("O espectador já está conectado a um host".into());
+        }
         inner.status.phase = "punching";
-        inner.status.peer_endpoint = Some(endpoint);
+        inner.status.peer_endpoint = Some(endpoint.clone());
+        let agreement = inner
+            .key_exchange
+            .as_ref()
+            .ok_or("Troca X25519 ausente; prepare a conexão novamente")?
+            .agree(&peer_public_key);
+        let (key, verification) = match agreement {
+            Ok(result) => result,
+            Err(error) => {
+                inner.status.phase = if role == StreamRole::Host && !inner.transports.is_empty() {
+                    "streaming"
+                } else {
+                    "failed"
+                };
+                return Err(error);
+            }
+        };
         (
-            inner.socket.clone().ok_or("Inicialize o motor primeiro")?,
-            inner.status.role.ok_or("Modo ausente")?,
-            inner.transport.take(),
             inner
-                .key_exchange
-                .take()
-                .ok_or("Troca X25519 ausente; prepare a conexão novamente")?,
+                .datagrams
+                .clone()
+                .ok_or("Inicialize o motor primeiro")?,
+            role,
+            inner.transports.remove(&peer_id),
+            key,
+            verification,
         )
     };
     if let Some(previous) = previous {
         previous.stop();
     }
-    let (key, verification_code) = match key_exchange.agree(&peer_public_key) {
-        Ok(result) => result,
-        Err(error) => {
-            if let Ok(mut inner) = engine.inner.lock() {
-                inner.status.phase = "failed";
-                inner.status.peer_endpoint = None;
-            }
-            return Err(error);
-        }
-    };
     let mut control = match spawn_receiver(
-        socket,
+        datagrams,
         peer,
         relay,
         key,
         role,
-        peer_id,
+        peer_id.clone(),
         engine.inner.clone(),
     )
     .await
@@ -247,19 +291,26 @@ pub async fn engine_connect_peer(
         Ok(control) => control,
         Err(error) => {
             if let Ok(mut inner) = engine.inner.lock() {
-                inner.status.phase = "failed";
+                inner.status.phase = if role == StreamRole::Host && !inner.transports.is_empty() {
+                    "streaming"
+                } else {
+                    "failed"
+                };
             }
             return Err(error);
         }
     };
-    if let Ok(mut inner) = engine.inner.lock() {
-        inner.status.phase = "connected";
-        inner.status.verification_code = Some(verification_code);
-    }
     #[cfg(target_os = "windows")]
     if role == StreamRole::Host {
-        let pipeline = pipeline::spawn(control.handle(), engine.inner.clone());
-        control.attach_native_thread(pipeline);
+        let handle = control.handle();
+        let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+        inner.host_fanout.add(peer_id.clone(), handle);
+        if inner.host_pipeline.is_none() {
+            inner.host_pipeline = Some(pipeline::spawn(
+                inner.host_fanout.clone(),
+                engine.inner.clone(),
+            ));
+        }
     } else {
         let hwnd = match renderer::open(&app).and_then(|_| renderer::hwnd(&app)) {
             Ok(hwnd) => hwnd.0 as isize,
@@ -275,58 +326,111 @@ pub async fn engine_connect_peer(
         control.attach_native_thread(pipeline);
     }
     let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
-    inner.transport = Some(control);
+    inner
+        .verification_codes
+        .insert(peer_id.clone(), verification_code.clone());
+    inner.transports.insert(peer_id, control);
+    inner.status.connected_peers = inner.transports.len();
+    inner.status.peer_verifications = inner
+        .verification_codes
+        .iter()
+        .map(|(peer_id, code)| PeerVerification {
+            peer_id: peer_id.clone(),
+            code: code.clone(),
+        })
+        .collect();
+    inner
+        .status
+        .peer_verifications
+        .sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+    inner.status.verification_code = if role == StreamRole::Viewer || inner.transports.len() == 1 {
+        Some(verification_code)
+    } else {
+        None
+    };
+    inner.status.phase = "connected";
     Ok(())
 }
 
 #[tauri::command]
 pub async fn engine_disconnect_peer(
     app: AppHandle,
+    peer_id: String,
     engine: State<'_, NativeEngine>,
 ) -> Result<(), String> {
-    let control = engine
-        .inner
-        .lock()
-        .map_err(|_| "Estado indisponível")?
-        .transport
-        .take();
+    let (control, role, remaining) = {
+        let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+        let role = inner.status.role;
+        let control = inner.transports.remove(&peer_id);
+        inner.host_fanout.remove(&peer_id);
+        inner.verification_codes.remove(&peer_id);
+        let remaining = inner.transports.len();
+        inner.status.connected_peers = remaining;
+        inner.status.peer_verifications = inner
+            .verification_codes
+            .iter()
+            .map(|(peer_id, code)| PeerVerification {
+                peer_id: peer_id.clone(),
+                code: code.clone(),
+            })
+            .collect();
+        inner
+            .status
+            .peer_verifications
+            .sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+        inner.status.peer_endpoint = None;
+        inner.status.verification_code = if remaining == 1 {
+            inner.verification_codes.values().next().cloned()
+        } else {
+            None
+        };
+        inner.status.phase = if remaining > 0 {
+            "streaming"
+        } else if inner.socket.is_some() {
+            "waiting"
+        } else {
+            "idle"
+        };
+        (control, role, remaining)
+    };
     if let Some(control) = control {
         control.stop();
     }
-    if let Some(window) = app.get_window("stream") {
-        let _ = window.hide();
+    if role == Some(StreamRole::Viewer) && remaining == 0 {
+        if let Some(window) = app.get_window("stream") {
+            let _ = window.hide();
+        }
     }
-    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
-    inner.status.peer_endpoint = None;
-    inner.status.verification_code = None;
-    inner.status.phase = if inner.socket.is_some() {
-        "waiting"
-    } else {
-        "idle"
-    };
     Ok(())
 }
 
 #[tauri::command]
 pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Result<(), String> {
-    let control = engine
-        .inner
-        .lock()
-        .map_err(|_| "Estado indisponível")?
-        .transport
-        .take();
-    if let Some(control) = control {
+    let (controls, datagrams, fanout, pipeline) = {
+        let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+        let controls = std::mem::take(&mut inner.transports)
+            .into_values()
+            .collect::<Vec<_>>();
+        let datagrams = inner.datagrams.take();
+        let fanout = inner.host_fanout.clone();
+        let pipeline = inner.host_pipeline.take();
+        *inner = Inner::default();
+        inner.status.phase = "stopped";
+        (controls, datagrams, fanout, pipeline)
+    };
+    fanout.stop();
+    if let Some(datagrams) = datagrams {
+        datagrams.stop();
+    }
+    for control in controls {
         control.stop();
+    }
+    if let Some(pipeline) = pipeline {
+        let _ = pipeline.join();
     }
     if let Some(window) = app.get_window("stream") {
         let _ = window.hide();
     }
-    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
-    inner.socket = None;
-    inner.status = EngineStatus {
-        phase: "stopped",
-        ..Default::default()
-    };
     Ok(())
 }
 

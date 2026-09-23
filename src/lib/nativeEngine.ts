@@ -10,7 +10,8 @@ export interface EngineStatus {
   lossPct: number; bitrateKbps: number; receivedFrames: number;
   droppedFrames: number; keyframeRequests: number; renderer: string;
   capture: string; encoder: string; decoder: string; decodedFrames: number;
-  verificationCode: string | null;
+  verificationCode: string | null; connectedPeers: number; maxPeers: number;
+  peerVerifications: Array<{ peerId: string; code: string }>;
 }
 
 export class NativeEngine {
@@ -23,7 +24,7 @@ export class NativeEngine {
       relayEndpoint: peer.relayEndpoint, relaySession: peer.relaySession, relayAuth: peer.relayAuth,
     } });
   }
-  disconnectPeer() { return invoke<void>("engine_disconnect_peer"); }
+  disconnectPeer(peerId: string) { return invoke<void>("engine_disconnect_peer", { peerId }); }
   status() { return invoke<EngineStatus>("engine_status"); }
   toggleFullscreen() { return invoke<boolean>("engine_toggle_fullscreen"); }
   async stop() { this.matchmaking?.close(); this.matchmaking = null; await invoke("engine_stop"); }

@@ -15,7 +15,7 @@ const emptyStatus: EngineStatus = {
   receivedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
   renderer: "closed", capture: "idle", encoder: "idle",
   decoder: "idle", decodedFrames: 0,
-  verificationCode: null,
+  verificationCode: null, connectedPeers: 0, maxPeers: 4, peerVerifications: [],
 };
 
 export default function App() {
@@ -106,11 +106,15 @@ export default function App() {
           await engine.connectPeer(peer);
           setMessage(role === "host" ? "Pipeline H.264 nativo iniciado" : "Decoder e janela D3D11 iniciados");
         },
-        onPeerLeft: async () => {
-          setMessage("O outro computador desconectou. Renovando as chaves...");
-          await engine.disconnectPeer();
-          const refreshed = await engine.prepare(role);
-          if (matchmaking) await matchmaking.join(room.trim(), role, refreshed);
+        onPeerLeft: async (peerId) => {
+          await engine.disconnectPeer(peerId);
+          if (role === "host") {
+            setMessage("Um espectador desconectou. A sala continua aberta.");
+          } else {
+            setMessage("O host desconectou. Renovando as chaves...");
+            const refreshed = await engine.prepare(role);
+            if (matchmaking) await matchmaking.join(room.trim(), role, refreshed);
+          }
         },
         onError: setMessage,
         refreshEndpoint: (reconnectingRole) => engine.prepare(reconnectingRole),
@@ -174,14 +178,15 @@ export default function App() {
         <div className={`status ${status.phase}`}><i />{message}</div>
         <div className="metrics">
           <Metric label="Rota" value={status.peerEndpoint ?? status.publicEndpoint ?? "—"} />
+          <Metric label="Espectadores" value={role === "host" ? `${status.connectedPeers}/${status.maxPeers}` : status.connectedPeers ? "Conectado" : "Aguardando"} />
           <Metric label="RTT" value={`${status.rttMs} ms`} />
           <Metric label="Perda" value={`${status.lossPct.toFixed(1)}%`} />
           <Metric label="Bitrate" value={`${status.bitrateKbps} kbps`} />
-          <Metric label="Código E2E" value={status.verificationCode ?? "—"} />
+          <Metric label="Código E2E" value={role === "host" && status.peerVerifications.length > 0 ? status.peerVerifications.map(({ code }, index) => `#${index + 1} ${code}`).join(" · ") : status.verificationCode ?? "—"} />
           <Metric label="Frames" value={`${status.decodedFrames} exibidos · ${status.droppedFrames} descartados`} />
           <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.decoder} · ${status.renderer}`} />
         </div>
-        {status.verificationCode && <small>Compare o Código E2E nos dois computadores antes de confiar na sessão.</small>}
+        {(status.verificationCode || status.peerVerifications.length > 0) && <small>Compare cada Código E2E com o espectador correspondente antes de confiar na sessão.</small>}
       </section>
       <section className="card update-card">
         <button type="button" onClick={availableUpdate ? installUpdate : checkForUpdate} disabled={busy || active}>

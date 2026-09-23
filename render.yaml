@@ -19,3 +19,5 @@ services:
         value: "1"  # somente atras do proxy confiavel do Render
       - key: ORIGIN
         value: "*"
+      - key: VOXA_MAX_VIEWERS
+        value: "4"

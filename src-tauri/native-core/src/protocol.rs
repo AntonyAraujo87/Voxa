@@ -4,7 +4,7 @@ use chacha20poly1305::{
     ChaCha20Poly1305, KeyInit, Nonce,
 };
 use sha2::{Digest, Sha256};
-use ring::{agreement, rand::SystemRandom};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 // Leaves 22 bytes for the optional authenticated blind-relay envelope while staying under
 // the conservative 1200-byte Internet path MTU.
@@ -126,20 +126,16 @@ pub fn fragments(frame: &[u8]) -> Result<impl Iterator<Item = &[u8]>, String> {
 }
 
 pub struct EphemeralKey {
-    private: agreement::EphemeralPrivateKey,
+    private: StaticSecret,
     public: [u8; 32],
 }
 
 impl EphemeralKey {
     pub fn generate() -> Result<Self, String> {
-        let private = agreement::EphemeralPrivateKey::generate(&agreement::X25519, &SystemRandom::new())
-            .map_err(|_| "Não foi possível gerar a chave X25519")?;
-        let public: [u8; 32] = private
-            .compute_public_key()
-            .map_err(|_| "Não foi possível calcular a chave pública X25519")?
-            .as_ref()
-            .try_into()
-            .map_err(|_| "Chave pública X25519 inválida")?;
+        let mut secret = [0u8; 32];
+        getrandom::fill(&mut secret).map_err(|_| "Não foi possível gerar a chave X25519")?;
+        let private = StaticSecret::from(secret);
+        let public = PublicKey::from(&private).to_bytes();
         Ok(Self { private, public })
     }
 
@@ -147,7 +143,7 @@ impl EphemeralKey {
         URL_SAFE_NO_PAD.encode(self.public)
     }
 
-    pub fn agree(self, peer_public: &str) -> Result<([u8; 32], String), String> {
+    pub fn agree(&self, peer_public: &str) -> Result<([u8; 32], String), String> {
         let raw = URL_SAFE_NO_PAD
             .decode(peer_public.trim())
             .map_err(|_| "Chave pública X25519 inválida")?;
@@ -155,12 +151,10 @@ impl EphemeralKey {
         if peer == [0; 32] {
             return Err("Chave X25519 de baixa ordem recusada".into());
         }
-        let shared = agreement::agree_ephemeral(
-            self.private,
-            &agreement::UnparsedPublicKey::new(&agreement::X25519, peer),
-            |secret| <[u8; 32]>::try_from(secret).map_err(|_| "Segredo X25519 inválido".to_string()),
-        )
-        .map_err(|_| "Falha na troca X25519")??;
+        let shared = self.private.diffie_hellman(&PublicKey::from(peer)).to_bytes();
+        if shared == [0; 32] {
+            return Err("Chave X25519 de baixa ordem recusada".into());
+        }
         let mut digest = Sha256::new();
         digest.update(b"voxa-x25519-media-v1\0");
         digest.update(shared);
@@ -322,6 +316,17 @@ mod tests {
         let second_result = second.agree(&first_public).unwrap();
         assert_eq!(first_result, second_result);
         assert_eq!(first_result.1.len(), 6);
+    }
+    #[test]
+    fn host_key_derives_isolated_keys_for_multiple_viewers() {
+        let host = EphemeralKey::generate().unwrap();
+        let first = EphemeralKey::generate().unwrap();
+        let second = EphemeralKey::generate().unwrap();
+        let first_key = host.agree(&first.public_base64()).unwrap().0;
+        let second_key = host.agree(&second.public_base64()).unwrap().0;
+        assert_ne!(first_key, second_key);
+        assert_eq!(first_key, first.agree(&host.public_base64()).unwrap().0);
+        assert_eq!(second_key, second.agree(&host.public_base64()).unwrap().0);
     }
     #[test]
     fn encrypted_packet_round_trip() {

@@ -1,5 +1,6 @@
 use super::{Inner, StreamRole};
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -8,7 +9,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::async_runtime::JoinHandle;
-use tokio::{net::UdpSocket, time};
+use tokio::{net::UdpSocket, sync::broadcast, time};
 use voxa_native_core::{
     congestion::CongestionController,
     loss::LossEstimator,
@@ -41,6 +42,134 @@ pub struct TransportHandle {
     bitrate_bps: Arc<AtomicU32>,
 }
 
+#[derive(Clone)]
+pub struct DatagramHub {
+    socket: Arc<UdpSocket>,
+    sender: broadcast::Sender<(Arc<Vec<u8>>, SocketAddr)>,
+    stop: Arc<AtomicBool>,
+}
+
+impl DatagramHub {
+    pub fn new(socket: Arc<UdpSocket>) -> Self {
+        let (sender, _) = broadcast::channel(4_096);
+        let stop = Arc::new(AtomicBool::new(false));
+        let read_socket = socket.clone();
+        let read_sender = sender.clone();
+        let read_stop = stop.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut buffer = [0u8; protocol::MAX_DATAGRAM];
+            while !read_stop.load(Ordering::Acquire) {
+                match time::timeout(
+                    Duration::from_millis(100),
+                    read_socket.recv_from(&mut buffer),
+                )
+                .await
+                {
+                    Ok(Ok((len, source)))
+                        if len >= protocol::HEADER_LEN
+                            && buffer[..4] == *b"VOXA"
+                            && buffer[4] == 1 =>
+                    {
+                        let _ = read_sender.send((Arc::new(buffer[..len].to_vec()), source));
+                    }
+                    Ok(Ok(_)) => {}
+                    Ok(Err(_)) => time::sleep(Duration::from_millis(25)).await,
+                    Err(_) => {}
+                }
+            }
+        });
+        Self {
+            socket,
+            sender,
+            stop,
+        }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<(Arc<Vec<u8>>, SocketAddr)> {
+        self.sender.subscribe()
+    }
+
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct HostTransportHandle {
+    peers: Arc<Mutex<HashMap<String, TransportHandle>>>,
+    config: Arc<Mutex<Option<StreamConfig>>>,
+    force_keyframe: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+
+impl HostTransportHandle {
+    pub fn add(&self, peer_id: String, handle: TransportHandle) {
+        if let Some(config) = self.config.lock().ok().and_then(|config| *config) {
+            handle.queue_config(config);
+        }
+        if let Ok(mut peers) = self.peers.lock() {
+            peers.insert(peer_id, handle);
+        }
+        self.force_keyframe.store(true, Ordering::Release);
+    }
+    pub fn remove(&self, peer_id: &str) {
+        if let Ok(mut peers) = self.peers.lock() {
+            peers.remove(peer_id);
+        }
+    }
+    pub fn clear(&self) {
+        if let Ok(mut peers) = self.peers.lock() {
+            peers.clear();
+        }
+    }
+    pub fn peer_count(&self) -> usize {
+        self.peers.lock().map(|peers| peers.len()).unwrap_or(0)
+    }
+    pub fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        self.clear();
+    }
+    pub fn queue_video(&self, frame: EncodedFrame) -> bool {
+        let handles = self
+            .peers
+            .lock()
+            .map(|peers| peers.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        handles.into_iter().fold(false, |dropped, handle| {
+            dropped | handle.queue_video(frame.clone())
+        })
+    }
+    pub fn queue_config(&self, config: StreamConfig) {
+        if let Ok(mut current) = self.config.lock() {
+            *current = Some(config);
+        }
+        if let Ok(peers) = self.peers.lock() {
+            for handle in peers.values() {
+                handle.queue_config(config);
+            }
+        }
+    }
+    pub fn take_keyframe_request(&self) -> bool {
+        self.force_keyframe.swap(false, Ordering::AcqRel)
+            || self
+                .peers
+                .lock()
+                .map(|peers| peers.values().any(TransportHandle::take_keyframe_request))
+                .unwrap_or(false)
+    }
+    pub fn target_bitrate(&self) -> u32 {
+        self.peers
+            .lock()
+            .ok()
+            .and_then(|peers| peers.values().map(TransportHandle::target_bitrate).min())
+            .unwrap_or(12_000_000)
+    }
+}
+
+#[derive(Clone)]
 pub struct EncodedFrame {
     pub id: u64,
     pub timestamp_us: u64,
@@ -188,7 +317,7 @@ impl TransportHandle {
 }
 
 pub async fn spawn_receiver(
-    socket: Arc<UdpSocket>,
+    hub: DatagramHub,
     peer: SocketAddr,
     relay: Option<(SocketAddr, u64, u64)>,
     base_key: [u8; 32],
@@ -200,7 +329,7 @@ pub async fn spawn_receiver(
         return Err("Identidade do par ausente".into());
     }
     let route = Arc::new(Route {
-        socket,
+        socket: hub.socket.clone(),
         direct: peer,
         relay: relay.map(|(endpoint, session, auth)| {
             (
@@ -230,6 +359,7 @@ pub async fn spawn_receiver(
     let force_keyframe = Arc::new(AtomicBool::new(false));
     let request_remote_keyframe = Arc::new(AtomicBool::new(false));
     let bitrate_bps = Arc::new(AtomicU32::new(12_000_000));
+    let mut datagrams = hub.subscribe();
     for _ in 0..3 {
         send(
             &route,
@@ -249,7 +379,6 @@ pub async fn spawn_receiver(
     let recv_incoming = incoming.clone();
     let recv_config = incoming_config.clone();
     let receiver = tauri::async_runtime::spawn(async move {
-        let mut buffer = [0u8; protocol::MAX_DATAGRAM];
         let mut frames = Reassembler::default();
         let mut replay = ReplayGuard::default();
         let mut loss = LossEstimator::default();
@@ -278,14 +407,9 @@ pub async fn spawn_receiver(
                 )
                 .await;
             }
-            match time::timeout(
-                Duration::from_millis(20),
-                recv_route.socket.recv_from(&mut buffer),
-            )
-            .await
-            {
-                Ok(Ok((len, source))) => {
-                    if let Ok(packet) = protocol::open(&receive_key, &buffer[..len]) {
+            match time::timeout(Duration::from_millis(20), datagrams.recv()).await {
+                Ok(Ok((buffer, source))) => {
+                    if let Ok(packet) = protocol::open(&receive_key, &buffer) {
                         last_authenticated = Instant::now();
                         let selected = recv_route.select(source);
                         if let Ok(mut inner) = recv_state.lock() {
@@ -409,16 +533,10 @@ pub async fn spawn_receiver(
                         }
                     }
                 }
-                Ok(Err(_)) => {
-                    // No Windows um ICMP de porta inalcançável pode aparecer como
-                    // WSAECONNRESET no recv_from. Isso não invalida o socket: a rota
-                    // pode voltar ou o relay pode assumir no próximo probe.
-                    recv_route.reset();
-                    if let Ok(mut inner) = recv_state.lock() {
-                        inner.status.phase = "recovering";
-                    }
-                    time::sleep(Duration::from_millis(50)).await;
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
+                    mark_dropped(&recv_state);
                 }
+                Ok(Err(broadcast::error::RecvError::Closed)) => break,
                 Err(_) => {}
             }
         }

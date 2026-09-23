@@ -33,6 +33,10 @@ const ORIGIN = process.env.ORIGIN || "*";
 const RELAY_PORT = Number(process.env.VOXA_RELAY_PORT || 0);
 const RELAY_PUBLIC_ENDPOINT = process.env.VOXA_RELAY_PUBLIC_ENDPOINT || "";
 const RELAY_SECRET = process.env.VOXA_RELAY_SECRET || "";
+const MAX_VIEWERS = Number(process.env.VOXA_MAX_VIEWERS || 4);
+if (!Number.isInteger(MAX_VIEWERS) || MAX_VIEWERS < 1 || MAX_VIEWERS > 16) {
+  throw new Error("VOXA_MAX_VIEWERS deve estar entre 1 e 16");
+}
 if (RELAY_PUBLIC_ENDPOINT && !validUdpEndpoint(RELAY_PUBLIC_ENDPOINT)) {
   throw new Error("VOXA_RELAY_PUBLIC_ENDPOINT deve ser um IP:porta UDP válido");
 }
@@ -61,7 +65,7 @@ const log = {
 
 if (!TOKEN) log.warn("AVISO: rodando sem VOXA_TOKEN — servidor aberto.");
 
-const registry = new StreamRegistry(RELAY_PUBLIC_ENDPOINT, RELAY_SECRET);
+const registry = new StreamRegistry(RELAY_PUBLIC_ENDPOINT, RELAY_SECRET, MAX_VIEWERS);
 const limiter = new RateLimiter();
 const relay = RELAY_PORT > 0 ? startUdpRelay({ port: RELAY_PORT, secret: RELAY_SECRET, log }) : null;
 

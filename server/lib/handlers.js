@@ -9,15 +9,15 @@ function endpoint(value) {
   const port = Number(match[2]); return port >= 1024 && port <= 65535 ? { value, host: match[1] } : null;
 }
 const privateV4 = (ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|127\.)/.test(ip);
-function announcement(peer, requesterIp, room) {
+function announcement(peer, requesterIp, relay) {
   return {
     peerId: peer.socketId,
     role: peer.role,
     endpoint: peer.ip === requesterIp ? peer.localEndpoint : peer.endpoint,
     publicKey: peer.publicKey,
-    relayEndpoint: room.relayEndpoint || null,
-    relaySession: room.relayEndpoint ? room.relaySession : null,
-    relayAuth: room.relayEndpoint ? room.relayAuth : null,
+    relayEndpoint: relay.endpoint,
+    relaySession: relay.session,
+    relayAuth: relay.auth,
   };
 }
 export function registerHandlers({ io, socket, registry, limiter, token }) {
@@ -39,15 +39,15 @@ export function registerHandlers({ io, socket, registry, limiter, token }) {
     if (!roomId || !role || !publicEndpoint || !localEndpoint || !publicKey) return ack?.({ error: "Parâmetros de conexão inválidos" });
     if (isIP(localEndpoint.host) !== 4 || !privateV4(localEndpoint.host)) return ack?.({ error: "Endpoint LAN inválido" });
     if (isIP(socket.data.ip) === 4 && publicEndpoint.host !== socket.data.ip && !registry.relayEndpoint) return ack?.({ error: "Endpoint público não corresponde à conexão" });
-    const previous=registry.leave(socket.id); if(previous){socket.leave(`stream:${previous.roomId}`);if(previous.otherId)io.to(previous.otherId).emit("stream:peer-left");}
+    const previous=registry.leave(socket.id); if(previous){socket.leave(`stream:${previous.roomId}`);for(const otherId of previous.otherIds)io.to(otherId).emit("stream:peer-left",{peerId:previous.peerId});}
     const joined = registry.join(socket.id, roomId, role, publicEndpoint.value, localEndpoint.value, publicKey); if (joined.error) return ack?.({ error: joined.error });
     socket.join(`stream:${roomId}`); const self = registry.get(socket.id);
-    const peer = joined.peer ? announcement(joined.peer, self.ip, joined.room) : undefined;
-    ack?.({ ok: true, peer });
-    if (joined.peer) io.to(joined.peer.socketId).emit("stream:peer", announcement(self, joined.peer.ip, joined.room));
+    const peers = joined.peers.map(({peer,relay})=>announcement(peer,self.ip,relay));
+    ack?.({ ok: true, peers, peer: peers[0] });
+    for(const {peer,relay} of joined.peers)io.to(peer.socketId).emit("stream:peer",announcement(self,peer.ip,relay));
   });
   socket.on("disconnect", () => {
     clearTimeout(timer); const left = registry.remove(socket.id); limiter.forget(`${socket.id}:`);
-    if (left?.otherId) io.to(left.otherId).emit("stream:peer-left");
+    if(left)for(const otherId of left.otherIds)io.to(otherId).emit("stream:peer-left",{peerId:left.peerId});
   });
 }

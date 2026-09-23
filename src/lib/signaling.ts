@@ -14,12 +14,12 @@ export interface PeerAnnouncement {
 interface Options {
   token: string;
   onPeer: (peer: PeerAnnouncement) => void | Promise<void>;
-  onPeerLeft: () => void | Promise<void>;
+  onPeerLeft: (peerId: string) => void | Promise<void>;
   onError: (message: string) => void;
   refreshEndpoint: (role: StreamRole) => Promise<PreparedEndpoint>;
 }
 
-type Ack = { ok?: boolean; error?: string; peer?: PeerAnnouncement };
+type Ack = { ok?: boolean; error?: string; peers?: PeerAnnouncement[] };
 
 export class Matchmaking {
   private readonly socket: Socket;
@@ -37,8 +37,9 @@ export class Matchmaking {
     this.socket.on("stream:peer", (peer: PeerAnnouncement) => {
       void Promise.resolve(options.onPeer(peer)).catch((error) => options.onError(messageOf(error)));
     });
-    this.socket.on("stream:peer-left", () => {
-      void Promise.resolve(options.onPeerLeft()).catch((error) => options.onError(messageOf(error)));
+    this.socket.on("stream:peer-left", (payload?: { peerId?: string }) => {
+      if (!payload?.peerId) return options.onError("Identidade do computador desconectado ausente");
+      void Promise.resolve(options.onPeerLeft(payload.peerId)).catch((error) => options.onError(messageOf(error)));
     });
     this.socket.on("connect_error", (error) => options.onError(error.message || "Servidor indisponível"));
     this.socket.on("connect", () => {
@@ -67,7 +68,7 @@ export class Matchmaking {
       localEndpoint: endpoint.local,
       publicKey: endpoint.publicKey,
     });
-    if (response.peer) await this.options.onPeer(response.peer);
+    for (const peer of response.peers ?? []) await this.options.onPeer(peer);
   }
 
   close() { this.closed = true; this.desired = null; this.socket.disconnect(); }
