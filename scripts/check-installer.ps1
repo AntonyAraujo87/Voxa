@@ -71,31 +71,12 @@ function Uninstall-Test {
 }
 
 Run-Installer $newInstaller @('/S', "/D=$installDir")
-$nsisHash = Check-Installed
+$null = Check-Installed
 Uninstall-Test
 Write-Output 'PASS: instalacao limpa, dependencias, startup WebView2 e desinstalacao'
 
-# Versao realmente publicada antes desta auditoria; download somente do proprio repositorio.
-& gh release download v0.5.27 --repo $env:GITHUB_REPOSITORY --pattern 'Voxa_0.5.27_x64-setup.exe' --dir $testRoot
-if ($LASTEXITCODE -ne 0) { throw 'Falha ao baixar instalador anterior' }
-Run-Installer (Join-Path $testRoot 'Voxa_0.5.27_x64-setup.exe') @('/S', "/D=$installDir")
-if (!(Test-Path -LiteralPath $installedExe)) { throw 'Versao anterior nao foi instalada' }
-$oldVersion = (Get-Item -LiteralPath $installedExe).VersionInfo.ProductVersion
-if ($oldVersion -notmatch '^0\.5\.27(?:\D|$)') { throw "Versao anterior inesperada: $oldVersion" }
-
-# Preferencia real armazenada pelo backend; a atualizacao precisa preserva-la.
-$bootDir = Join-Path $env:APPDATA 'com.voxa.app'
-New-Item -ItemType Directory -Force -Path $bootDir | Out-Null
-$bootPath = Join-Path $bootDir 'boot.json'
-$bootContents = '{"capture_source":"","modo_seguro":true}'
-Set-Content -LiteralPath $bootPath -Value $bootContents -NoNewline
-Run-Installer $newInstaller @('/S', "/D=$installDir")
-$null = Check-Installed -ExpectedHash $nsisHash
-if ((Get-Content -LiteralPath $bootPath -Raw) -ne $bootContents) { throw 'Atualizacao perdeu a preferencia nativa' }
-Uninstall-Test
-Write-Output 'PASS: upgrade 0.5.27, executavel novo, startup e preferencia preservada'
-
-# O manifesto antigo tambem oferece MSI ao updater. Exercitar esse pacote.
+# O 0.6.0 inaugura o produto de streaming e nao depende dos releases sociais removidos.
+# Exercitar o MSI atual de forma independente ainda protege os dois formatos publicados.
 $newMsi = Join-Path $env:GITHUB_WORKSPACE "src-tauri/target/release/bundle/msi/Voxa_${Version}_x64_en-US.msi"
 $msiExec = Join-Path $env:SystemRoot 'System32/msiexec.exe'
 function Install-Msi([string]$File) {
@@ -106,24 +87,14 @@ function Uninstall-Msi {
     if (Test-Path -LiteralPath $installedExe) { throw 'Desinstalacao MSI deixou o executavel' }
 }
 Install-Msi $newMsi
-$msiHash = Check-Installed
+$null = Check-Installed
 Uninstall-Msi
-& gh release download v0.5.27 --repo $env:GITHUB_REPOSITORY --pattern 'Voxa_0.5.27_x64_en-US.msi' --dir $testRoot
-if ($LASTEXITCODE -ne 0) { throw 'Falha ao baixar MSI anterior' }
-Install-Msi (Join-Path $testRoot 'Voxa_0.5.27_x64_en-US.msi')
-if (!(Test-Path -LiteralPath $installedExe)) { throw 'MSI anterior nao instalado' }
-if ((Get-Item -LiteralPath $installedExe).VersionInfo.ProductVersion -notmatch '^0\.5\.27(?:\D|$)') { throw 'Versao MSI anterior inesperada' }
-Set-Content -LiteralPath $bootPath -Value $bootContents -NoNewline
-Install-Msi $newMsi
-$null = Check-Installed -ExpectedHash $msiHash
-if ((Get-Content -LiteralPath $bootPath -Raw) -ne $bootContents) { throw 'Upgrade MSI perdeu preferencia' }
-Uninstall-Msi
-Write-Output 'PASS: MSI limpo, upgrade 0.5.27, startup, preferencia e desinstalacao'
+Write-Output 'PASS: MSI limpo, startup e desinstalacao'
 @"
 ### Instalador Windows validado
 - NSIS e MSI: instalacao limpa e desinstalacao.
-- Upgrade de 0.5.27 para $Version, preservando boot.json.
-- Versao, manifest e loader conferidos; SHA-256 estavel entre duas instalacoes do mesmo pacote.
+- $Version e o primeiro release do produto de streaming; nao existe pacote anterior suportado para upgrade.
+- Versao, manifest e loader conferidos.
 - Processo nativo permaneceu ativo com subprocesso WebView2.
-- Nao valida voz real, GPU/jogo, nem o clique de auto-update no aplicativo.
+- Nao valida GPU/jogo real nem o clique de auto-update no aplicativo.
 "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
