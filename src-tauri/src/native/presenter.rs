@@ -290,7 +290,9 @@ mod tests {
             letterbox(1920, 1080, 1000, 1000),
             RECT {
                 left: 0,
-                top: 219,
+                // 1000 * 9 / 16 = 562.5. Arredondar para 563 preserva
+                // melhor a proporcao; o pixel impar restante fica embaixo.
+                top: 218,
                 right: 1000,
                 bottom: 781
             }
