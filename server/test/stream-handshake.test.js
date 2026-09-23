@@ -14,7 +14,7 @@ async function waitHealth(url){for(let i=0;i<100;i++){try{if((await fetch(`${url
 
 test("real signaling pairs a host with multiple viewers without relaying media", {timeout:15_000}, async () => {
   const port=await freePort(); const url=`http://127.0.0.1:${port}`;
-  const child=spawn(process.execPath,["server/index.js"],{cwd:process.cwd(),env:{...process.env,PORT:String(port),VOXA_TOKEN:"test-room",TRUST_PROXY:"0"},stdio:"ignore"});
+  const child=spawn(process.execPath,["server/index.js"],{cwd:process.cwd(),env:{...process.env,PORT:String(port),VOXA_TOKEN:"test-room",TRUST_PROXY:"0",VOXA_RELAY_PUBLIC_ENDPOINT:"203.0.113.90:3479",VOXA_RELAY_SECRET:"test-relay-secret-with-at-least-32-bytes"},stdio:"ignore"});
   const sockets=[];
   try {
     await waitHealth(url);
@@ -26,6 +26,7 @@ test("real signaling pairs a host with multiple viewers without relaying media",
     assert.equal((await emit(host,"stream:join",{room:"race",role:"host",endpoint:"127.0.0.1:41000",localEndpoint:"192.168.1.10:41000",publicKey:"h".repeat(43)})).ok,true);
     const hostAnnouncement=new Promise(resolve=>host.once("stream:peer",resolve));
     const joined=await emit(viewer,"stream:join",{room:"race",role:"viewer",endpoint:"127.0.0.1:42000",localEndpoint:"192.168.1.20:42000",publicKey:"v".repeat(43)});
+    assert.equal(joined.maxViewers,4);
     const announced=await hostAnnouncement;
     assert.equal(joined.peers[0].endpoint,"192.168.1.10:41000"); assert.equal(announced.endpoint,"192.168.1.20:42000");
     assert.equal(joined.peers[0].publicKey,"h".repeat(43)); assert.equal(announced.publicKey,"v".repeat(43));

@@ -24,6 +24,7 @@ import {
   MAX_SOCKETS_PER_IP,
   RateLimiter,
   clientIp,
+  observedClientIp,
   requestIp,
   safeEqual,
 } from "./lib/security.js";
@@ -110,7 +111,9 @@ io.engine.on("connection", (client) => {
 
 io.use((socket, next) => {
   const ip = clientIp(socket);
-  socket.data.ip = ip;
+  // O endereco completo fica somente em memoria para conferir o destino UDP.
+  // Limitadores continuam usando a chave IPv6 mascarada retornada por clientIp.
+  socket.data.ip = observedClientIp(socket);
 
   if (!limiter.allow(`hs:${ip}`, 60_000, MAX_HANDSHAKES_PER_MIN)) {
     return next(new Error("muitas tentativas"));

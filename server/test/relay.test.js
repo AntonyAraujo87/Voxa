@@ -12,7 +12,11 @@ function packet(role, session, payload, secret = SECRET) {
   header[4] = 1;
   header[5] = role;
   header.writeBigUInt64BE(session, 6);
-  createHmac("sha256", secret).update(header.subarray(6, 14)).digest().copy(header, 14, 0, 8);
+  createHmac("sha256", secret)
+    .update(header.subarray(6, 14))
+    .update(header.subarray(5, 6))
+    .digest()
+    .copy(header, 14, 0, 8);
   return Buffer.concat([header, Buffer.from(payload)]);
 }
 
@@ -47,6 +51,10 @@ test("blind UDP relay pairs roles and forwards only encrypted payload bytes", as
     const session = 0x1020304050607080n;
     host.send(packet(0, session, "host-register"), target.port, target.address);
     await new Promise(resolve => setTimeout(resolve, 20));
+    const wrongRole = packet(0, session, "role-forgery");
+    wrongRole[5] = 1;
+    viewer.send(wrongRole, target.port, target.address);
+    await expectNoMessage(host);
     viewer.send(packet(1, session, "forged", "wrong-secret-with-at-least-32-bytes"), target.port, target.address);
     await expectNoMessage(host);
     const received = receive(host);

@@ -18,6 +18,7 @@ export class NativeEngine {
   private matchmaking: Matchmaking | null = null;
   attachMatchmaking(matchmaking: Matchmaking) { this.matchmaking?.close(); this.matchmaking = matchmaking; }
   prepare(role: StreamRole) { return invoke<PreparedEndpoint>("engine_prepare", { role }); }
+  setMaxPeers(maxPeers: number) { return invoke<void>("engine_set_max_peers", { maxPeers }); }
   connectPeer(peer: { endpoint: string; publicKey: string; peerId: string; relayEndpoint: string | null; relaySession: string | null; relayAuth: string | null }) {
     return invoke<void>("engine_connect_peer", { request: {
       endpoint: peer.endpoint, peerPublicKey: peer.publicKey, peerId: peer.peerId,

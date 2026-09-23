@@ -116,6 +116,7 @@ export default function App() {
             if (matchmaking) await matchmaking.join(room.trim(), role, refreshed);
           }
         },
+        onCapacity: (maxViewers) => engine.setMaxPeers(maxViewers),
         onError: setMessage,
         refreshEndpoint: (reconnectingRole) => engine.prepare(reconnectingRole),
       });

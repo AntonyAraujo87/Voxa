@@ -255,11 +255,7 @@ pub async fn engine_connect_peer(
         let (key, verification) = match agreement {
             Ok(result) => result,
             Err(error) => {
-                inner.status.phase = if role == StreamRole::Host && !inner.transports.is_empty() {
-                    "streaming"
-                } else {
-                    "failed"
-                };
+                inner.status.phase = connection_failure_phase(role, inner.transports.len());
                 return Err(error);
             }
         };
@@ -275,6 +271,11 @@ pub async fn engine_connect_peer(
         )
     };
     if let Some(previous) = previous {
+        if let Ok(mut inner) = engine.inner.lock() {
+            inner.host_fanout.remove(&peer_id);
+            inner.verification_codes.remove(&peer_id);
+            refresh_peer_list(&mut inner);
+        }
         previous.stop();
     }
     let mut control = match spawn_receiver(
@@ -291,11 +292,7 @@ pub async fn engine_connect_peer(
         Ok(control) => control,
         Err(error) => {
             if let Ok(mut inner) = engine.inner.lock() {
-                inner.status.phase = if role == StreamRole::Host && !inner.transports.is_empty() {
-                    "streaming"
-                } else {
-                    "failed"
-                };
+                inner.status.phase = connection_failure_phase(role, inner.transports.len());
             }
             return Err(error);
         }
@@ -330,19 +327,7 @@ pub async fn engine_connect_peer(
         .verification_codes
         .insert(peer_id.clone(), verification_code.clone());
     inner.transports.insert(peer_id, control);
-    inner.status.connected_peers = inner.transports.len();
-    inner.status.peer_verifications = inner
-        .verification_codes
-        .iter()
-        .map(|(peer_id, code)| PeerVerification {
-            peer_id: peer_id.clone(),
-            code: code.clone(),
-        })
-        .collect();
-    inner
-        .status
-        .peer_verifications
-        .sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+    refresh_peer_list(&mut inner);
     inner.status.verification_code = if role == StreamRole::Viewer || inner.transports.len() == 1 {
         Some(verification_code)
     } else {
@@ -365,19 +350,7 @@ pub async fn engine_disconnect_peer(
         inner.host_fanout.remove(&peer_id);
         inner.verification_codes.remove(&peer_id);
         let remaining = inner.transports.len();
-        inner.status.connected_peers = remaining;
-        inner.status.peer_verifications = inner
-            .verification_codes
-            .iter()
-            .map(|(peer_id, code)| PeerVerification {
-                peer_id: peer_id.clone(),
-                code: code.clone(),
-            })
-            .collect();
-        inner
-            .status
-            .peer_verifications
-            .sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+        refresh_peer_list(&mut inner);
         inner.status.peer_endpoint = None;
         inner.status.verification_code = if remaining == 1 {
             inner.verification_codes.values().next().cloned()
@@ -402,6 +375,47 @@ pub async fn engine_disconnect_peer(
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn engine_set_max_peers(
+    max_peers: usize,
+    engine: State<'_, NativeEngine>,
+) -> Result<(), String> {
+    if !(1..=16).contains(&max_peers) {
+        return Err("Limite de espectadores invalido".into());
+    }
+    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponivel")?;
+    if inner.transports.len() > max_peers {
+        return Err("O novo limite e menor que o numero de espectadores conectados".into());
+    }
+    inner.status.max_peers = max_peers;
+    Ok(())
+}
+
+fn connection_failure_phase(role: StreamRole, connected_peers: usize) -> &'static str {
+    match (role, connected_peers) {
+        (StreamRole::Host, 0) => "waiting",
+        (StreamRole::Host, _) => "streaming",
+        (StreamRole::Viewer, 0) => "failed",
+        (StreamRole::Viewer, _) => "connected",
+    }
+}
+
+fn refresh_peer_list(inner: &mut Inner) {
+    inner.status.connected_peers = inner.transports.len();
+    inner.status.peer_verifications = inner
+        .verification_codes
+        .iter()
+        .map(|(peer_id, code)| PeerVerification {
+            peer_id: peer_id.clone(),
+            code: code.clone(),
+        })
+        .collect();
+    inner
+        .status
+        .peer_verifications
+        .sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
 }
 
 #[tauri::command]

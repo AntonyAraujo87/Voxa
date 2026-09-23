@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { Admission } from "../lib/admission.js";
-import { clientIp } from "../lib/security.js";
+import { clientIp, observedClientIp } from "../lib/security.js";
 import { createHttpApp } from "../lib/http.js";
 import { spawn } from "node:child_process";
 
@@ -33,6 +33,7 @@ test("XFF nao usa prefixo forjado e IPv6 agrupa a mesma rede", () => {
     const key = clientIp(socket);
     socket.handshake.address = "2001:0db8:0:0::abcd";
     assert.equal(clientIp(socket), key);
+    assert.equal(observedClientIp(socket), "2001:0db8:0:0::abcd");
   } finally {
     if (previous === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = previous;
   }

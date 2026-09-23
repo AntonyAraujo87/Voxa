@@ -50,10 +50,14 @@ test("issues a distinct authenticated relay allocation for each viewer", () => {
   const registry = new StreamRegistry("203.0.113.90:3479", "relay-secret-that-is-longer-than-32-bytes");
   for (const id of ["host", "a", "b"]) registry.identify(id, "203.0.113.10");
   join(registry, "host", "host", 41000, "h");
-  const first = join(registry, "a", "viewer", 42001, "a").peers[0].relay;
-  const second = join(registry, "b", "viewer", 42002, "b").peers[0].relay;
+  const firstPair = join(registry, "a", "viewer", 42001, "a").peers[0];
+  const secondPair = join(registry, "b", "viewer", 42002, "b").peers[0];
+  const first = registry.relay(firstPair.viewer, "viewer");
+  const firstHost = registry.relay(firstPair.viewer, "host");
+  const second = registry.relay(secondPair.viewer, "viewer");
   assert.equal(first.endpoint, "203.0.113.90:3479");
   assert.match(first.session, /^[a-f0-9]{16}$/); assert.match(first.auth, /^[a-f0-9]{16}$/);
   assert.notEqual(first.session, second.session);
+  assert.notEqual(first.auth, firstHost.auth);
   assert.equal("sessionKey" in first, false);
 });

@@ -174,7 +174,9 @@ pub struct EncodedFrame {
     pub id: u64,
     pub timestamp_us: u64,
     pub keyframe: bool,
-    pub bytes: Vec<u8>,
+    // O bitstream e imutavel. Arc evita copiar um frame H.264 inteiro para
+    // cada espectador no fanout do host.
+    pub bytes: Arc<Vec<u8>>,
 }
 
 const RELAY_MAGIC: &[u8; 4] = b"VRLY";
@@ -359,6 +361,12 @@ pub async fn spawn_receiver(
     let force_keyframe = Arc::new(AtomicBool::new(false));
     let request_remote_keyframe = Arc::new(AtomicBool::new(false));
     let bitrate_bps = Arc::new(AtomicU32::new(12_000_000));
+    // Feedback pertence a este par. Guardar RTT/perda apenas no status global
+    // fazia um espectador lento reduzir (ou acelerar) os demais transportes.
+    let feedback_rtt_ms = Arc::new(AtomicU32::new(0));
+    let feedback_loss_bits = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+    let feedback_at_us = Arc::new(AtomicU64::new(0));
+    let measured_rtt_ms = Arc::new(AtomicU32::new(0));
     let mut datagrams = hub.subscribe();
     for _ in 0..3 {
         send(
@@ -378,6 +386,10 @@ pub async fn spawn_receiver(
     let recv_force_keyframe = force_keyframe.clone();
     let recv_incoming = incoming.clone();
     let recv_config = incoming_config.clone();
+    let recv_feedback_rtt = feedback_rtt_ms.clone();
+    let recv_feedback_loss = feedback_loss_bits.clone();
+    let recv_feedback_at = feedback_at_us.clone();
+    let recv_measured_rtt = measured_rtt_ms;
     let receiver = tauri::async_runtime::spawn(async move {
         let mut frames = Reassembler::default();
         let mut replay = ReplayGuard::default();
@@ -450,6 +462,8 @@ pub async fn spawn_receiver(
                                 let sent =
                                     u64::from_be_bytes(packet.payload[..8].try_into().unwrap());
                                 let rtt = now_us().saturating_sub(sent) / 1000;
+                                recv_measured_rtt
+                                    .store(rtt.min(u32::MAX as u64) as u32, Ordering::Release);
                                 if let Ok(mut inner) = recv_state.lock() {
                                     inner.status.rtt_ms = rtt.min(u32::MAX as u64) as u32;
                                 }
@@ -470,7 +484,7 @@ pub async fn spawn_receiver(
                                                 id: frame.id,
                                                 timestamp_us: frame.timestamp_us,
                                                 keyframe: frame.keyframe,
-                                                bytes: frame.bytes,
+                                                bytes: Arc::new(frame.bytes),
                                             })
                                             .is_some()
                                         })
@@ -500,7 +514,13 @@ pub async fn spawn_receiver(
                                     inner.status.keyframe_requests += 1;
                                 }
                             }
-                            Kind::Feedback => apply_feedback(&recv_state, &packet.payload),
+                            Kind::Feedback => apply_feedback(
+                                &recv_state,
+                                &recv_feedback_rtt,
+                                &recv_feedback_loss,
+                                &recv_feedback_at,
+                                &packet.payload,
+                            ),
                             Kind::Config => {
                                 if let Ok(config) = StreamConfig::decode(&packet.payload) {
                                     if let Ok(mut slot) = recv_config.lock() {
@@ -513,10 +533,7 @@ pub async fn spawn_receiver(
                             Kind::Pong => {}
                         }
                         if last_feedback.elapsed() >= Duration::from_millis(500) {
-                            let rtt = recv_state
-                                .lock()
-                                .map(|inner| inner.status.rtt_ms)
-                                .unwrap_or_default();
+                            let rtt = recv_measured_rtt.load(Ordering::Acquire);
                             let mut feedback = Vec::with_capacity(8);
                             feedback.extend_from_slice(&rtt.to_be_bytes());
                             feedback
@@ -646,6 +663,9 @@ pub async fn spawn_receiver(
     let ping_sequence = sequence;
     let ping_state = state;
     let ping_bitrate = bitrate_bps.clone();
+    let ping_feedback_rtt = feedback_rtt_ms;
+    let ping_feedback_loss = feedback_loss_bits;
+    let ping_feedback_at = feedback_at_us;
     let heartbeat = tauri::async_runtime::spawn(async move {
         let mut interval = time::interval(Duration::from_millis(500));
         let mut congestion = CongestionController::new(12_000_000, 800_000, 35_000_000);
@@ -669,10 +689,21 @@ pub async fn spawn_receiver(
                 time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
+            let feedback_rtt = ping_feedback_rtt.load(Ordering::Acquire);
+            let feedback_loss = f32::from_bits(ping_feedback_loss.load(Ordering::Acquire));
+            let feedback_at = ping_feedback_at.load(Ordering::Acquire);
+            let feedback_is_fresh =
+                feedback_at > 0 && now_us().saturating_sub(feedback_at) < 2_000_000;
             if let Ok(mut inner) = ping_state.lock() {
-                let bitrate = congestion.update(inner.status.loss_pct, inner.status.rtt_ms);
+                let bitrate = if feedback_is_fresh {
+                    congestion.update(feedback_loss, feedback_rtt)
+                } else {
+                    ping_bitrate.load(Ordering::Acquire)
+                };
                 ping_bitrate.store(bitrate, Ordering::Release);
-                inner.status.bitrate_kbps = bitrate / 1000;
+                if role == StreamRole::Viewer {
+                    inner.status.bitrate_kbps = bitrate / 1000;
+                }
             }
         }
     });
@@ -696,7 +727,13 @@ fn mark_dropped(state: &Arc<Mutex<Inner>>) {
 }
 fn mark_failed(state: &Arc<Mutex<Inner>>) {
     if let Ok(mut inner) = state.lock() {
-        inner.status.phase = "failed";
+        // Um erro de envio e recuperavel: a rota e reavaliada pelo heartbeat.
+        // No host, ele tambem nao pode derrubar os demais espectadores.
+        inner.status.phase = if inner.status.role == Some(StreamRole::Host) {
+            "recovering"
+        } else {
+            "failed"
+        };
     }
 }
 
@@ -709,16 +746,27 @@ fn mark_connected(state: &Arc<Mutex<Inner>>, role: StreamRole) {
         };
     }
 }
-fn apply_feedback(state: &Arc<Mutex<Inner>>, payload: &[u8]) {
+fn apply_feedback(
+    state: &Arc<Mutex<Inner>>,
+    feedback_rtt_ms: &AtomicU32,
+    feedback_loss_bits: &AtomicU32,
+    feedback_at_us: &AtomicU64,
+    payload: &[u8],
+) {
     if payload.len() >= 8 {
+        let rtt = u32::from_be_bytes(payload[..4].try_into().unwrap());
+        let loss = f32::from_bits(u32::from_be_bytes(payload[4..8].try_into().unwrap()));
+        let loss = if loss.is_finite() {
+            loss.clamp(0.0, 100.0)
+        } else {
+            100.0
+        };
+        feedback_rtt_ms.store(rtt, Ordering::Release);
+        feedback_loss_bits.store(loss.to_bits(), Ordering::Release);
+        feedback_at_us.store(now_us(), Ordering::Release);
         if let Ok(mut inner) = state.lock() {
-            inner.status.rtt_ms = u32::from_be_bytes(payload[..4].try_into().unwrap());
-            let loss = f32::from_bits(u32::from_be_bytes(payload[4..8].try_into().unwrap()));
-            inner.status.loss_pct = if loss.is_finite() {
-                loss.clamp(0.0, 100.0)
-            } else {
-                100.0
-            };
+            inner.status.rtt_ms = rtt;
+            inner.status.loss_pct = loss;
         }
     }
 }

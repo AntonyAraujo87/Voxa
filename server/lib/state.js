@@ -17,7 +17,7 @@ export class StreamRegistry {
   identify(socketId, ip) {
     this.#clients.set(socketId, {
       socketId, ip, room: null, role: null, endpoint: null, localEndpoint: null,
-      publicKey: null, relaySession: null, relayAuth: null,
+      publicKey: null, relaySession: null,
     });
   }
 
@@ -37,9 +37,7 @@ export class StreamRegistry {
         return { error: `Esta sala atingiu o limite de ${this.maxViewers} espectadores` };
       }
       room.viewers.add(socketId);
-      const relaySession = randomRelaySession();
-      client.relaySession = relaySession;
-      client.relayAuth = this.relayEndpoint ? relayAuth(this.relaySecret, relaySession) : "";
+      client.relaySession = randomRelaySession();
     }
 
     this.#rooms.set(roomId, room);
@@ -48,7 +46,7 @@ export class StreamRegistry {
     const peers = peerIds.map((peerId) => {
       const peer = this.#clients.get(peerId);
       const viewer = role === "viewer" ? client : peer;
-      return { peer, relay: relayAllocation(this.relayEndpoint, viewer) };
+      return { peer, viewer };
     }).filter(({ peer }) => peer);
     return { room, peers };
   }
@@ -71,7 +69,7 @@ export class StreamRegistry {
     }
     Object.assign(client, {
       room: null, role: null, endpoint: null, localEndpoint: null, publicKey: null,
-      relaySession: null, relayAuth: null,
+      relaySession: null,
     });
     return { roomId, otherIds, peerId: socketId };
   }
@@ -83,18 +81,26 @@ export class StreamRegistry {
   }
 
   summary() { return { clients: this.#clients.size, streamRooms: this.#rooms.size }; }
+
+  relay(viewer, role) {
+    return relayAllocation(this.relayEndpoint, this.relaySecret, viewer, role);
+  }
 }
 
 function randomRelaySession() { return randomBytes(8).toString("hex"); }
 
-function relayAuth(secret, session) {
-  return createHmac("sha256", secret).update(Buffer.from(session, "hex")).digest("hex").slice(0, 16);
+function relayAuth(secret, session, role) {
+  return createHmac("sha256", secret)
+    .update(Buffer.from(session, "hex"))
+    .update(Buffer.from([role === "host" ? 0 : 1]))
+    .digest("hex")
+    .slice(0, 16);
 }
 
-function relayAllocation(endpoint, viewer) {
+function relayAllocation(endpoint, secret, viewer, role) {
   return {
     endpoint: endpoint || null,
     session: endpoint ? viewer?.relaySession ?? null : null,
-    auth: endpoint ? viewer?.relayAuth ?? null : null,
+    auth: endpoint ? relayAuth(secret, viewer?.relaySession ?? "", role) : null,
   };
 }

@@ -6,7 +6,10 @@ const HEADER = 22;
 const MAX_PACKET = 1_200;
 const SESSION_TTL_MS = 60_000;
 const MAX_SESSIONS = 4_096;
-const MAX_PACKETS_PER_IP_SECOND = 6_000;
+// Quatro espectadores a 35 Mbps geram cerca de 15 mil datagramas/s no IP do
+// host. O teto ainda limita abuso, mas nao estrangula o perfil maximo valido.
+const MAX_PACKETS_PER_IP_SECOND = 20_000;
+const MAX_SEND_QUEUE_BYTES = 4 * 1024 * 1024;
 
 export function startUdpRelay({ port, secret, host = "0.0.0.0", log = console }) {
   if (!Number.isInteger(port) || port < 0 || port > 65535 || typeof secret !== "string" || secret.length < 32) return null;
@@ -23,7 +26,11 @@ export function startUdpRelay({ port, secret, host = "0.0.0.0", log = console })
       rates.set(remote.address, { second, count: 1 });
     }
     const session = packet.readBigUInt64BE(6).toString(16);
-    const expected = createHmac("sha256", secret).update(packet.subarray(6, 14)).digest().subarray(0, 8);
+    const expected = createHmac("sha256", secret)
+      .update(packet.subarray(6, 14))
+      .update(packet.subarray(5, 6))
+      .digest()
+      .subarray(0, 8);
     if (!timingSafeEqual(packet.subarray(14, 22), expected)) return;
     const role = packet[5];
     const now = Date.now();
@@ -34,7 +41,9 @@ export function startUdpRelay({ port, secret, host = "0.0.0.0", log = console })
     pair.seen = now;
     sessions.set(session, pair);
     const destination = pair.peers[role ^ 1];
-    if (destination) socket.send(packet.subarray(HEADER), destination.port, destination.address);
+    if (destination && socket.getSendQueueSize() < MAX_SEND_QUEUE_BYTES) {
+      socket.send(packet.subarray(HEADER), destination.port, destination.address);
+    }
   });
   socket.on("error", (error) => log.warn?.("relay UDP:", error?.code ?? "erro"));
   const sweep = setInterval(() => {

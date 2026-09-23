@@ -1,4 +1,4 @@
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { EVENT_LIMITS, safeEqual, sanitizeId } from "./security.js";
 
 const HELLO_TIMEOUT_MS = 15_000;
@@ -20,6 +20,14 @@ function announcement(peer, requesterIp, relay) {
     relayAuth: relay.auth,
   };
 }
+function sameIp(left, right) {
+  const version = isIP(left);
+  if (!version || version !== isIP(right)) return false;
+  const type = version === 4 ? "ipv4" : "ipv6";
+  const list = new BlockList();
+  list.addAddress(left, type);
+  return list.check(right, type);
+}
 export function registerHandlers({ io, socket, registry, limiter, token }) {
   const guard = (event) => { const rule = EVENT_LIMITS[event]; return !rule || limiter.allow(`${socket.id}:${event}`, rule.windowMs, rule.max); };
   const identified = () => registry.get(socket.id) !== undefined;
@@ -38,13 +46,13 @@ export function registerHandlers({ io, socket, registry, limiter, token }) {
     const publicKey = typeof payload?.publicKey === "string" && /^[A-Za-z0-9_-]{43}$/.test(payload.publicKey) ? payload.publicKey : null;
     if (!roomId || !role || !publicEndpoint || !localEndpoint || !publicKey) return ack?.({ error: "Parâmetros de conexão inválidos" });
     if (isIP(localEndpoint.host) !== 4 || !privateV4(localEndpoint.host)) return ack?.({ error: "Endpoint LAN inválido" });
-    if (isIP(socket.data.ip) === 4 && publicEndpoint.host !== socket.data.ip && !registry.relayEndpoint) return ack?.({ error: "Endpoint público não corresponde à conexão" });
+    if (!sameIp(publicEndpoint.host, socket.data.ip)) return ack?.({ error: "Endpoint público não corresponde à conexão" });
     const previous=registry.leave(socket.id); if(previous){socket.leave(`stream:${previous.roomId}`);for(const otherId of previous.otherIds)io.to(otherId).emit("stream:peer-left",{peerId:previous.peerId});}
     const joined = registry.join(socket.id, roomId, role, publicEndpoint.value, localEndpoint.value, publicKey); if (joined.error) return ack?.({ error: joined.error });
     socket.join(`stream:${roomId}`); const self = registry.get(socket.id);
-    const peers = joined.peers.map(({peer,relay})=>announcement(peer,self.ip,relay));
-    ack?.({ ok: true, peers, peer: peers[0] });
-    for(const {peer,relay} of joined.peers)io.to(peer.socketId).emit("stream:peer",announcement(self,peer.ip,relay));
+    const peers = joined.peers.map(({peer,viewer})=>announcement(peer,self.ip,registry.relay(viewer,self.role)));
+    ack?.({ ok: true, peers, peer: peers[0], maxViewers: registry.maxViewers });
+    for(const {peer,viewer} of joined.peers)io.to(peer.socketId).emit("stream:peer",announcement(self,peer.ip,registry.relay(viewer,peer.role)));
   });
   socket.on("disconnect", () => {
     clearTimeout(timer); const left = registry.remove(socket.id); limiter.forget(`${socket.id}:`);

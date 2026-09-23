@@ -41,7 +41,7 @@ export const MAX_HANDSHAKES_PER_MIN = 60;
 const PRIVADO =
   /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|::ffff:(10\.|127\.|192\.168\.)|f[cd])/i;
 
-export function clientIp(socket) {
+export function observedClientIp(socket) {
   const direto = socket.handshake.address || "desconhecido";
   const atrasDeProxy = PRIVADO.test(direto) && process.env.TRUST_PROXY === "1";
 
@@ -51,16 +51,21 @@ export function clientIp(socket) {
       // Um proxy confiavel acrescenta o IP observado ao final. O primeiro
       // item pode ter sido fornecido pelo atacante; nunca usá-lo como chave.
       const last = fwd.split(",").at(-1).trim();
-      if (isIP(last)) return normalizeIp(last);
+      if (isIP(last)) return normalizeObservedIp(last);
     }
   }
-  return normalizeIp(direto);
+  return normalizeObservedIp(direto);
 }
 
-function normalizeIp(value) {
+function normalizeObservedIp(value) {
   const mapped = value.replace(/^::ffff:/i, "");
   if (isIP(mapped) === 4) return mapped;
-  return isIP(value) ? ipKeyGenerator(value, 64) : "desconhecido";
+  return isIP(value) ? value : "desconhecido";
+}
+
+export function clientIp(socket) {
+  const observed = observedClientIp(socket);
+  return isIP(observed) === 6 ? ipKeyGenerator(observed, 64) : observed;
 }
 
 export const requestIp = (req) => clientIp({ handshake: { address: req.socket.remoteAddress, headers: req.headers } });

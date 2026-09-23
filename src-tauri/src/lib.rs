@@ -27,6 +27,7 @@ pub fn run() {
             native::engine_prepare,
             native::engine_connect_peer,
             native::engine_disconnect_peer,
+            native::engine_set_max_peers,
             native::engine_stop,
             native::engine_status,
             native::engine_toggle_fullscreen,

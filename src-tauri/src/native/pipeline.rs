@@ -107,6 +107,9 @@ fn run_device_session(
             continue;
         };
         let requested = transport.target_bitrate();
+        if let Ok(mut inner) = state.lock() {
+            inner.status.bitrate_kbps = requested / 1000;
+        }
         let bitrate_changed =
             requested < bitrate.saturating_mul(4) / 5 || requested > bitrate.saturating_mul(5) / 4;
         if transport.take_keyframe_request() && encoder.force_keyframe().is_err() {
@@ -142,7 +145,7 @@ fn run_device_session(
                 id: frame_id,
                 timestamp_us: timestamp_100ns.max(0) as u64 / 10,
                 keyframe: unit.keyframe,
-                bytes: unit.bytes,
+                bytes: Arc::new(unit.bytes),
             });
             if dropped {
                 if let Ok(mut inner) = state.lock() {

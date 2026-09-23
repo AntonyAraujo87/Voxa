@@ -15,11 +15,12 @@ interface Options {
   token: string;
   onPeer: (peer: PeerAnnouncement) => void | Promise<void>;
   onPeerLeft: (peerId: string) => void | Promise<void>;
+  onCapacity: (maxViewers: number) => void | Promise<void>;
   onError: (message: string) => void;
   refreshEndpoint: (role: StreamRole) => Promise<PreparedEndpoint>;
 }
 
-type Ack = { ok?: boolean; error?: string; peers?: PeerAnnouncement[] };
+type Ack = { ok?: boolean; error?: string; peers?: PeerAnnouncement[]; maxViewers?: number };
 
 export class Matchmaking {
   private readonly socket: Socket;
@@ -68,6 +69,7 @@ export class Matchmaking {
       localEndpoint: endpoint.local,
       publicKey: endpoint.publicKey,
     });
+    await this.options.onCapacity(response.maxViewers ?? 4);
     for (const peer of response.peers ?? []) await this.options.onPeer(peer);
   }
 

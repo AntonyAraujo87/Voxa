@@ -39,8 +39,9 @@ VOXA_RELAY_PORT=3479 VOXA_RELAY_SECRET='gere-um-segredo-aleatorio-longo' npm run
 
 Abra somente UDP/3479 no firewall da VCN e no firewall do sistema. No Render,
 configure `VOXA_RELAY_PUBLIC_ENDPOINT=IP_PUBLICO:3479`, sem configurar
-`VOXA_RELAY_PORT`, e use o mesmo `VOXA_RELAY_SECRET`. O relay encaminha apenas datagramas ChaCha20-Poly1305, expira
-sessões inativas, limita pacotes por IP e não conhece a chave X25519.
+`VOXA_RELAY_PORT`, e use o mesmo `VOXA_RELAY_SECRET`. O relay encaminha apenas
+datagramas ChaCha20-Poly1305, entrega credenciais diferentes ao host e ao
+espectador, expira sessões inativas, limita tráfego e não conhece a chave X25519.
 
 ## Release
 
