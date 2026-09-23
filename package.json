@@ -2,6 +2,7 @@
   "name": "voxa",
   "private": true,
   "version": "0.6.0",
+  "description": "Streaming P2P nativo de vídeo e input para Windows, com baixa latência em Rust e UDP.",
   "type": "module",
   "scripts": {
     "dev": "vite",
