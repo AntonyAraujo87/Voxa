@@ -27,13 +27,16 @@
 
 ## Próxima integração obrigatória
 
-1. **Codec futuro:** acrescentar P010/H.265/AV1 quando suportado e negociar capacidade.
-2. **Render futuro:** seleção correta de GPU/monitor e troca de monitor durante a sessão.
-3. **Feedback:** atraso interframe, fila do
+1. **Multi-viewer:** permitir até quatro convidados por host, codificando uma vez e
+   mantendo chave X25519, congestionamento, rota direta/relay e permissões separados por convidado.
+2. **Input remoto:** enviar mouse, teclado e gamepad somente por APIs oficiais em
+   modo usuário, com consentimento local, indicador persistente, lista de teclas
+   bloqueadas e botão de emergência. O input permanece desativado na versão atual.
+3. **Codec futuro:** acrescentar P010/H.265/AV1 quando suportado e negociar capacidade.
+4. **Render futuro:** seleção correta de GPU/monitor e troca de monitor durante a sessão.
+5. **Feedback:** atraso interframe, fila do
    socket e tempo encode/decode para dirigir bitrate, resolução e FPS.
-4. **Rede hostil:** medir disponibilidade/custo do relay e adicionar relay regional.
-5. **Input:** somente API oficial em modo usuário, com consentimento local,
-   indicador persistente, lista de teclas bloqueadas e botão de emergência.
+6. **Rede hostil:** medir disponibilidade/custo do relay e adicionar relay regional.
 
 ## Critério para chamar de transmissão pronta
 

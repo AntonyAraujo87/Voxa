@@ -15,6 +15,7 @@
     "app:build": "tauri build",
     "app:build:local": "node scripts/build-local.mjs",
     "typecheck": "tsc --noEmit",
+    "test:rust": "node scripts/test-rust.mjs",
     "test": "node --test server/test/*.test.js scripts/check-native.test.mjs scripts/check-deployment.test.mjs scripts/promote-release.test.mjs",
     "verify": "tsc --noEmit && npm test"
   },

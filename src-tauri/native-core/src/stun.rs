@@ -71,12 +71,13 @@ fn parse(data: &[u8], transaction: [u8; 12]) -> Result<SocketAddr, String> {
     if declared % 4 != 0 || 20 + declared > data.len() {
         return Err("Tamanho da resposta STUN inválido".into());
     }
+    let end = 20 + declared;
     let mut offset = 20;
-    while offset + 4 <= data.len() {
+    while offset + 4 <= end {
         let kind = u16::from_be_bytes([data[offset], data[offset + 1]]);
         let len = u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
         let start = offset + 4;
-        if start + len > data.len() {
+        if start + len > end {
             break;
         }
         if kind == 0x0020 && len >= 8 && data[start + 1] == 0x01 {
@@ -115,6 +116,23 @@ mod tests {
             data.push(ip[index] ^ magic[index]);
         }
         assert_eq!(parse(&data, tx).unwrap(), "192.168.1.9:54321".parse().unwrap());
+    }
+
+    #[test]
+    fn ignores_attributes_past_declared_message_length() {
+        let tx = [7u8; 12];
+        let magic = MAGIC.to_be_bytes();
+        let port = 54321u16 ^ (MAGIC >> 16) as u16;
+        let ip = [203u8, 0, 113, 9];
+        let mut data = vec![0x01, 0x01, 0, 0];
+        data.extend_from_slice(&MAGIC.to_be_bytes());
+        data.extend_from_slice(&tx);
+        data.extend_from_slice(&[0, 0x20, 0, 8, 0, 1]);
+        data.extend_from_slice(&port.to_be_bytes());
+        for index in 0..4 {
+            data.push(ip[index] ^ magic[index]);
+        }
+        assert!(parse(&data, tx).is_err());
     }
 
     #[tokio::test]

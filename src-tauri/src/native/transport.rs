@@ -409,7 +409,16 @@ pub async fn spawn_receiver(
                         }
                     }
                 }
-                Ok(Err(_)) => break,
+                Ok(Err(_)) => {
+                    // No Windows um ICMP de porta inalcançável pode aparecer como
+                    // WSAECONNRESET no recv_from. Isso não invalida o socket: a rota
+                    // pode voltar ou o relay pode assumir no próximo probe.
+                    recv_route.reset();
+                    if let Ok(mut inner) = recv_state.lock() {
+                        inner.status.phase = "recovering";
+                    }
+                    time::sleep(Duration::from_millis(50)).await;
+                }
                 Err(_) => {}
             }
         }
@@ -424,6 +433,8 @@ pub async fn spawn_receiver(
     let video_keyframe_request = request_remote_keyframe.clone();
     let video_state = state.clone();
     let video_sender = tauri::async_runtime::spawn(async move {
+        let mut last_config = None::<StreamConfig>;
+        let mut last_config_sent = Instant::now() - Duration::from_secs(1);
         while !video_stop.load(Ordering::Acquire) {
             if video_keyframe_request.swap(false, Ordering::AcqRel)
                 && send(
@@ -438,10 +449,19 @@ pub async fn spawn_receiver(
             {
                 mark_failed(&video_state);
             }
-            let config = video_config.lock().ok().and_then(|mut slot| slot.take());
-            if let Some(config) = config {
+            let queued_config = video_config.lock().ok().and_then(|mut slot| slot.take());
+            let repetitions = if let Some(config) = queued_config {
+                last_config = Some(config);
+                3
+            } else if last_config.is_some() && last_config_sent.elapsed() >= Duration::from_secs(1)
+            {
+                1
+            } else {
+                0
+            };
+            if let Some(config) = last_config.filter(|_| repetitions > 0) {
                 if let Ok(payload) = config.encode() {
-                    for _ in 0..3 {
+                    for _ in 0..repetitions {
                         if send(
                             &video_route,
                             &send_key,
@@ -456,6 +476,7 @@ pub async fn spawn_receiver(
                             break;
                         }
                     }
+                    last_config_sent = Instant::now();
                 }
             }
             let frame = video_outgoing.lock().ok().and_then(|mut slot| slot.take());
@@ -523,7 +544,12 @@ pub async fn spawn_receiver(
             .await
             .is_err()
             {
-                break;
+                ping_route.reset();
+                if let Ok(mut inner) = ping_state.lock() {
+                    inner.status.phase = "recovering";
+                }
+                time::sleep(Duration::from_millis(100)).await;
+                continue;
             }
             if let Ok(mut inner) = ping_state.lock() {
                 let bitrate = congestion.update(inner.status.loss_pct, inner.status.rtt_ms);
@@ -569,9 +595,12 @@ fn apply_feedback(state: &Arc<Mutex<Inner>>, payload: &[u8]) {
     if payload.len() >= 8 {
         if let Ok(mut inner) = state.lock() {
             inner.status.rtt_ms = u32::from_be_bytes(payload[..4].try_into().unwrap());
-            inner.status.loss_pct =
-                f32::from_bits(u32::from_be_bytes(payload[4..8].try_into().unwrap()))
-                    .clamp(0.0, 100.0);
+            let loss = f32::from_bits(u32::from_be_bytes(payload[4..8].try_into().unwrap()));
+            inner.status.loss_pct = if loss.is_finite() {
+                loss.clamp(0.0, 100.0)
+            } else {
+                100.0
+            };
         }
     }
 }

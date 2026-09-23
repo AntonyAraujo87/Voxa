@@ -67,6 +67,5 @@ jobs:
         run: cargo clippy -- -D warnings
         working-directory: src-tauri
 
-      - name: Testes do protocolo nativo
-        run: cargo test --manifest-path native-core/Cargo.toml
-        working-directory: src-tauri
+      - name: Testes Rust e carregador WebView2 fixado
+        run: node scripts/test-rust.mjs

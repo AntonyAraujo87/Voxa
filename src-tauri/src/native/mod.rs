@@ -223,7 +223,16 @@ pub async fn engine_connect_peer(
     if let Some(previous) = previous {
         previous.stop();
     }
-    let (key, verification_code) = key_exchange.agree(&peer_public_key)?;
+    let (key, verification_code) = match key_exchange.agree(&peer_public_key) {
+        Ok(result) => result,
+        Err(error) => {
+            if let Ok(mut inner) = engine.inner.lock() {
+                inner.status.phase = "failed";
+                inner.status.peer_endpoint = None;
+            }
+            return Err(error);
+        }
+    };
     let mut control = match spawn_receiver(
         socket,
         peer,

@@ -21,7 +21,7 @@ const emptyStatus: EngineStatus = {
 export default function App() {
   const engine = useMemo(() => new NativeEngine(), []);
   const [serverUrl, setServerUrl] = useState(DEFAULT_SIGNALING);
-  const [room, setRoom] = useState(localStorage.getItem("voxa-room") ?? "");
+  const [room, setRoom] = useState(() => localStorage.getItem("voxa-room") ?? randomRoom());
   const [token, setToken] = useState("");
   const [role, setRole] = useState<StreamRole>("viewer");
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
@@ -159,8 +159,8 @@ export default function App() {
               <strong>Conectar</strong><span>Assistir outro PC</span>
             </button>
           </div>
-          <label>Sala<input value={room} onChange={(event) => setRoom(event.target.value)} maxLength={64} pattern="[a-zA-Z0-9._:-]+" title="Use letras, números, ponto, dois-pontos, hífen ou sublinhado" placeholder="ex.: sala-do-jogo" disabled={active} /></label>
-          <label>Senha da sala<input value={token} onChange={(event) => setToken(event.target.value)} type="password" maxLength={256} placeholder="Obrigatória no servidor público" disabled={active} /></label>
+          <label>Código da sala<input value={room} onChange={(event) => setRoom(event.target.value)} maxLength={64} pattern="[a-zA-Z0-9._:-]+" title="Use letras, números, ponto, dois-pontos, hífen ou sublinhado" placeholder="ex.: sala-do-jogo" disabled={active} /></label>
+          <label>Chave de acesso do servidor<input value={token} onChange={(event) => setToken(event.target.value)} type="password" maxLength={256} placeholder="A mesma configurada no Render" disabled={active} /></label>
           <details>
             <summary>Servidor de matchmaking</summary>
             <label>URL<input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} inputMode="url" disabled={active} /></label>
@@ -195,4 +195,10 @@ export default function App() {
 
 function Metric({ label, value }: { label: string; value: string }) {
   return <div><span>{label}</span><strong title={value}>{value}</strong></div>;
+}
+
+function randomRoom() {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
 }

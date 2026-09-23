@@ -52,14 +52,16 @@ npm ci
 npm ci --prefix server
 npm run verify
 npm run build
-cargo test --manifest-path src-tauri/Cargo.toml
+npm run test:rust
 cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 ```
 
 Em Windows GNU, use um `target-dir` sem caracteres Unicode se o `dlltool` antigo
-estiver instalado. O CI usa `windows-latest` e valida Rust com Clippy.
+estiver instalado. O teste local executa o núcleo nativo; os testes que ligam o
+runtime Tauri rodam no CI com MSVC porque o linker GNU mistura manifests do PE.
+O CI usa `windows-latest` e também valida Rust com Clippy.
 
-Copie `.env.example` para `.env`. A senha da sala é digitada no painel e nunca
+Copie `.env.example` para `.env`. A chave de acesso do servidor é digitada no painel e nunca
 deve entrar em uma variável `VITE_*`.
 
 ## Limitações de rede
