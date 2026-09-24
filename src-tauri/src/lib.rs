@@ -24,6 +24,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             runtime_info,
+            native::engine_capture_targets,
             native::engine_prepare,
             native::engine_connect_peer,
             native::engine_disconnect_peer,

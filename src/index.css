@@ -2,7 +2,7 @@
 * { box-sizing: border-box; }
 html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
 body { min-height: 100vh; overflow: auto; background: radial-gradient(circle at 18% 8%, rgba(27,107,255,.18), transparent 34rem), radial-gradient(circle at 85% 75%, rgba(0,220,180,.1), transparent 30rem), #07090d; }
-button, input { font: inherit; } button { color: inherit; }
+button, input, select { font: inherit; } button { color: inherit; }
 .shell { width: min(940px, calc(100% - 40px)); margin: 0 auto; padding: 0 0 52px; }
 .titlebar { height: 56px; display: flex; align-items: center; justify-content: space-between; }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 12px; font-weight: 800; letter-spacing: .16em; color: #b8c1d4; }
@@ -21,9 +21,9 @@ form { display: grid; gap: 18px; }
 .role-picker button.selected { border-color: #2f7dff; background: rgba(47,125,255,.12); box-shadow: inset 0 0 0 1px rgba(47,125,255,.25); }
 .role-picker button span { color: #7f899d; font-size: 13px; }
 label { display: grid; gap: 8px; color: #b9c1d1; font-size: 13px; font-weight: 700; }
-input { width: 100%; border: 1px solid #283142; border-radius: 10px; background: #090d14; color: #f7f8fb; outline: none; padding: 13px 14px; }
-input:focus { border-color: #2f7dff; box-shadow: 0 0 0 3px rgba(47,125,255,.13); }
-input:disabled, button:disabled { opacity: .55; cursor: not-allowed; }
+input, select { width: 100%; border: 1px solid #283142; border-radius: 10px; background: #090d14; color: #f7f8fb; outline: none; padding: 13px 14px; }
+input:focus, select:focus { border-color: #2f7dff; box-shadow: 0 0 0 3px rgba(47,125,255,.13); }
+input:disabled, select:disabled, button:disabled { opacity: .55; cursor: not-allowed; }
 details { color: #7f899d; font-size: 13px; } summary { cursor: pointer; margin-bottom: 12px; }
 .primary { border: 0; border-radius: 10px; background: linear-gradient(135deg,#2f7dff,#175fe2); padding: 14px 20px; font-weight: 800; cursor: pointer; box-shadow: 0 10px 30px rgba(47,125,255,.24); }
 .primary.danger { background: #b73142; box-shadow: none; }
@@ -36,4 +36,8 @@ details { color: #7f899d; font-size: 13px; } summary { cursor: pointer; margin-b
 .metrics span { color: #687386; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; }
 .metrics strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .native-error { display: block; padding: 14px 18px; color: #ff9eaa; background: rgba(183,49,66,.12); }
+.peer-metrics { display: grid; gap: 8px; padding: 14px 18px; }
+.peer-metrics > div { display: grid; grid-template-columns: minmax(100px,.45fr) 1fr; gap: 4px 12px; padding: 10px 12px; border: 1px solid #232c3a; border-radius: 9px; background: #090d14; }
+.peer-metrics span { color: #d6dbea; }
+.peer-metrics small { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7f8ba3; }
 @media (max-width: 650px) { .shell { width: min(100% - 24px,940px); } .hero { padding-top: 30px; } .role-picker, .metrics { grid-template-columns: 1fr; } }

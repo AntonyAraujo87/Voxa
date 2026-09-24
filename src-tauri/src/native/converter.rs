@@ -32,8 +32,10 @@ impl GpuColorConverter {
     pub fn new(
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
-        width: u32,
-        height: u32,
+        input_width: u32,
+        input_height: u32,
+        output_width: u32,
+        output_height: u32,
         fps: u32,
     ) -> Result<Self, String> {
         unsafe {
@@ -46,11 +48,11 @@ impl GpuColorConverter {
             let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
                 InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
                 InputFrameRate: rate,
-                InputWidth: width,
-                InputHeight: height,
+                InputWidth: input_width,
+                InputHeight: input_height,
                 OutputFrameRate: rate,
-                OutputWidth: width,
-                OutputHeight: height,
+                OutputWidth: output_width,
+                OutputHeight: output_height,
                 Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
             };
             let enumerator = video_device
@@ -60,8 +62,8 @@ impl GpuColorConverter {
                 .CreateVideoProcessor(&enumerator, 0)
                 .map_err(|e| format!("Conversor de cor: {e}"))?;
             let texture_desc = D3D11_TEXTURE2D_DESC {
-                Width: width,
-                Height: height,
+                Width: output_width,
+                Height: output_height,
                 MipLevels: 1,
                 ArraySize: 1,
                 Format: DXGI_FORMAT_NV12,

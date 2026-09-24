@@ -12,6 +12,9 @@ pub const MAX_DATAGRAM: usize = 1178;
 pub const HEADER_LEN: usize = 42;
 pub const TAG_LEN: usize = 16;
 pub const MAX_PAYLOAD: usize = MAX_DATAGRAM - HEADER_LEN - TAG_LEN;
+pub const FEC_HEADER_LEN: usize = 2;
+pub const FEC_DATA_PAYLOAD: usize = MAX_PAYLOAD - FEC_HEADER_LEN;
+pub const FEC_GROUP_SIZE: usize = 8;
 pub const MAX_FRAGMENTS: usize = 4096;
 pub const MAX_ENCODED_FRAME: usize = MAX_PAYLOAD * MAX_FRAGMENTS;
 const MAGIC: &[u8; 4] = b"VOXA";
@@ -29,6 +32,7 @@ pub enum Kind {
     Keyframe = 7,
     Input = 8,
     Config = 9,
+    VideoFec = 10,
 }
 
 impl TryFrom<u8> for Kind {
@@ -44,6 +48,7 @@ impl TryFrom<u8> for Kind {
             7 => Ok(Self::Keyframe),
             8 => Ok(Self::Input),
             9 => Ok(Self::Config),
+            10 => Ok(Self::VideoFec),
             _ => Err("Tipo de pacote desconhecido".into()),
         }
     }

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { NativeEngine, type EngineStatus, type StreamRole } from "./lib/nativeEngine";
+import { NativeEngine, type CaptureTargetInfo, type EngineStatus, type StreamRole } from "./lib/nativeEngine";
 import { Matchmaking, type PeerAnnouncement } from "./lib/signaling";
 
 const DEFAULT_SIGNALING =
@@ -15,7 +15,7 @@ const emptyStatus: EngineStatus = {
   receivedFrames: 0, encodedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
   renderer: "closed", capture: "idle", encoder: "idle",
   decoder: "idle", decodedFrames: 0,
-  verificationCode: null, connectedPeers: 0, maxPeers: 4, peerVerifications: [], lastError: null,
+  verificationCode: null, connectedPeers: 0, maxPeers: 4, peerVerifications: [], peerMetrics: [], lastError: null,
 };
 
 export default function App() {
@@ -28,9 +28,19 @@ export default function App() {
   const [message, setMessage] = useState("Pronto para conectar");
   const [busy, setBusy] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
+  const [captureTargets, setCaptureTargets] = useState<CaptureTargetInfo[]>([]);
+  const [captureTargetIndex, setCaptureTargetIndex] = useState(0);
   const [updateMessage, setUpdateMessage] = useState("Verificar atualização");
   const roomValid = /^[a-zA-Z0-9._:-]{1,64}$/.test(room);
   const passwordValid = roomPassword.length >= 4 && roomPassword.length <= 128;
+
+  useEffect(() => {
+    void engine.captureTargets().then((targets) => {
+      setCaptureTargets(targets);
+      const primary = targets.findIndex((target) => target.primary);
+      setCaptureTargetIndex(primary >= 0 ? primary : 0);
+    }).catch(() => setCaptureTargets([]));
+  }, [engine]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -101,7 +111,8 @@ export default function App() {
       const roomId = room.trim();
       const roomProof = await deriveRoomProof(roomId, roomPassword);
       localStorage.setItem("voxa-room", roomId);
-      const endpoint = await engine.prepare(role);
+      const selectedCaptureTarget = role === "host" ? captureTargets[captureTargetIndex]?.id ?? null : null;
+      const endpoint = await engine.prepare(role, selectedCaptureTarget);
       matchmaking = new Matchmaking(serverUrl, {
         onPeer: async (peer: PeerAnnouncement) => {
           setMessage("Perfurando o NAT e autenticando o par...");
@@ -114,13 +125,16 @@ export default function App() {
             setMessage("Um espectador desconectou. A sala continua aberta.");
           } else {
             setMessage("O host desconectou. Renovando as chaves...");
-            const refreshed = await engine.prepare(role);
+            const refreshed = await engine.prepare(role, selectedCaptureTarget);
             if (matchmaking) await matchmaking.join(roomId, role, refreshed, roomProof);
           }
         },
         onCapacity: (maxViewers) => engine.setMaxPeers(maxViewers),
         onError: setMessage,
-        refreshEndpoint: (reconnectingRole) => engine.prepare(reconnectingRole),
+        refreshEndpoint: (reconnectingRole) => engine.prepare(
+          reconnectingRole,
+          reconnectingRole === "host" ? selectedCaptureTarget : null,
+        ),
       });
       engine.attachMatchmaking(matchmaking);
       await matchmaking.join(roomId, role, endpoint, roomProof);
@@ -166,6 +180,15 @@ export default function App() {
               <strong>Conectar</strong><span>Assistir outro PC</span>
             </button>
           </div>
+          {role === "host" && <label>Monitor e GPU
+            <select value={captureTargetIndex} onChange={(event) => setCaptureTargetIndex(Number(event.target.value))} disabled={active || busy}>
+              {captureTargets.length === 0
+                ? <option value={0}>Monitor principal automático</option>
+                : captureTargets.map((target, index) => <option key={`${target.id.adapterIndex}:${target.id.outputIndex}`} value={index}>
+                    {target.primary ? "Principal · " : ""}{target.monitor} · {target.width}×{target.height} · {target.gpu}
+                  </option>)}
+            </select>
+          </label>}
           <label>Código da sala<input value={room} onChange={(event) => setRoom(event.target.value)} maxLength={64} pattern="[a-zA-Z0-9._:-]+" title="Use letras, números, ponto, dois-pontos, hífen ou sublinhado" placeholder="ex.: sala-do-jogo" disabled={active} /></label>
           <label>Senha da sala<input value={roomPassword} onChange={(event) => setRoomPassword(event.target.value)} type="password" minLength={4} maxLength={128} autoComplete="new-password" placeholder="A mesma senha nos dois computadores" disabled={active} /></label>
           <details>
@@ -190,6 +213,13 @@ export default function App() {
           <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.decoder} · ${status.renderer}`} />
         </div>
         {status.lastError && <small className="native-error">Erro nativo: {status.lastError}</small>}
+        {role === "host" && status.peerMetrics.length > 0 && <div className="peer-metrics">
+          {status.peerMetrics.map((peer, index) => <div key={peer.peerId}>
+            <strong>Espectador {index + 1}</strong>
+            <span>{peer.phase} · {peer.rttMs} ms · {peer.lossPct.toFixed(1)}% · {peer.bitrateKbps} kbps</span>
+            <small title={peer.endpoint ?? undefined}>{peer.endpoint ?? "Rota em negociação"}</small>
+          </div>)}
+        </div>}
         {(status.verificationCode || status.peerVerifications.length > 0) && <small>Compare cada Código E2E com o espectador correspondente antes de confiar na sessão.</small>}
       </section>
       <section className="card update-card">

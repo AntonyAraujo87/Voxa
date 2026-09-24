@@ -8,16 +8,19 @@ use std::{
     time::Duration,
 };
 use tauri::AppHandle;
-use windows::Win32::{
-    Foundation::{HMODULE, HWND},
-    Graphics::{
-        Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0},
-        Direct3D11::{
-            D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            D3D11_SDK_VERSION,
+use windows::{
+    core::Interface,
+    Win32::{
+        Foundation::{HMODULE, HWND},
+        Graphics::{
+            Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0},
+            Direct3D11::{
+                D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
+            },
         },
+        System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED},
     },
-    System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED},
 };
 
 pub(super) fn spawn(
@@ -175,10 +178,13 @@ fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext), String> {
             Some(&mut context),
         )
         .map_err(|e| format!("D3D11 do espectador: {e}"))?;
-        Ok((
-            device.ok_or("D3D11 não retornou dispositivo para o espectador")?,
-            context.ok_or("D3D11 não retornou contexto para o espectador")?,
-        ))
+        let device = device.ok_or("D3D11 não retornou dispositivo para o espectador")?;
+        let context = context.ok_or("D3D11 não retornou contexto para o espectador")?;
+        let multithread: ID3D11Multithread = device
+            .cast()
+            .map_err(|e| format!("Proteção multithread D3D11 do espectador: {e}"))?;
+        let _ = multithread.SetMultithreadProtected(true);
+        Ok((device, context))
     }
 }
 

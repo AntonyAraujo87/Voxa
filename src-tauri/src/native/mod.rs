@@ -33,11 +33,57 @@ pub enum StreamRole {
     Viewer,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureTargetId {
+    pub adapter_index: u32,
+    pub output_index: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureTargetInfo {
+    pub id: CaptureTargetId,
+    pub gpu: String,
+    pub monitor: String,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerVerification {
     peer_id: String,
     code: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerMetric {
+    peer_id: String,
+    endpoint: Option<String>,
+    phase: &'static str,
+    rtt_ms: u32,
+    loss_pct: f32,
+    bitrate_kbps: u32,
+    received_frames: u64,
+    dropped_frames: u64,
+}
+
+impl PeerMetric {
+    fn waiting(peer_id: String) -> Self {
+        Self {
+            peer_id,
+            endpoint: None,
+            phase: "punching",
+            rtt_ms: 0,
+            loss_pct: 0.0,
+            bitrate_kbps: 12_000,
+            received_frames: 0,
+            dropped_frames: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -64,6 +110,7 @@ pub struct EngineStatus {
     connected_peers: usize,
     max_peers: usize,
     peer_verifications: Vec<PeerVerification>,
+    peer_metrics: Vec<PeerMetric>,
     last_error: Option<String>,
 }
 
@@ -91,6 +138,7 @@ impl Default for EngineStatus {
             connected_peers: 0,
             max_peers: 4,
             peer_verifications: Vec::new(),
+            peer_metrics: Vec::new(),
             last_error: None,
         }
     }
@@ -113,7 +161,9 @@ struct Inner {
     host_fanout: HostTransportHandle,
     host_pipeline: Option<std::thread::JoinHandle<()>>,
     verification_codes: HashMap<String, String>,
+    peer_metrics: HashMap<String, PeerMetric>,
     key_exchange: Option<protocol::EphemeralKey>,
+    capture_target: Option<CaptureTargetId>,
 }
 
 #[derive(Default)]
@@ -122,9 +172,22 @@ pub struct NativeEngine {
 }
 
 #[tauri::command]
+pub fn engine_capture_targets() -> Result<Vec<CaptureTargetInfo>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        capture::enumerate_targets()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Captura nativa disponível somente no Windows".into())
+    }
+}
+
+#[tauri::command]
 pub async fn engine_prepare(
     app: AppHandle,
     role: StreamRole,
+    capture_target: Option<CaptureTargetId>,
     engine: State<'_, NativeEngine>,
 ) -> Result<PreparedEndpoint, String> {
     engine_stop(app, engine.clone()).await?;
@@ -157,7 +220,7 @@ pub async fn engine_prepare(
     let public_key = key_exchange.public_base64();
     #[cfg(target_os = "windows")]
     let (capture_state, encoder_state) = if role == StreamRole::Host {
-        let capture_state = if capture::probe().is_ok() {
+        let capture_state = if capture::probe(capture_target).is_ok() {
             "dxgi-ready"
         } else {
             "dxgi-unavailable"
@@ -180,6 +243,7 @@ pub async fn engine_prepare(
     inner.datagrams = Some(DatagramHub::new(socket.clone()));
     inner.socket = Some(socket);
     inner.key_exchange = Some(key_exchange);
+    inner.capture_target = capture_target;
     inner.status.phase = "waiting";
     inner.status.local_endpoint = Some(local.clone());
     inner.status.public_endpoint = public.clone();
@@ -308,9 +372,11 @@ pub async fn engine_connect_peer(
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
         inner.host_fanout.add(peer_id.clone(), handle);
         if inner.host_pipeline.is_none() {
+            let capture_target = inner.capture_target;
             inner.host_pipeline = Some(pipeline::spawn(
                 inner.host_fanout.clone(),
                 engine.inner.clone(),
+                capture_target,
             ));
         }
     } else {
@@ -331,6 +397,10 @@ pub async fn engine_connect_peer(
     inner
         .verification_codes
         .insert(peer_id.clone(), verification_code.clone());
+    inner
+        .peer_metrics
+        .entry(peer_id.clone())
+        .or_insert_with(|| PeerMetric::waiting(peer_id.clone()));
     inner.transports.insert(peer_id, control);
     refresh_peer_list(&mut inner);
     inner.status.verification_code = if role == StreamRole::Viewer || inner.transports.len() == 1 {
@@ -354,6 +424,7 @@ pub async fn engine_disconnect_peer(
         let control = inner.transports.remove(&peer_id);
         inner.host_fanout.remove(&peer_id);
         inner.verification_codes.remove(&peer_id);
+        inner.peer_metrics.remove(&peer_id);
         let remaining = inner.transports.len();
         refresh_peer_list(&mut inner);
         inner.status.peer_endpoint = None;
@@ -420,6 +491,11 @@ fn refresh_peer_list(inner: &mut Inner) {
     inner
         .status
         .peer_verifications
+        .sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+    inner.status.peer_metrics = inner.peer_metrics.values().cloned().collect();
+    inner
+        .status
+        .peer_metrics
         .sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
 }
 

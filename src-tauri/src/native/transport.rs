@@ -390,6 +390,7 @@ pub async fn spawn_receiver(
     let recv_feedback_loss = feedback_loss_bits.clone();
     let recv_feedback_at = feedback_at_us.clone();
     let recv_measured_rtt = measured_rtt_ms;
+    let recv_peer_id = peer_id.clone();
     let receiver = tauri::async_runtime::spawn(async move {
         let mut frames = Reassembler::default();
         let mut replay = ReplayGuard::default();
@@ -403,6 +404,9 @@ pub async fn spawn_receiver(
                 if let Ok(mut inner) = recv_state.lock() {
                     inner.status.phase = "recovering";
                 }
+                update_peer(&recv_state, &recv_peer_id, |metric| {
+                    metric.phase = "recovering"
+                });
             }
             let expired = frames.expire();
             if expired > 0 {
@@ -424,13 +428,17 @@ pub async fn spawn_receiver(
                     if let Ok(packet) = protocol::open(&receive_key, &buffer) {
                         last_authenticated = Instant::now();
                         let selected = recv_route.select(source);
+                        let observed_endpoint = if selected == 2 {
+                            format!("relay://{}", source)
+                        } else {
+                            source.to_string()
+                        };
                         if let Ok(mut inner) = recv_state.lock() {
-                            inner.status.peer_endpoint = Some(if selected == 2 {
-                                format!("relay://{}", source)
-                            } else {
-                                source.to_string()
-                            });
+                            inner.status.peer_endpoint = Some(observed_endpoint.clone());
                         }
+                        update_peer(&recv_state, &recv_peer_id, |metric| {
+                            metric.endpoint = Some(observed_endpoint);
+                        });
                         if !replay.accept(packet.meta.stream_id, packet.meta.sequence) {
                             continue;
                         }
@@ -445,9 +453,9 @@ pub async fn spawn_receiver(
                                     b"ok",
                                 )
                                 .await;
-                                mark_connected(&recv_state, role);
+                                mark_connected(&recv_state, role, &recv_peer_id);
                             }
-                            Kind::HelloAck => mark_connected(&recv_state, role),
+                            Kind::HelloAck => mark_connected(&recv_state, role, &recv_peer_id),
                             Kind::Ping => {
                                 let _ = send(
                                     &recv_route,
@@ -467,6 +475,9 @@ pub async fn spawn_receiver(
                                 if let Ok(mut inner) = recv_state.lock() {
                                     inner.status.rtt_ms = rtt.min(u32::MAX as u64) as u32;
                                 }
+                                update_peer(&recv_state, &recv_peer_id, |metric| {
+                                    metric.rtt_ms = rtt.min(u32::MAX as u64) as u32;
+                                });
                             }
                             Kind::Video => match frames.push(
                                 packet.meta.frame_id,
@@ -494,6 +505,11 @@ pub async fn spawn_receiver(
                                         inner.status.dropped_frames += u64::from(replaced);
                                         inner.status.phase = "streaming";
                                     }
+                                    update_peer(&recv_state, &recv_peer_id, |metric| {
+                                        metric.received_frames += 1;
+                                        metric.dropped_frames += u64::from(replaced);
+                                        metric.phase = "streaming";
+                                    });
                                 }
                                 Ok(None) => {}
                                 Err(_) => {
@@ -508,6 +524,39 @@ pub async fn spawn_receiver(
                                     .await
                                 }
                             },
+                            Kind::VideoFec => match frames.push_fec(
+                                packet.meta.frame_id,
+                                packet.meta.fragment_index,
+                                packet.meta.fragment_count,
+                                packet.meta.timestamp_us,
+                                &packet.payload,
+                            ) {
+                                Ok(Some(frame)) => {
+                                    let replaced = recv_incoming
+                                        .lock()
+                                        .map(|mut slot| {
+                                            slot.replace(EncodedFrame {
+                                                id: frame.id,
+                                                timestamp_us: frame.timestamp_us,
+                                                keyframe: true,
+                                                bytes: Arc::new(frame.bytes),
+                                            })
+                                            .is_some()
+                                        })
+                                        .unwrap_or(true);
+                                    if let Ok(mut inner) = recv_state.lock() {
+                                        inner.status.received_frames += 1;
+                                        inner.status.dropped_frames += u64::from(replaced);
+                                    }
+                                    update_peer(&recv_state, &recv_peer_id, |metric| {
+                                        metric.received_frames += 1;
+                                        metric.dropped_frames += u64::from(replaced);
+                                        metric.phase = "streaming";
+                                    });
+                                }
+                                Ok(None) => {}
+                                Err(_) => mark_dropped(&recv_state),
+                            },
                             Kind::Keyframe => {
                                 recv_force_keyframe.store(true, Ordering::Release);
                                 if let Ok(mut inner) = recv_state.lock() {
@@ -519,6 +568,7 @@ pub async fn spawn_receiver(
                                 &recv_feedback_rtt,
                                 &recv_feedback_loss,
                                 &recv_feedback_at,
+                                &recv_peer_id,
                                 &packet.payload,
                             ),
                             Kind::Config => {
@@ -552,6 +602,9 @@ pub async fn spawn_receiver(
                 }
                 Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
                     mark_dropped(&recv_state);
+                    update_peer(&recv_state, &recv_peer_id, |metric| {
+                        metric.dropped_frames += 1
+                    });
                 }
                 Ok(Err(broadcast::error::RecvError::Closed)) => break,
                 Err(_) => {}
@@ -619,12 +672,20 @@ pub async fn spawn_receiver(
                 time::sleep(Duration::from_millis(1)).await;
                 continue;
             };
-            let Ok(fragment_count) = protocol::fragment_count(frame.bytes.len()) else {
+            let chunk_size = if frame.keyframe {
+                protocol::FEC_DATA_PAYLOAD
+            } else {
+                protocol::MAX_PAYLOAD
+            };
+            let count = frame.bytes.len().saturating_add(chunk_size - 1) / chunk_size;
+            if count == 0 || count > protocol::MAX_FRAGMENTS {
                 mark_dropped(&video_state);
                 continue;
-            };
+            }
+            let fragment_count = count as u16;
+            let chunks = frame.bytes.chunks(chunk_size).collect::<Vec<_>>();
             let mut deadline = time::Instant::now();
-            for (index, payload) in frame.bytes.chunks(protocol::MAX_PAYLOAD).enumerate() {
+            for (index, payload) in chunks.iter().copied().enumerate() {
                 if !frame.keyframe
                     && video_outgoing
                         .lock()
@@ -654,6 +715,42 @@ pub async fn spawn_receiver(
                 let nanos = (protocol::MAX_DATAGRAM as u64 * 8 * 1_000_000_000) / bitrate;
                 deadline += Duration::from_nanos(nanos);
                 time::sleep_until(deadline).await;
+                if frame.keyframe
+                    && ((index + 1).is_multiple_of(protocol::FEC_GROUP_SIZE)
+                        || index + 1 == chunks.len())
+                {
+                    let start = index / protocol::FEC_GROUP_SIZE * protocol::FEC_GROUP_SIZE;
+                    let group = &chunks[start..=index];
+                    let parity_len = group.iter().map(|part| part.len()).max().unwrap_or(0);
+                    let mut fec = Vec::with_capacity(protocol::FEC_HEADER_LEN + parity_len);
+                    fec.extend_from_slice(
+                        &(chunks.last().map_or(0, |part| part.len()) as u16).to_be_bytes(),
+                    );
+                    fec.resize(protocol::FEC_HEADER_LEN + parity_len, 0);
+                    for part in group {
+                        for (offset, byte) in part.iter().enumerate() {
+                            fec[protocol::FEC_HEADER_LEN + offset] ^= byte;
+                        }
+                    }
+                    let meta = Meta {
+                        stream_id,
+                        sequence: video_sequence.fetch_add(1, Ordering::Relaxed),
+                        frame_id: frame.id,
+                        fragment_index: start as u16,
+                        fragment_count,
+                        timestamp_us: frame.timestamp_us,
+                        keyframe: true,
+                    };
+                    if send(&video_route, &send_key, Kind::VideoFec, meta, &fec)
+                        .await
+                        .is_err()
+                    {
+                        mark_failed(&video_state);
+                        break;
+                    }
+                    deadline += Duration::from_nanos(nanos);
+                    time::sleep_until(deadline).await;
+                }
             }
         }
     });
@@ -666,6 +763,7 @@ pub async fn spawn_receiver(
     let ping_feedback_rtt = feedback_rtt_ms;
     let ping_feedback_loss = feedback_loss_bits;
     let ping_feedback_at = feedback_at_us;
+    let ping_peer_id = peer_id;
     let heartbeat = tauri::async_runtime::spawn(async move {
         let mut interval = time::interval(Duration::from_millis(500));
         let mut congestion = CongestionController::new(12_000_000, 800_000, 35_000_000);
@@ -686,6 +784,9 @@ pub async fn spawn_receiver(
                 if let Ok(mut inner) = ping_state.lock() {
                     inner.status.phase = "recovering";
                 }
+                update_peer(&ping_state, &ping_peer_id, |metric| {
+                    metric.phase = "recovering"
+                });
                 time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -694,17 +795,20 @@ pub async fn spawn_receiver(
             let feedback_at = ping_feedback_at.load(Ordering::Acquire);
             let feedback_is_fresh =
                 feedback_at > 0 && now_us().saturating_sub(feedback_at) < 2_000_000;
+            let bitrate = if feedback_is_fresh {
+                congestion.update(feedback_loss, feedback_rtt)
+            } else {
+                ping_bitrate.load(Ordering::Acquire)
+            };
+            ping_bitrate.store(bitrate, Ordering::Release);
             if let Ok(mut inner) = ping_state.lock() {
-                let bitrate = if feedback_is_fresh {
-                    congestion.update(feedback_loss, feedback_rtt)
-                } else {
-                    ping_bitrate.load(Ordering::Acquire)
-                };
-                ping_bitrate.store(bitrate, Ordering::Release);
                 if role == StreamRole::Viewer {
                     inner.status.bitrate_kbps = bitrate / 1000;
                 }
             }
+            update_peer(&ping_state, &ping_peer_id, |metric| {
+                metric.bitrate_kbps = bitrate / 1000;
+            });
         }
     });
     Ok(TransportControl {
@@ -737,7 +841,7 @@ fn mark_failed(state: &Arc<Mutex<Inner>>) {
     }
 }
 
-fn mark_connected(state: &Arc<Mutex<Inner>>, role: StreamRole) {
+fn mark_connected(state: &Arc<Mutex<Inner>>, role: StreamRole, peer_id: &str) {
     if let Ok(mut inner) = state.lock() {
         inner.status.phase = if role == StreamRole::Host {
             "streaming"
@@ -745,12 +849,14 @@ fn mark_connected(state: &Arc<Mutex<Inner>>, role: StreamRole) {
             "connected"
         };
     }
+    update_peer(state, peer_id, |metric| metric.phase = "connected");
 }
 fn apply_feedback(
     state: &Arc<Mutex<Inner>>,
     feedback_rtt_ms: &AtomicU32,
     feedback_loss_bits: &AtomicU32,
     feedback_at_us: &AtomicU64,
+    peer_id: &str,
     payload: &[u8],
 ) {
     if payload.len() >= 8 {
@@ -767,6 +873,37 @@ fn apply_feedback(
         if let Ok(mut inner) = state.lock() {
             inner.status.rtt_ms = rtt;
             inner.status.loss_pct = loss;
+        }
+        update_peer(state, peer_id, |metric| {
+            metric.rtt_ms = rtt;
+            metric.loss_pct = loss;
+        });
+    }
+}
+
+fn update_peer(
+    state: &Arc<Mutex<Inner>>,
+    peer_id: &str,
+    update: impl FnOnce(&mut super::PeerMetric),
+) {
+    if let Ok(mut inner) = state.lock() {
+        let snapshot = {
+            let metric = inner
+                .peer_metrics
+                .entry(peer_id.to_string())
+                .or_insert_with(|| super::PeerMetric::waiting(peer_id.to_string()));
+            update(metric);
+            metric.clone()
+        };
+        if let Some(metric) = inner
+            .status
+            .peer_metrics
+            .iter_mut()
+            .find(|metric| metric.peer_id == peer_id)
+        {
+            *metric = snapshot;
+        } else {
+            inner.status.peer_metrics.push(snapshot);
         }
     }
 }
