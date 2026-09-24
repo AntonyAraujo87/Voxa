@@ -179,6 +179,12 @@ impl HostTransportHandle {
     pub fn stopped(&self) -> bool {
         self.stop.load(Ordering::Acquire)
     }
+    pub fn has_peers(&self) -> bool {
+        self.peers
+            .lock()
+            .map(|peers| !peers.is_empty())
+            .unwrap_or(false)
+    }
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Release);
         self.clear();
@@ -565,6 +571,12 @@ pub async fn spawn_receiver(
             match time::timeout(Duration::from_millis(20), datagrams.recv()).await {
                 Ok(Ok((buffer, source))) => {
                     if let Ok(packet) = protocol::open(&receive_key, &buffer) {
+                        if !replay.accept(packet.meta.stream_id, packet.meta.sequence) {
+                            continue;
+                        }
+                        // Duplicatas vindas da corrida direta/relay e replays antigos
+                        // nao provam que a rota atual continua viva. Atualizar estes
+                        // marcadores antes do antirreplay impediria a recuperacao.
                         last_authenticated = Instant::now();
                         let selected = recv_route.select(source);
                         let observed_endpoint = if selected == 2 {
@@ -578,9 +590,6 @@ pub async fn spawn_receiver(
                         update_peer(&recv_state, &recv_peer_id, |metric| {
                             metric.endpoint = Some(observed_endpoint);
                         });
-                        if !replay.accept(packet.meta.stream_id, packet.meta.sequence) {
-                            continue;
-                        }
                         loss.observe(packet.meta.sequence);
                         match packet.kind {
                             Kind::Hello => {

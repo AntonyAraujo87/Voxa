@@ -4,9 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 const endpoints = [
-  { url: 'https://voxa-signaling.onrender.com/health', expectedStatus: 200, kind: 'signaling' },
-  // Sem chave, 401 confirma apenas disponibilidade do endpoint e transporte.
-  { url: 'https://qqnpporyphqycuzxucwz.supabase.co/auth/v1/health', expectedStatus: 401, kind: 'auth-unauthenticated' },
+  { url: 'https://voxa-signaling.onrender.com/health', expectedStatus: 200 },
 ];
 
 export function readEndpoint(endpoint, { get = https.get, timeoutMs = 90000 } = {}) {
@@ -46,9 +44,7 @@ export function readEndpoint(endpoint, { get = https.get, timeoutMs = 90000 } = 
           catch { finish({ healthy: false, error: 'invalid-json' }); return; }
           const object = payload !== null && typeof payload === 'object' && !Array.isArray(payload);
           const keys = object ? Object.keys(payload) : [];
-          const validBody = endpoint.kind === 'signaling'
-            ? object && payload.ok === true && keys.length === 1
-            : object && typeof payload.message === 'string' && payload.message.length > 0;
+          const validBody = object && payload.ok === true && keys.length === 1;
           const healthy = res.statusCode === endpoint.expectedStatus && validBody;
           // Valores e nomes arbitrarios retornados pelo servidor nao vao para logs.
           finish({ healthy, ...(!healthy ? { error: 'unexpected-health-response' } : {}) });

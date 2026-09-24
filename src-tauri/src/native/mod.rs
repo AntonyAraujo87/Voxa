@@ -110,6 +110,7 @@ pub struct EngineStatus {
     encoder: &'static str,
     decoder: &'static str,
     audio: &'static str,
+    audio_error: Option<String>,
     decoded_frames: u64,
     verification_code: Option<String>,
     connected_peers: usize,
@@ -139,6 +140,7 @@ impl Default for EngineStatus {
             encoder: "idle",
             decoder: "idle",
             audio: "idle",
+            audio_error: None,
             decoded_frames: 0,
             verification_code: None,
             connected_peers: 0,
@@ -161,6 +163,7 @@ pub struct PreparedEndpoint {
 
 #[derive(Default)]
 struct Inner {
+    generation: u64,
     status: EngineStatus,
     socket: Option<Arc<UdpSocket>>,
     datagrams: Option<DatagramHub>,
@@ -229,11 +232,9 @@ pub async fn engine_prepare(
     let public_key = key_exchange.public_base64();
     #[cfg(target_os = "windows")]
     let (capture_state, encoder_state, codecs) = if role == StreamRole::Host {
-        let capture_state = if capture::probe(capture_target).is_ok() {
-            "dxgi-ready"
-        } else {
-            "dxgi-unavailable"
-        };
+        capture::probe(capture_target)
+            .map_err(|error| format!("O monitor selecionado não pode ser capturado: {error}"))?;
+        let capture_state = "dxgi-ready";
         let available = encoder::hardware_encoder_codecs().unwrap_or_default();
         let encoder_state = if available.is_empty() {
             "hardware-unavailable"
@@ -330,7 +331,7 @@ pub async fn engine_connect_peer(
         (None, None, None) => None,
         _ => return Err("Configuração do relay incompleta".into()),
     };
-    let (datagrams, role, previous, key, verification_code) = {
+    let (datagrams, role, generation, previous, key, verification_code) = {
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
         let role = inner.status.role.ok_or("Modo ausente")?;
         if protocol::VideoCodec::best_common(inner.supported_codecs, peer_codecs).is_none() {
@@ -368,6 +369,7 @@ pub async fn engine_connect_peer(
                 .clone()
                 .ok_or("Inicialize o motor primeiro")?,
             role,
+            inner.generation,
             inner.transports.remove(&peer_id),
             key,
             verification,
@@ -375,9 +377,11 @@ pub async fn engine_connect_peer(
     };
     if let Some(previous) = previous {
         if let Ok(mut inner) = engine.inner.lock() {
-            inner.host_fanout.remove(&peer_id);
-            inner.verification_codes.remove(&peer_id);
-            refresh_peer_list(&mut inner);
+            if session_is_current(&inner, generation, role) {
+                inner.host_fanout.remove(&peer_id);
+                inner.verification_codes.remove(&peer_id);
+                refresh_peer_list(&mut inner);
+            }
         }
         previous.stop();
     }
@@ -398,15 +402,31 @@ pub async fn engine_connect_peer(
         Ok(control) => control,
         Err(error) => {
             if let Ok(mut inner) = engine.inner.lock() {
-                inner.status.phase = connection_failure_phase(role, inner.transports.len());
+                if session_is_current(&inner, generation, role) {
+                    inner.status.phase = connection_failure_phase(role, inner.transports.len());
+                }
             }
             return Err(error);
         }
     };
+    if !engine
+        .inner
+        .lock()
+        .map(|inner| session_is_current(&inner, generation, role))
+        .unwrap_or(false)
+    {
+        control.stop();
+        return Err("A sessão foi encerrada durante a conexão".into());
+    }
     #[cfg(target_os = "windows")]
     if role == StreamRole::Host {
         let handle = control.handle();
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+        if !session_is_current(&inner, generation, role) {
+            drop(inner);
+            control.stop();
+            return Err("A sessão foi encerrada durante a conexão".into());
+        }
         inner.host_fanout.add(peer_id.clone(), handle);
         if inner.host_pipeline.is_none() {
             let capture_target = inner.capture_target;
@@ -428,15 +448,31 @@ pub async fn engine_connect_peer(
             Err(error) => {
                 control.stop();
                 if let Ok(mut inner) = engine.inner.lock() {
-                    inner.status.phase = "failed";
+                    if session_is_current(&inner, generation, role) {
+                        inner.status.phase = "failed";
+                    }
                 }
                 return Err(error);
             }
         };
+        if !engine
+            .inner
+            .lock()
+            .map(|inner| session_is_current(&inner, generation, role))
+            .unwrap_or(false)
+        {
+            control.stop();
+            return Err("A sessão foi encerrada durante a conexão".into());
+        }
         let pipeline = viewer::spawn(control.handle(), engine.inner.clone(), app.clone(), hwnd);
         control.attach_native_thread(pipeline);
     }
     let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+    if !session_is_current(&inner, generation, role) {
+        drop(inner);
+        control.stop();
+        return Err("A sessão foi encerrada durante a conexão".into());
+    }
     inner
         .verification_codes
         .insert(peer_id.clone(), verification_code.clone());
@@ -521,6 +557,10 @@ fn connection_failure_phase(role: StreamRole, connected_peers: usize) -> &'stati
     }
 }
 
+fn session_is_current(inner: &Inner, generation: u64, role: StreamRole) -> bool {
+    inner.generation == generation && inner.status.role == Some(role) && inner.socket.is_some()
+}
+
 fn refresh_peer_list(inner: &mut Inner) {
     inner.status.connected_peers = inner.transports.len();
     inner.status.peer_verifications = inner
@@ -544,7 +584,7 @@ fn refresh_peer_list(inner: &mut Inner) {
 
 #[tauri::command]
 pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Result<(), String> {
-    let (controls, datagrams, fanout, pipeline, audio) = {
+    let (controls, datagrams, fanout, pipeline, audio, generation) = {
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
         let controls = std::mem::take(&mut inner.transports)
             .into_values()
@@ -553,9 +593,18 @@ pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Res
         let fanout = inner.host_fanout.clone();
         let pipeline = inner.host_pipeline.take();
         let audio = inner.host_audio.take();
+        let next_generation = inner.generation.wrapping_add(1);
         *inner = Inner::default();
+        inner.generation = next_generation;
         inner.status.phase = "stopped";
-        (controls, datagrams, fanout, pipeline, audio)
+        (
+            controls,
+            datagrams,
+            fanout,
+            pipeline,
+            audio,
+            next_generation,
+        )
     };
     fanout.stop();
     if let Some(datagrams) = datagrams {
@@ -572,6 +621,12 @@ pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Res
     }
     if let Some(window) = app.get_window("stream") {
         let _ = window.hide();
+    }
+    if let Ok(mut inner) = engine.inner.lock() {
+        if inner.generation == generation && inner.socket.is_none() {
+            inner.status = EngineStatus::default();
+            inner.status.phase = "stopped";
+        }
     }
     Ok(())
 }
@@ -626,5 +681,17 @@ mod tests {
         assert_eq!(json["publicKey"], "A".repeat(43));
         assert_eq!(json["codecs"], 1);
         assert!(json.get("public_key").is_none());
+    }
+
+    #[tokio::test]
+    async fn stopped_generation_rejects_late_peer_connection() {
+        let mut inner = Inner::default();
+        inner.generation = 7;
+        inner.status.role = Some(StreamRole::Host);
+        assert!(!session_is_current(&inner, 7, StreamRole::Host));
+        inner.socket = Some(Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()));
+        assert!(session_is_current(&inner, 7, StreamRole::Host));
+        inner.generation += 1;
+        assert!(!session_is_current(&inner, 7, StreamRole::Host));
     }
 }

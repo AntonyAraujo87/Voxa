@@ -150,7 +150,8 @@ fn run_session(
                     config.fps.into(),
                 )?;
                 eprintln!(
-                    "[voxa] frame H.264 descartado: {}",
+                    "[voxa] frame {} descartado: {}",
+                    config.codec.name(),
                     error.chars().take(120).collect::<String>()
                 );
                 thread::sleep(Duration::from_millis(20));

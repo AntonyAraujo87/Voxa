@@ -10,15 +10,13 @@ use tauri::{
     AppHandle, Emitter, Manager, WindowEvent,
 };
 
-/// Devolve ao sistema as paginas de memoria que o processo nao esta usando.
+/// Devolve ao sistema as paginas que os WebViews ocultos nao estao usando.
 ///
 /// `EmptyWorkingSet` nao "vaza" nem corrompe nada: as paginas continuam
 /// validas no arquivo de paginacao e voltam sob demanda. O efeito pratico e
-/// que o working set (o numero que aparece no Gerenciador de Tarefas) cai de
-/// centenas de MB para dezenas enquanto o app esta minimizado.
-///
-/// Precisa ser aplicado tambem aos processos do WebView2: eles sao a maior
-/// parte do consumo, e sao processos separados, filhos do nosso.
+/// que o working set visual (o numero que aparece no Gerenciador de Tarefas)
+/// cai enquanto o app esta minimizado. O processo Rust nao e podado porque pode
+/// estar capturando ou apresentando um stream em tempo real.
 #[cfg(target_os = "windows")]
 pub fn trim_memory() {
     use windows::Win32::Foundation::CloseHandle;
@@ -28,13 +26,10 @@ pub fn trim_memory() {
     };
     use windows::Win32::System::ProcessStatus::EmptyWorkingSet;
     use windows::Win32::System::Threading::{
-        GetCurrentProcess, GetCurrentProcessId, OpenProcess, PROCESS_QUERY_INFORMATION,
-        PROCESS_SET_QUOTA,
+        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA,
     };
 
     unsafe {
-        let _ = EmptyWorkingSet(GetCurrentProcess());
-
         let eu = GetCurrentProcessId();
         let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
             return;
@@ -47,7 +42,18 @@ pub fn trim_memory() {
 
         if Process32FirstW(snapshot, &mut entry).is_ok() {
             loop {
-                if entry.th32ParentProcessID == eu {
+                let name_end = entry
+                    .szExeFile
+                    .iter()
+                    .position(|unit| *unit == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let name = String::from_utf16_lossy(&entry.szExeFile[..name_end]);
+                // Uma segunda sessao do Voxa tambem e filha da primeira. Podar
+                // qualquer filho causava page faults no stream ativo; somente
+                // o WebView oculto pertence a esta otimizacao visual.
+                if entry.th32ParentProcessID == eu
+                    && name.eq_ignore_ascii_case("msedgewebview2.exe")
+                {
                     if let Ok(handle) = OpenProcess(
                         PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA,
                         false,

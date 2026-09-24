@@ -9,7 +9,7 @@ async function probe(handler, overrides = {}, timeoutMs = 2000) {
   try {
     return await readEndpoint({
       url: `http://127.0.0.1:${server.address().port}/health`,
-      expectedStatus: 200, kind: 'signaling', ...overrides,
+      expectedStatus: 200, ...overrides,
     }, { get: http.get, timeoutMs });
   } finally {
     server.closeAllConnections();
@@ -26,15 +26,6 @@ test('health exige status correto e corpo minimo', async () => {
     const result = await probe((req, res) => { res.writeHead(status); res.end(body); });
     assert.equal(result.healthy, expected, `${status} ${body}`);
   }
-});
-
-test('401 do Auth sem chave nao e confundido com login validado', async () => {
-  const result = await probe((req, res) => {
-    res.writeHead(401); res.end('{"message":"No API key found","hint":"private detail"}');
-  }, { expectedStatus: 401, kind: 'auth-unauthenticated' });
-  assert.equal(result.healthy, true);
-  assert.equal(JSON.stringify(result).includes('private detail'), false);
-  assert.equal(result.authorized, undefined, 'HTTP local nao comprova TLS');
 });
 
 test('corpo acima do teto encerra leitura sem imprimir conteudo', async () => {

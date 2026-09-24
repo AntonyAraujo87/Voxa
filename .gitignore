@@ -27,7 +27,7 @@ dist-ssr
 # chaves de assinatura do auto-update — NUNCA versionar
 .keys/
 
-# segredos de ambiente (URL do matchmaking e senha da sala).
+# configuracao local de ambiente (a senha da sala nunca vai para arquivo).
 # O .env.example fica versionado como modelo.
 .env
 .env.local

@@ -14,7 +14,7 @@ const emptyStatus: EngineStatus = {
   peerEndpoint: null, rttMs: 0, lossPct: 0, bitrateKbps: 0,
   receivedFrames: 0, encodedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
   renderer: "closed", capture: "idle", encoder: "idle",
-  decoder: "idle", audio: "idle", decodedFrames: 0,
+  decoder: "idle", audio: "idle", audioError: null, decodedFrames: 0,
   verificationCode: null, connectedPeers: 0, maxPeers: 4, peerVerifications: [], peerMetrics: [], lastError: null,
 };
 
@@ -117,7 +117,7 @@ export default function App() {
         onPeer: async (peer: PeerAnnouncement) => {
           setMessage("Perfurando o NAT e autenticando o par...");
           await engine.connectPeer(peer);
-          setMessage(role === "host" ? "Pipeline H.264 nativo iniciado" : "Decoder e janela D3D11 iniciados");
+          setMessage(role === "host" ? "Pipeline nativo iniciado" : "Decoder e janela D3D11 iniciados");
         },
         onPeerLeft: async (peerId) => {
           await engine.disconnectPeer(peerId);
@@ -214,6 +214,7 @@ export default function App() {
           <Metric label="Áudio" value={status.audio} />
         </div>
         {status.lastError && <small className="native-error">Erro nativo: {status.lastError}</small>}
+        {status.audioError && <small className="native-error">Erro de áudio: {status.audioError}</small>}
         {role === "host" && status.peerMetrics.length > 0 && <div className="peer-metrics">
           {status.peerMetrics.map((peer, index) => <div key={peer.peerId}>
             <strong>Espectador {index + 1}</strong>

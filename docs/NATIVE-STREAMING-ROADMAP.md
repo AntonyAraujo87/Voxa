@@ -26,17 +26,27 @@
 - Updater assinado verificado e instalado pelo painel.
 - Fan-out de vídeo codificado uma vez para até quatro sessões UDP, cada uma com
   chave X25519, congestionamento e alocação de relay independentes.
+- Seleção explícita de monitor/GPU, perfis adaptativos de 540p30 a 1080p60 e
+  duas faixas de encode para isolar espectadores lentos.
+- Negociação por espectador entre H.264, H.265 e AV1 conforme os MFTs de hardware.
+- FEC XOR para recuperar um fragmento perdido por grupo de keyframe.
+- Métricas de rota, RTT, perda e bitrate por espectador.
+- Captura WASAPI loopback e reprodução Opus 48 kHz estéreo pelo túnel cifrado.
+- Segunda instância independente para hospedar e assistir simultaneamente.
 
-## Próxima integração obrigatória
+## Melhorias futuras prioritárias
 
-1. **Input remoto:** enviar mouse, teclado e gamepad somente por APIs oficiais em
-   modo usuário, com consentimento local, indicador persistente, lista de teclas
-   bloqueadas e botão de emergência. O input permanece desativado na versão atual.
-2. **Codec futuro:** acrescentar P010/H.265/AV1 quando suportado e negociar capacidade.
-3. **Render futuro:** seleção correta de GPU/monitor e troca de monitor durante a sessão.
+1. **Admissão local:** o host deve aprovar cada espectador pelo código E2E antes
+   de iniciar vídeo e áudio para aquele computador.
+2. **Áudio por processo:** selecionar somente o executável do jogo e excluir a
+   reprodução do próprio Voxa do loopback do host.
+3. **Troca em sessão:** permitir mudar o monitor/GPU sem encerrar a sala.
 4. **Feedback:** atraso interframe, fila do
    socket e tempo encode/decode para dirigir bitrate, resolução e FPS.
 5. **Rede hostil:** medir disponibilidade/custo do relay e adicionar relay regional.
+
+Input remoto permanece fora do escopo atual de transmissão. Se voltar ao produto,
+deve exigir consentimento local, indicador persistente e botão de emergência.
 
 ## Critério para chamar de transmissão pronta
 

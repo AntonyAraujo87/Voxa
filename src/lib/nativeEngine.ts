@@ -15,7 +15,7 @@ export interface EngineStatus {
   lossPct: number; bitrateKbps: number; receivedFrames: number; encodedFrames: number;
   droppedFrames: number; keyframeRequests: number; renderer: string;
   capture: string; encoder: string; decoder: string; decodedFrames: number;
-  audio: string;
+  audio: string; audioError: string | null;
   verificationCode: string | null; connectedPeers: number; maxPeers: number;
   peerVerifications: Array<{ peerId: string; code: string }>;
   peerMetrics: Array<{ peerId: string; endpoint: string | null; phase: string; rttMs: number;

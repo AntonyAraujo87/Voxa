@@ -40,8 +40,17 @@ pub(super) fn spawn_capture(
     state: Arc<Mutex<Inner>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        // O relogio pertence a sessao, nao ao dispositivo WASAPI. Se o driver
+        // reiniciar, voltar o timestamp a zero faria o espectador descartar
+        // todos os pacotes novos como atrasados ate reconectar a sala.
+        let mut timestamp_us = 0u64;
         while !transport.stopped() {
-            if let Err(error) = capture_loop(&transport, &state) {
+            if !transport.has_peers() {
+                set_status(&state, "waiting", None);
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            if let Err(error) = capture_loop(&transport, &state, &mut timestamp_us) {
                 set_status(&state, "recovering", Some(&error));
                 eprintln!("[voxa] captura de áudio: {}", brief(&error));
                 thread::sleep(Duration::from_millis(750));
@@ -65,7 +74,11 @@ pub(super) fn spawn_playback(
     })
 }
 
-fn capture_loop(transport: &HostTransportHandle, state: &Arc<Mutex<Inner>>) -> Result<(), String> {
+fn capture_loop(
+    transport: &HostTransportHandle,
+    state: &Arc<Mutex<Inner>>,
+    timestamp_us: &mut u64,
+) -> Result<(), String> {
     let _com = ComApartment::start()?;
     let (client, capture) = open_capture()?;
     let mut encoder = OpusEncoder::new(
@@ -81,9 +94,12 @@ fn capture_loop(transport: &HostTransportHandle, state: &Arc<Mutex<Inner>>) -> R
     set_status(state, "wasapi-loopback-opus", None);
     let mut pcm = Vec::<f32>::with_capacity(FRAME_SAMPLES * CHANNELS * 2);
     let mut encoded = [0u8; OPUS_MAX_PACKET];
-    let mut timestamp_us = 0u64;
     unsafe { client.Start() }.map_err(|e| format!("Inicia loopback WASAPI: {e}"))?;
     while !transport.stopped() {
+        if !transport.has_peers() {
+            let _ = unsafe { client.Stop() };
+            return Ok(());
+        }
         let packet_frames = unsafe { capture.GetNextPacketSize() }
             .map_err(|e| format!("Consulta áudio do sistema: {e}"))?;
         if packet_frames == 0 {
@@ -110,11 +126,11 @@ fn capture_loop(transport: &HostTransportHandle, state: &Arc<Mutex<Inner>>) -> R
             let length = encoder
                 .encode(&pcm[..packet_samples], FRAME_SAMPLES, &mut encoded)
                 .map_err(str::to_owned)?;
+            let packet_timestamp = take_timestamp(timestamp_us);
             transport.queue_audio(AudioPacket {
-                timestamp_us,
+                timestamp_us: packet_timestamp,
                 bytes: Arc::new(encoded[..length].to_vec()),
             });
-            timestamp_us = timestamp_us.saturating_add(FRAME_US);
             pcm.drain(..packet_samples);
         }
     }
@@ -285,18 +301,29 @@ fn brief(message: &str) -> String {
     message.chars().take(160).collect()
 }
 
+fn take_timestamp(next: &mut u64) -> u64 {
+    let current = *next;
+    *next = (*next).saturating_add(FRAME_US);
+    current
+}
+
 fn set_status(state: &Arc<Mutex<Inner>>, audio: &'static str, error: Option<&str>) {
     if let Ok(mut inner) = state.lock() {
         inner.status.audio = audio;
-        if let Some(error) = error {
-            inner.status.last_error = Some(format!("Áudio: {}", brief(error)));
-        } else if inner
-            .status
-            .last_error
-            .as_deref()
-            .is_some_and(|message| message.starts_with("Áudio:"))
-        {
-            inner.status.last_error = None;
-        }
+        inner.status.audio_error = error.map(brief);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_clock_survives_device_session_restart() {
+        let mut next = 0;
+        assert_eq!(take_timestamp(&mut next), 0);
+        assert_eq!(take_timestamp(&mut next), FRAME_US);
+        // A mesma variavel e reutilizada quando o WASAPI e reaberto.
+        assert_eq!(take_timestamp(&mut next), FRAME_US * 2);
     }
 }

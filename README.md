@@ -22,10 +22,12 @@ Frames atrasados ou incompletos são descartados e geram pedido de keyframe, sem
 retransmissão. O bitrate cai rápido com perda/RTT e sobe gradualmente.
 
 O matchmaking aceita um `host` e até quatro `viewers` por sala. O host mantém
-faixas de qualidade independentes por resolução e codec e as distribui para sessões UDP independentes. Cada espectador
-possui segredo X25519, controle de congestionamento e alocação de relay próprios.
-O servidor não recebe frames nem input. Para pares no mesmo IP público, anuncia o
-endpoint LAN; fora da LAN, usa o mapeamento descoberto por STUN e perfuração UDP.
+faixas de qualidade independentes por resolução e codec e as distribui para
+sessões UDP independentes. Cada espectador possui segredo X25519, controle de
+congestionamento e alocação de relay próprios. O matchmaking não recebe mídia;
+quando necessário, o relay vê somente datagramas cifrados e não conhece a chave.
+Para pares no mesmo IP público, anuncia o endpoint LAN; fora da LAN, usa o
+mapeamento descoberto por STUN e perfuração UDP.
 
 ## Estado funcional
 
