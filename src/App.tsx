@@ -198,8 +198,13 @@ export default function App() {
       });
       engine.attachMatchmaking(matchmaking);
       await matchmaking.join(roomId, role, endpoint, roomProof);
-      setMessage(role === "host" ? "Aguardando espectador..." : "Procurando o computador host...");
-      setStatus(await engine.status());
+      const preparedStatus = await engine.status();
+      setStatus(preparedStatus);
+      setMessage(role === "host"
+        ? preparedStatus.encoderCapacity < 4
+          ? `GPU permite ${preparedStatus.encoderCapacity} espectador(es) simultâneo(s)`
+          : "Aguardando espectador..."
+        : "Procurando o computador host...");
     } catch (error) {
       matchmaking?.close();
       await engine.stop().catch(() => undefined);
