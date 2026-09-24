@@ -23,7 +23,9 @@ use std::{
 };
 use tauri::{AppHandle, Manager, State};
 use tokio::net::UdpSocket;
-use transport::{spawn_receiver, DatagramHub, HostTransportHandle, TransportControl};
+use transport::{
+    spawn_receiver, DatagramHub, HostTransportHandle, PeerTransport, TransportControl,
+};
 use voxa_native_core::{protocol, stun};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -150,6 +152,7 @@ pub struct PreparedEndpoint {
     local: String,
     public: Option<String>,
     public_key: String,
+    codecs: u8,
 }
 
 #[derive(Default)]
@@ -164,6 +167,7 @@ struct Inner {
     peer_metrics: HashMap<String, PeerMetric>,
     key_exchange: Option<protocol::EphemeralKey>,
     capture_target: Option<CaptureTargetId>,
+    supported_codecs: u8,
 }
 
 #[derive(Default)]
@@ -219,31 +223,47 @@ pub async fn engine_prepare(
     let key_exchange = protocol::EphemeralKey::generate()?;
     let public_key = key_exchange.public_base64();
     #[cfg(target_os = "windows")]
-    let (capture_state, encoder_state) = if role == StreamRole::Host {
+    let (capture_state, encoder_state, codecs) = if role == StreamRole::Host {
         let capture_state = if capture::probe(capture_target).is_ok() {
             "dxgi-ready"
         } else {
             "dxgi-unavailable"
         };
-        let encoder_state = match encoder::hardware_h264_encoder_count() {
-            Ok(count) if count > 0 => "hardware-detected",
-            _ => "hardware-unavailable",
+        let available = encoder::hardware_encoder_codecs().unwrap_or_default();
+        let encoder_state = if available.is_empty() {
+            "hardware-unavailable"
+        } else {
+            "hardware-detected"
         };
-        (capture_state, encoder_state)
+        (
+            capture_state,
+            encoder_state,
+            protocol::VideoCodec::mask(available),
+        )
     } else {
-        ("disabled", "decoder-pending")
+        let available = decoder::hardware_decoder_codecs().unwrap_or_default();
+        (
+            "disabled",
+            "decoder-pending",
+            protocol::VideoCodec::mask(available),
+        )
     };
     #[cfg(not(target_os = "windows"))]
-    let (capture_state, encoder_state) = if role == StreamRole::Host {
-        ("unsupported-os", "hardware-unavailable")
+    let (capture_state, encoder_state, codecs) = if role == StreamRole::Host {
+        ("unsupported-os", "hardware-unavailable", 0)
     } else {
-        ("disabled", "decoder-pending")
+        ("disabled", "decoder-pending", 0)
     };
+    if codecs == 0 {
+        return Err("Nenhum codec de vídeo por hardware compatível foi encontrado".into());
+    }
     let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
     inner.datagrams = Some(DatagramHub::new(socket.clone()));
     inner.socket = Some(socket);
     inner.key_exchange = Some(key_exchange);
     inner.capture_target = capture_target;
+    inner.supported_codecs = codecs;
+    inner.host_fanout.set_supported_codecs(codecs);
     inner.status.phase = "waiting";
     inner.status.local_endpoint = Some(local.clone());
     inner.status.public_endpoint = public.clone();
@@ -253,6 +273,7 @@ pub async fn engine_prepare(
         local,
         public,
         public_key,
+        codecs,
     })
 }
 
@@ -261,6 +282,7 @@ pub async fn engine_prepare(
 pub struct ConnectRequest {
     endpoint: String,
     peer_public_key: String,
+    peer_codecs: u8,
     peer_id: String,
     relay_endpoint: Option<String>,
     relay_session: Option<String>,
@@ -276,6 +298,7 @@ pub async fn engine_connect_peer(
     let ConnectRequest {
         endpoint,
         peer_public_key,
+        peer_codecs,
         peer_id,
         relay_endpoint,
         relay_session,
@@ -283,6 +306,9 @@ pub async fn engine_connect_peer(
     } = request;
     if peer_id.is_empty() || peer_id.len() > 128 {
         return Err("Identidade do computador inválida".into());
+    }
+    if peer_codecs == 0 || peer_codecs & !0b111 != 0 {
+        return Err("Lista de codecs do computador remoto inválida".into());
     }
     let peer = endpoint.parse().map_err(|_| "Endpoint UDP inválido")?;
     let relay = match (relay_endpoint, relay_session, relay_auth) {
@@ -302,6 +328,9 @@ pub async fn engine_connect_peer(
     let (datagrams, role, previous, key, verification_code) = {
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
         let role = inner.status.role.ok_or("Modo ausente")?;
+        if protocol::VideoCodec::best_common(inner.supported_codecs, peer_codecs).is_none() {
+            return Err("Os computadores não possuem um codec de vídeo em comum".into());
+        }
         if role == StreamRole::Host
             && !inner.transports.contains_key(&peer_id)
             && inner.transports.len() >= inner.status.max_peers
@@ -349,11 +378,14 @@ pub async fn engine_connect_peer(
     }
     let mut control = match spawn_receiver(
         datagrams,
-        peer,
-        relay,
+        PeerTransport {
+            endpoint: peer,
+            relay,
+            id: peer_id.clone(),
+            codecs: peer_codecs,
+        },
         key,
         role,
-        peer_id.clone(),
         engine.inner.clone(),
     )
     .await

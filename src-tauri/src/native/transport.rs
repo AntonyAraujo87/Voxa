@@ -13,7 +13,7 @@ use tokio::{net::UdpSocket, sync::broadcast, time};
 use voxa_native_core::{
     congestion::CongestionController,
     loss::LossEstimator,
-    protocol::{self, Kind, Meta, ReplayGuard, StreamConfig},
+    protocol::{self, Kind, Meta, ReplayGuard, StreamConfig, VideoCodec},
     reassembly::Reassembler,
 };
 
@@ -26,9 +26,17 @@ pub struct TransportControl {
     force_keyframe: Arc<AtomicBool>,
     request_remote_keyframe: Arc<AtomicBool>,
     bitrate_bps: Arc<AtomicU32>,
+    peer_codecs: Arc<AtomicU32>,
     assigned_tier: Arc<AtomicU32>,
     tasks: Vec<JoinHandle<()>>,
     native_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+pub struct PeerTransport {
+    pub endpoint: SocketAddr,
+    pub relay: Option<(SocketAddr, u64, u64)>,
+    pub id: String,
+    pub codecs: u8,
 }
 
 #[derive(Clone)]
@@ -41,6 +49,7 @@ pub struct TransportHandle {
     force_keyframe: Arc<AtomicBool>,
     request_remote_keyframe: Arc<AtomicBool>,
     bitrate_bps: Arc<AtomicU32>,
+    peer_codecs: Arc<AtomicU32>,
     assigned_tier: Arc<AtomicU32>,
 }
 
@@ -99,7 +108,8 @@ impl DatagramHub {
 #[derive(Clone, Default)]
 pub struct HostTransportHandle {
     peers: Arc<Mutex<HashMap<String, TransportHandle>>>,
-    configs: Arc<Mutex<HashMap<VideoTier, StreamConfig>>>,
+    configs: Arc<Mutex<HashMap<(VideoTier, VideoCodec), StreamConfig>>>,
+    supported_codecs: Arc<AtomicU32>,
     force_keyframe: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
 }
@@ -127,18 +137,26 @@ impl VideoTier {
     }
 }
 
+fn negotiated_codec(local: u8, remote: u8) -> VideoCodec {
+    VideoCodec::best_common(local, remote).unwrap_or(VideoCodec::H264)
+}
+
 impl HostTransportHandle {
     pub fn add(&self, peer_id: String, handle: TransportHandle) {
         let tier = VideoTier::for_bitrate(handle.target_bitrate());
+        let codec = self.codec_for(&handle);
         if let Some(config) = self
             .configs
             .lock()
             .ok()
-            .and_then(|configs| configs.get(&tier).copied())
+            .and_then(|configs| configs.get(&(tier, codec)).copied())
         {
             handle.queue_config(config);
         }
-        handle.assigned_tier.store(tier.code(), Ordering::Release);
+        handle.assigned_tier.store(
+            tier.code() | (u32::from(codec as u8) << 8),
+            Ordering::Release,
+        );
         if let Ok(mut peers) = self.peers.lock() {
             peers.insert(peer_id, handle);
         }
@@ -161,22 +179,35 @@ impl HostTransportHandle {
         self.stop.store(true, Ordering::Release);
         self.clear();
     }
-    pub fn queue_video(&self, tier: VideoTier, frame: EncodedFrame) -> bool {
+    pub fn set_supported_codecs(&self, codecs: u8) {
+        self.supported_codecs
+            .store(u32::from(codecs), Ordering::Release);
+    }
+    fn codec_for(&self, handle: &TransportHandle) -> VideoCodec {
+        negotiated_codec(
+            self.supported_codecs.load(Ordering::Acquire) as u8,
+            handle.peer_codecs.load(Ordering::Acquire) as u8,
+        )
+    }
+    pub fn queue_video(&self, tier: VideoTier, codec: VideoCodec, frame: EncodedFrame) -> bool {
         let config = self
             .configs
             .lock()
             .ok()
-            .and_then(|configs| configs.get(&tier).copied());
+            .and_then(|configs| configs.get(&(tier, codec)).copied());
         let handles = self
             .peers
             .lock()
             .map(|peers| peers.values().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
         handles.into_iter().fold(false, |dropped, handle| {
-            if VideoTier::for_bitrate(handle.target_bitrate()) != tier {
+            if VideoTier::for_bitrate(handle.target_bitrate()) != tier
+                || self.codec_for(&handle) != codec
+            {
                 return dropped;
             }
-            let changed = handle.assigned_tier.swap(tier.code(), Ordering::AcqRel) != tier.code();
+            let assignment = tier.code() | (u32::from(codec as u8) << 8);
+            let changed = handle.assigned_tier.swap(assignment, Ordering::AcqRel) != assignment;
             if changed {
                 if let Some(config) = config {
                     handle.queue_config(config);
@@ -191,11 +222,13 @@ impl HostTransportHandle {
     }
     pub fn queue_config(&self, tier: VideoTier, config: StreamConfig) {
         if let Ok(mut current) = self.configs.lock() {
-            current.insert(tier, config);
+            current.insert((tier, config.codec), config);
         }
         if let Ok(peers) = self.peers.lock() {
             for handle in peers.values() {
-                if VideoTier::for_bitrate(handle.target_bitrate()) == tier {
+                if VideoTier::for_bitrate(handle.target_bitrate()) == tier
+                    && self.codec_for(handle) == config.codec
+                {
                     handle.queue_config(config);
                 }
             }
@@ -209,20 +242,24 @@ impl HostTransportHandle {
                 .map(|peers| peers.values().any(TransportHandle::take_keyframe_request))
                 .unwrap_or(false)
     }
-    pub fn active_tiers(&self) -> Vec<(VideoTier, u32)> {
+    pub fn active_lanes(&self) -> Vec<(VideoTier, VideoCodec, u32)> {
         let Ok(peers) = self.peers.lock() else {
             return Vec::new();
         };
-        [VideoTier::Low, VideoTier::High]
+        let mut lanes = HashMap::<(VideoTier, VideoCodec), u32>::new();
+        for handle in peers.values() {
+            let key = (
+                VideoTier::for_bitrate(handle.target_bitrate()),
+                self.codec_for(handle),
+            );
+            lanes
+                .entry(key)
+                .and_modify(|value| *value = (*value).min(handle.target_bitrate()))
+                .or_insert_with(|| handle.target_bitrate());
+        }
+        lanes
             .into_iter()
-            .filter_map(|tier| {
-                peers
-                    .values()
-                    .filter(|handle| VideoTier::for_bitrate(handle.target_bitrate()) == tier)
-                    .map(TransportHandle::target_bitrate)
-                    .min()
-                    .map(|bitrate| (tier, bitrate))
-            })
+            .map(|((tier, codec), bitrate)| (tier, codec, bitrate))
             .collect()
     }
 }
@@ -334,6 +371,7 @@ impl TransportControl {
             force_keyframe: self.force_keyframe.clone(),
             request_remote_keyframe: self.request_remote_keyframe.clone(),
             bitrate_bps: self.bitrate_bps.clone(),
+            peer_codecs: self.peer_codecs.clone(),
             assigned_tier: self.assigned_tier.clone(),
         }
     }
@@ -379,19 +417,23 @@ impl TransportHandle {
 
 pub async fn spawn_receiver(
     hub: DatagramHub,
-    peer: SocketAddr,
-    relay: Option<(SocketAddr, u64, u64)>,
+    peer: PeerTransport,
     base_key: [u8; 32],
     role: StreamRole,
-    peer_id: String,
     state: Arc<Mutex<Inner>>,
 ) -> Result<TransportControl, String> {
+    let PeerTransport {
+        endpoint,
+        relay,
+        id: peer_id,
+        codecs: peer_codecs,
+    } = peer;
     if peer_id.is_empty() {
         return Err("Identidade do par ausente".into());
     }
     let route = Arc::new(Route {
         socket: hub.socket.clone(),
-        direct: peer,
+        direct: endpoint,
         relay: relay.map(|(endpoint, session, auth)| {
             (
                 endpoint,
@@ -420,6 +462,7 @@ pub async fn spawn_receiver(
     let force_keyframe = Arc::new(AtomicBool::new(false));
     let request_remote_keyframe = Arc::new(AtomicBool::new(false));
     let bitrate_bps = Arc::new(AtomicU32::new(12_000_000));
+    let peer_codecs = Arc::new(AtomicU32::new(u32::from(peer_codecs)));
     let assigned_tier = Arc::new(AtomicU32::new(0));
     // Feedback pertence a este par. Guardar RTT/perda apenas no status global
     // fazia um espectador lento reduzir (ou acelerar) os demais transportes.
@@ -880,6 +923,7 @@ pub async fn spawn_receiver(
         force_keyframe,
         request_remote_keyframe,
         bitrate_bps,
+        peer_codecs,
         assigned_tier,
         tasks: vec![receiver, video_sender, heartbeat],
         native_thread: None,

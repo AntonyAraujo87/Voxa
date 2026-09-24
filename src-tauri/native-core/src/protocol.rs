@@ -20,7 +20,7 @@ pub const MAX_ENCODED_FRAME: usize = MAX_PAYLOAD * MAX_FRAGMENTS;
 const MAGIC: &[u8; 4] = b"VOXA";
 const VERSION: u8 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Kind {
     Hello = 1,
@@ -54,15 +54,62 @@ impl TryFrom<u8> for Kind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum VideoCodec {
+    H264 = 1,
+    H265 = 2,
+    Av1 = 3,
+}
+
+impl TryFrom<u8> for VideoCodec {
+    type Error = String;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::H264),
+            2 => Ok(Self::H265),
+            3 => Ok(Self::Av1),
+            _ => Err("Codec de vídeo desconhecido".into()),
+        }
+    }
+}
+
+impl VideoCodec {
+    pub const ALL: [Self; 3] = [Self::Av1, Self::H265, Self::H264];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::H264 => "h264",
+            Self::H265 => "h265",
+            Self::Av1 => "av1",
+        }
+    }
+
+    pub fn bit(self) -> u8 {
+        1 << (self as u8 - 1)
+    }
+
+    pub fn mask(codecs: impl IntoIterator<Item = Self>) -> u8 {
+        codecs.into_iter().fold(0, |mask, codec| mask | codec.bit())
+    }
+
+    pub fn best_common(local: u8, remote: u8) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|codec| local & remote & codec.bit() != 0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamConfig {
+    pub codec: VideoCodec,
     pub width: u32,
     pub height: u32,
     pub fps: u16,
 }
 
 impl StreamConfig {
-    const CODEC_H264: u8 = 1;
     const WIRE_LEN: usize = 12;
 
     pub fn encode(self) -> Result<[u8; Self::WIRE_LEN], String> {
@@ -78,7 +125,7 @@ impl StreamConfig {
             return Err("Configuração de vídeo fora dos limites".into());
         }
         let mut bytes = [0u8; Self::WIRE_LEN];
-        bytes[0] = Self::CODEC_H264;
+        bytes[0] = self.codec as u8;
         bytes[2..6].copy_from_slice(&self.width.to_be_bytes());
         bytes[6..10].copy_from_slice(&self.height.to_be_bytes());
         bytes[10..12].copy_from_slice(&self.fps.to_be_bytes());
@@ -86,10 +133,11 @@ impl StreamConfig {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() != Self::WIRE_LEN || bytes[0] != Self::CODEC_H264 || bytes[1] != 0 {
+        if bytes.len() != Self::WIRE_LEN || bytes[1] != 0 {
             return Err("Configuração de stream incompatível".into());
         }
         let config = Self {
+            codec: VideoCodec::try_from(bytes[0])?,
             width: u32::from_be_bytes(bytes[2..6].try_into().unwrap()),
             height: u32::from_be_bytes(bytes[6..10].try_into().unwrap()),
             fps: u16::from_be_bytes(bytes[10..12].try_into().unwrap()),
@@ -397,6 +445,7 @@ mod tests {
     #[test]
     fn stream_config_round_trip_and_limits() {
         let config = StreamConfig {
+            codec: VideoCodec::H265,
             width: 2560,
             height: 1440,
             fps: 120,
@@ -404,11 +453,21 @@ mod tests {
         assert_eq!(StreamConfig::decode(&config.encode().unwrap()).unwrap(), config);
         assert!(StreamConfig::decode(&[1, 0]).is_err());
         assert!(StreamConfig {
+            codec: VideoCodec::H264,
             width: 1921,
             height: 1080,
             fps: 60,
         }
         .encode()
         .is_err());
+    }
+
+    #[test]
+    fn codec_negotiation_prefers_efficiency_and_keeps_h264_fallback() {
+        let h264_h265 = VideoCodec::mask([VideoCodec::H264, VideoCodec::H265]);
+        let all = VideoCodec::mask(VideoCodec::ALL);
+        assert_eq!(VideoCodec::best_common(h264_h265, all), Some(VideoCodec::H265));
+        assert_eq!(VideoCodec::best_common(VideoCodec::H264.bit(), all), Some(VideoCodec::H264));
+        assert_eq!(VideoCodec::best_common(VideoCodec::Av1.bit(), VideoCodec::H264.bit()), None);
     }
 }

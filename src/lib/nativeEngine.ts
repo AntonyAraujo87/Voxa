@@ -3,7 +3,7 @@ import type { Matchmaking } from "./signaling";
 
 export type StreamRole = "host" | "viewer";
 export type EnginePhase = "idle" | "binding" | "waiting" | "punching" | "connected" | "decoding" | "streaming" | "recovering" | "stopped" | "failed";
-export interface PreparedEndpoint { local: string; public: string | null; publicKey: string; }
+export interface PreparedEndpoint { local: string; public: string | null; publicKey: string; codecs: number; }
 export interface CaptureTargetId { adapterIndex: number; outputIndex: number; }
 export interface CaptureTargetInfo {
   id: CaptureTargetId; gpu: string; monitor: string;
@@ -30,9 +30,9 @@ export class NativeEngine {
     return invoke<PreparedEndpoint>("engine_prepare", { role, captureTarget });
   }
   setMaxPeers(maxPeers: number) { return invoke<void>("engine_set_max_peers", { maxPeers }); }
-  connectPeer(peer: { endpoint: string; publicKey: string; peerId: string; relayEndpoint: string | null; relaySession: string | null; relayAuth: string | null }) {
+  connectPeer(peer: { endpoint: string; publicKey: string; peerId: string; codecs: number; relayEndpoint: string | null; relaySession: string | null; relayAuth: string | null }) {
     return invoke<void>("engine_connect_peer", { request: {
-      endpoint: peer.endpoint, peerPublicKey: peer.publicKey, peerId: peer.peerId,
+      endpoint: peer.endpoint, peerPublicKey: peer.publicKey, peerId: peer.peerId, peerCodecs: peer.codecs,
       relayEndpoint: peer.relayEndpoint, relaySession: peer.relaySession, relayAuth: peer.relayAuth,
     } });
   }

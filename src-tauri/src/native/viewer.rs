@@ -1,6 +1,6 @@
 use super::{
-    decoder::HardwareH264Decoder, presenter::NativePresenter, renderer, transport::TransportHandle,
-    Inner,
+    decoder::HardwareVideoDecoder, presenter::NativePresenter, renderer,
+    transport::TransportHandle, Inner,
 };
 use std::{
     sync::{Arc, Mutex},
@@ -84,8 +84,13 @@ fn run_session(
     };
     renderer::set_title(app, "Voxa Stream — iniciando decoder");
     let (device, context) = create_device()?;
-    let mut decoder =
-        HardwareH264Decoder::open(&device, config.width, config.height, config.fps.into())?;
+    let mut decoder = HardwareVideoDecoder::open(
+        &device,
+        config.codec,
+        config.width,
+        config.height,
+        config.fps.into(),
+    )?;
     let mut presenter = NativePresenter::new(
         &device,
         &context,
@@ -95,7 +100,11 @@ fn run_session(
         config.fps.into(),
     )?;
     if let Ok(mut inner) = state.lock() {
-        inner.status.decoder = "media-foundation-h264";
+        inner.status.decoder = match config.codec {
+            voxa_native_core::protocol::VideoCodec::H264 => "media-foundation-h264",
+            voxa_native_core::protocol::VideoCodec::H265 => "media-foundation-h265",
+            voxa_native_core::protocol::VideoCodec::Av1 => "media-foundation-av1",
+        };
         inner.status.phase = "decoding";
         inner.status.last_error = None;
     }
@@ -105,8 +114,9 @@ fn run_session(
         if let Some(new_config) = transport.current_config() {
             if new_config != config {
                 config = new_config;
-                decoder = HardwareH264Decoder::open(
+                decoder = HardwareVideoDecoder::open(
                     &device,
+                    config.codec,
                     config.width,
                     config.height,
                     config.fps.into(),
@@ -130,8 +140,9 @@ fn run_session(
             Ok(texture) => texture,
             Err(error) => {
                 transport.request_keyframe();
-                decoder = HardwareH264Decoder::open(
+                decoder = HardwareVideoDecoder::open(
                     &device,
+                    config.codec,
                     config.width,
                     config.height,
                     config.fps.into(),

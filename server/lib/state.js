@@ -17,7 +17,7 @@ export class StreamRegistry {
   identify(socketId, ip) {
     this.#clients.set(socketId, {
       socketId, ip, room: null, role: null, endpoint: null, localEndpoint: null,
-      publicKey: null, relaySession: null,
+      publicKey: null, codecs: 1, relaySession: null,
     });
   }
 
@@ -29,7 +29,7 @@ export class StreamRegistry {
     return !existing || safeProof(existing.proof, roomProof);
   }
 
-  join(socketId, roomId, role, endpoint, localEndpoint, publicKey, roomProof) {
+  join(socketId, roomId, role, endpoint, localEndpoint, publicKey, roomProof, codecs = 1) {
     const client = this.#clients.get(socketId);
     if (!client) return { error: "nao-identificado" };
     if (!this.authorize(roomId, roomProof)) return { error: "Senha da sala incorreta" };
@@ -48,7 +48,7 @@ export class StreamRegistry {
     }
 
     this.#rooms.set(roomId, room);
-    Object.assign(client, { room: roomId, role, endpoint, localEndpoint, publicKey });
+    Object.assign(client, { room: roomId, role, endpoint, localEndpoint, publicKey, codecs });
     const peerIds = role === "host" ? [...room.viewers] : room.host ? [room.host] : [];
     const peers = peerIds.map((peerId) => {
       const peer = this.#clients.get(peerId);
@@ -75,7 +75,7 @@ export class StreamRegistry {
       if (!room.host && room.viewers.size === 0) this.#rooms.delete(roomId);
     }
     Object.assign(client, {
-      room: null, role: null, endpoint: null, localEndpoint: null, publicKey: null,
+      room: null, role: null, endpoint: null, localEndpoint: null, publicKey: null, codecs: 1,
       relaySession: null,
     });
     return { roomId, otherIds, peerId: socketId };

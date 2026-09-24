@@ -1,6 +1,7 @@
-//! Hardware-only H.264 decoder backed by Windows Media Foundation.
+//! Hardware-only video decoder backed by Windows Media Foundation.
 
 use std::{mem::ManuallyDrop, ptr, slice, time::Duration};
+use voxa_native_core::protocol::VideoCodec;
 use windows::{
     core::{Interface, GUID},
     Win32::{
@@ -9,9 +10,9 @@ use windows::{
             IMFActivate, IMFDXGIBuffer, IMFDXGIDeviceManager, IMFMediaEventGenerator, IMFMediaType,
             IMFTransform, METransformHaveOutput, METransformNeedInput, MFCreateDXGIDeviceManager,
             MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFShutdown,
-            MFStartup, MFTEnumEx, MFVideoFormat_H264, MFVideoFormat_NV12,
-            MFVideoInterlace_Progressive, MFSTARTUP_LITE, MFT_CATEGORY_VIDEO_DECODER,
-            MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
+            MFStartup, MFTEnumEx, MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC,
+            MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFSTARTUP_LITE,
+            MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
             MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_STREAMING,
             MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER,
             MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO,
@@ -40,7 +41,7 @@ impl Drop for MediaFoundation {
     }
 }
 
-pub struct HardwareH264Decoder {
+pub struct HardwareVideoDecoder {
     transform: IMFTransform,
     _manager: IMFDXGIDeviceManager,
     activation: IMFActivate,
@@ -55,13 +56,19 @@ pub struct DecodedSurface {
     pub subresource_index: u32,
 }
 
-impl HardwareH264Decoder {
-    pub fn open(device: &ID3D11Device, width: u32, height: u32, fps: u32) -> Result<Self, String> {
+impl HardwareVideoDecoder {
+    pub fn open(
+        device: &ID3D11Device,
+        codec: VideoCodec,
+        width: u32,
+        height: u32,
+        fps: u32,
+    ) -> Result<Self, String> {
         let runtime = MediaFoundation::start()?;
-        let activation = enumerate_h264()?
+        let activation = enumerate(codec)?
             .into_iter()
             .next()
-            .ok_or("Nenhum decoder H.264 por hardware disponível")?;
+            .ok_or_else(|| format!("Nenhum decoder {} por hardware disponível", codec.name()))?;
         unsafe {
             let transform: IMFTransform = activation
                 .ActivateObject()
@@ -90,12 +97,12 @@ impl HardwareH264Decoder {
                     Interface::as_raw(&manager) as usize,
                 )
                 .map_err(|e| format!("Decoder recusou o gerenciador D3D11: {e}"))?;
-            let input = media_type(MFVideoFormat_H264, width, height, fps)?;
+            let input = media_type(subtype(codec), width, height, fps)?;
             let output = media_type(MFVideoFormat_NV12, width, height, fps)?;
             transform
                 .SetInputType(0, &input, 0)
                 .and_then(|_| transform.SetOutputType(0, &output, 0))
-                .map_err(|e| format!("Formato do decoder H.264/NV12: {e}"))?;
+                .map_err(|e| format!("Formato do decoder {}/NV12: {e}", codec.name()))?;
             let stream = transform
                 .GetOutputStreamInfo(0)
                 .map_err(|e| e.to_string())?;
@@ -226,7 +233,7 @@ impl HardwareH264Decoder {
     }
 }
 
-impl Drop for HardwareH264Decoder {
+impl Drop for HardwareVideoDecoder {
     fn drop(&mut self) {
         unsafe {
             let _ = self
@@ -237,10 +244,26 @@ impl Drop for HardwareH264Decoder {
     }
 }
 
-fn enumerate_h264() -> Result<Vec<IMFActivate>, String> {
+pub fn hardware_decoder_codecs() -> Result<Vec<VideoCodec>, String> {
+    let _runtime = MediaFoundation::start()?;
+    Ok(VideoCodec::ALL
+        .into_iter()
+        .filter(|codec| enumerate(*codec).is_ok_and(|items| !items.is_empty()))
+        .collect())
+}
+
+fn subtype(codec: VideoCodec) -> GUID {
+    match codec {
+        VideoCodec::H264 => MFVideoFormat_H264,
+        VideoCodec::H265 => MFVideoFormat_HEVC,
+        VideoCodec::Av1 => MFVideoFormat_AV1,
+    }
+}
+
+fn enumerate(codec: VideoCodec) -> Result<Vec<IMFActivate>, String> {
     let input = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
-        guidSubtype: MFVideoFormat_H264,
+        guidSubtype: subtype(codec),
     };
     let output = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
@@ -257,7 +280,7 @@ fn enumerate_h264() -> Result<Vec<IMFActivate>, String> {
             &mut activates,
             &mut count,
         )
-        .map_err(|e| format!("Enumeração de decoder H.264: {e}"))?;
+        .map_err(|e| format!("Enumeração de decoder {}: {e}", codec.name()))?;
         let mut decoders = Vec::with_capacity(count as usize);
         if !activates.is_null() {
             for activation in slice::from_raw_parts_mut(activates, count as usize) {

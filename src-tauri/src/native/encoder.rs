@@ -1,6 +1,7 @@
-//! Hardware-only H.264 encoder boundary backed by Windows Media Foundation.
+//! Hardware-only video encoder boundary backed by Windows Media Foundation.
 
 use std::{ffi::c_void, mem::ManuallyDrop, ptr, slice};
+use voxa_native_core::protocol::VideoCodec;
 use windows::{
     core::{Interface, GUID},
     Win32::{
@@ -13,8 +14,9 @@ use windows::{
             IMFTransform, METransformHaveOutput, METransformNeedInput, MFCreateDXGIDeviceManager,
             MFCreateDXGISurfaceBuffer, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
             MFMediaType_Video, MFSampleExtension_CleanPoint, MFShutdown, MFStartup, MFTEnumEx,
-            MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFSTARTUP_LITE,
-            MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
+            MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12,
+            MFVideoInterlace_Progressive, MFSTARTUP_LITE, MFT_CATEGORY_VIDEO_ENCODER,
+            MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
             MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_STREAMING,
             MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER,
             MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO,
@@ -47,19 +49,30 @@ impl Drop for MediaFoundation {
     }
 }
 
-pub fn hardware_h264_encoder_count() -> Result<u32, String> {
+pub fn hardware_encoder_codecs() -> Result<Vec<VideoCodec>, String> {
     let _runtime = MediaFoundation::start()?;
-    Ok(enumerate_h264()?.len() as u32)
+    Ok(VideoCodec::ALL
+        .into_iter()
+        .filter(|codec| enumerate(*codec).is_ok_and(|items| !items.is_empty()))
+        .collect())
 }
 
-fn enumerate_h264() -> Result<Vec<IMFActivate>, String> {
+fn subtype(codec: VideoCodec) -> GUID {
+    match codec {
+        VideoCodec::H264 => MFVideoFormat_H264,
+        VideoCodec::H265 => MFVideoFormat_HEVC,
+        VideoCodec::Av1 => MFVideoFormat_AV1,
+    }
+}
+
+fn enumerate(codec: VideoCodec) -> Result<Vec<IMFActivate>, String> {
     let input = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
         guidSubtype: MFVideoFormat_NV12,
     };
     let output = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
-        guidSubtype: MFVideoFormat_H264,
+        guidSubtype: subtype(codec),
     };
     let mut activates: *mut Option<IMFActivate> = ptr::null_mut();
     let mut count = 0;
@@ -72,7 +85,7 @@ fn enumerate_h264() -> Result<Vec<IMFActivate>, String> {
             &mut activates,
             &mut count,
         )
-        .map_err(|e| format!("Enumeração de encoder H.264: {e}"))?;
+        .map_err(|e| format!("Enumeração de encoder {}: {e}", codec.name()))?;
         let mut encoders = Vec::with_capacity(count as usize);
         if !activates.is_null() {
             for activate in slice::from_raw_parts_mut(activates, count as usize) {
@@ -89,7 +102,7 @@ fn enumerate_h264() -> Result<Vec<IMFActivate>, String> {
 /// Owns a hardware MFT configured for NV12 textures and an H.264 bitstream.
 /// Raw desktop BGRA must be converted to an NV12 D3D11 texture before input.
 #[expect(dead_code, reason = "ativado pelo ciclo de captura no próximo estágio")]
-pub struct HardwareH264Encoder {
+pub struct HardwareVideoEncoder {
     transform: IMFTransform,
     manager: IMFDXGIDeviceManager,
     activation: IMFActivate,
@@ -100,9 +113,10 @@ pub struct HardwareH264Encoder {
 }
 
 #[expect(dead_code, reason = "ativado pelo ciclo de captura no próximo estágio")]
-impl HardwareH264Encoder {
+impl HardwareVideoEncoder {
     pub fn open(
         device: &ID3D11Device,
+        codec: VideoCodec,
         width: u32,
         height: u32,
         fps: u32,
@@ -114,13 +128,16 @@ impl HardwareH264Encoder {
             || !height.is_multiple_of(2)
             || fps == 0
         {
-            return Err("Dimensões e FPS inválidos para H.264 NV12".into());
+            return Err(format!(
+                "Dimensões e FPS inválidos para {} NV12",
+                codec.name()
+            ));
         }
         let runtime = MediaFoundation::start()?;
-        let activation = enumerate_h264()?
+        let activation = enumerate(codec)?
             .into_iter()
             .next()
-            .ok_or("Nenhum encoder H.264 por hardware disponível")?;
+            .ok_or_else(|| format!("Nenhum encoder {} por hardware disponível", codec.name()))?;
         unsafe {
             let transform: IMFTransform = activation
                 .ActivateObject()
@@ -167,11 +184,11 @@ impl HardwareH264Encoder {
                 let _ = set_u32(codec, &CODECAPI_AVEncCommonMeanBitRate, bitrate);
             }
 
-            let output = media_type(MFVideoFormat_H264, width, height, fps, Some(bitrate))?;
+            let output = media_type(subtype(codec), width, height, fps, Some(bitrate))?;
             let input = media_type(MFVideoFormat_NV12, width, height, fps, None)?;
             transform
                 .SetOutputType(0, &output, 0)
-                .map_err(|e| format!("Formato H.264: {e}"))?;
+                .map_err(|e| format!("Formato {}: {e}", codec.name()))?;
             transform
                 .SetInputType(0, &input, 0)
                 .map_err(|e| format!("Formato NV12: {e}"))?;
@@ -352,7 +369,7 @@ unsafe fn wait_for(events: &IMFMediaEventGenerator, expected: u32) -> Result<(),
     }
 }
 
-impl Drop for HardwareH264Encoder {
+impl Drop for HardwareVideoEncoder {
     fn drop(&mut self) {
         unsafe {
             let _ = self

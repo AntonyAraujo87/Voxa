@@ -17,6 +17,7 @@ function announcement(peer, requesterIp, relay) {
     role: peer.role,
     endpoint: peer.ip === requesterIp ? peer.localEndpoint : peer.endpoint,
     publicKey: peer.publicKey,
+    codecs: peer.codecs ?? 1,
     relayEndpoint: relay.endpoint,
     relaySession: relay.session,
     relayAuth: relay.auth,
@@ -49,8 +50,9 @@ export function registerHandlers({ io, socket, registry, limiter }) {
     const roomId = sanitizeId(typeof payload?.room === "string" ? payload.room.trim() : payload?.room, 64); const role = payload?.role === "host" || payload?.role === "viewer" ? payload.role : null;
     const publicEndpoint = endpoint(payload?.endpoint); const localEndpoint = endpoint(payload?.localEndpoint);
     const publicKey = normalizePublicKey(payload?.publicKey);
+    const codecs = normalizeCodecs(payload?.codecs);
     const roomProof = normalizeRoomProof(payload?.roomProof, roomId, socket.data.legacyRoomSecret);
-    const invalid = invalidJoinField({ roomId, role, publicEndpoint, localEndpoint, publicKey, roomProof });
+    const invalid = invalidJoinField({ roomId, role, publicEndpoint, localEndpoint, publicKey, codecs, roomProof });
     if (invalid) return ack?.({ error: invalid });
     // Instaladores antigos podiam anunciar o endereço de bind quando o Windows
     // não conseguia escolher uma interface. 0.0.0.0 nunca é roteável.
@@ -59,7 +61,7 @@ export function registerHandlers({ io, socket, registry, limiter }) {
     if (!sameIp(publicEndpoint.host, socket.data.ip)) return ack?.({ error: "Endpoint público não corresponde à conexão" });
     if (!registry.authorize(roomId, roomProof)) return ack?.({ error: "Senha da sala incorreta" });
     const previous=registry.leave(socket.id); if(previous){socket.leave(`stream:${previous.roomId}`);for(const otherId of previous.otherIds)io.to(otherId).emit("stream:peer-left",{peerId:previous.peerId});}
-    const joined = registry.join(socket.id, roomId, role, publicEndpoint.value, usableLocalEndpoint.value, publicKey, roomProof); if (joined.error) return ack?.({ error: joined.error });
+    const joined = registry.join(socket.id, roomId, role, publicEndpoint.value, usableLocalEndpoint.value, publicKey, roomProof, codecs); if (joined.error) return ack?.({ error: joined.error });
     socket.join(`stream:${roomId}`); const self = registry.get(socket.id);
     const peers = joined.peers.map(({peer,viewer})=>announcement(peer,self.ip,registry.relay(viewer,self.role)));
     ack?.({ ok: true, peers, peer: peers[0], maxViewers: registry.maxViewers });
@@ -71,14 +73,21 @@ export function registerHandlers({ io, socket, registry, limiter }) {
   });
 }
 
-function invalidJoinField({ roomId, role, publicEndpoint, localEndpoint, publicKey, roomProof }) {
+function invalidJoinField({ roomId, role, publicEndpoint, localEndpoint, publicKey, codecs, roomProof }) {
   if (!roomId) return "Código da sala inválido";
   if (!role) return "Modo host/espectador inválido";
   if (!publicEndpoint) return "Endpoint UDP público inválido";
   if (!localEndpoint) return "Endpoint UDP local inválido";
   if (!publicKey) return "Chave X25519 inválida; atualize o Voxa";
+  if (!codecs) return "Lista de codecs inválida; atualize o Voxa";
   if (!roomProof) return "Senha da sala ausente ou inválida";
   return null;
+}
+
+function normalizeCodecs(value) {
+  // H.264 era implícito nas versões anteriores.
+  if (value === undefined) return 1;
+  return Number.isInteger(value) && value > 0 && value <= 0b111 ? value : null;
 }
 
 function normalizePublicKey(value) {

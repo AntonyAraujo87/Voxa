@@ -6,6 +6,7 @@ export interface PeerAnnouncement {
   role: StreamRole;
   endpoint: string;
   publicKey: string;
+  codecs: number;
   relayEndpoint: string | null;
   relaySession: string | null;
   relayAuth: string | null;
@@ -72,6 +73,7 @@ export class Matchmaking {
       endpoint: endpoint.public ?? endpoint.local,
       localEndpoint: endpoint.local,
       publicKey: endpoint.publicKey,
+      codecs: endpoint.codecs,
       roomProof,
     });
     await this.options.onCapacity(response.maxViewers ?? 4);

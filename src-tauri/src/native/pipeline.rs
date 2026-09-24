@@ -1,7 +1,7 @@
 use super::{
     capture::DxgiCapture,
     converter::GpuColorConverter,
-    encoder::HardwareH264Encoder,
+    encoder::HardwareVideoEncoder,
     transport::{EncodedFrame, HostTransportHandle, VideoTier},
     CaptureTargetId, Inner,
 };
@@ -11,7 +11,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use voxa_native_core::protocol::StreamConfig;
+use voxa_native_core::protocol::{StreamConfig, VideoCodec};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_TEXTURE2D_DESC,
 };
@@ -27,10 +27,11 @@ struct VideoProfile {
 }
 
 struct EncoderLane {
+    codec: VideoCodec,
     profile: VideoProfile,
     bitrate: u32,
     converter: GpuColorConverter,
-    encoder: HardwareH264Encoder,
+    encoder: HardwareVideoEncoder,
     next_frame_at: Instant,
 }
 
@@ -40,10 +41,12 @@ impl EncoderLane {
         context: &ID3D11DeviceContext,
         source_width: u32,
         source_height: u32,
+        codec: VideoCodec,
         bitrate: u32,
     ) -> Result<Self, String> {
         let profile = profile_for(source_width, source_height, bitrate);
         Ok(Self {
+            codec,
             profile,
             bitrate,
             converter: GpuColorConverter::new(
@@ -55,8 +58,9 @@ impl EncoderLane {
                 profile.height,
                 profile.fps,
             )?,
-            encoder: HardwareH264Encoder::open(
+            encoder: HardwareVideoEncoder::open(
                 device,
+                codec,
                 profile.width,
                 profile.height,
                 profile.fps,
@@ -76,7 +80,14 @@ impl EncoderLane {
     ) -> Result<bool, String> {
         let profile = profile_for(source_width, source_height, bitrate);
         if profile != self.profile {
-            *self = Self::open(device, context, source_width, source_height, bitrate)?;
+            *self = Self::open(
+                device,
+                context,
+                source_width,
+                source_height,
+                self.codec,
+                bitrate,
+            )?;
             return Ok(true);
         }
         let changed = bitrate < self.bitrate.saturating_mul(4) / 5
@@ -84,8 +95,9 @@ impl EncoderLane {
         if changed {
             self.bitrate = bitrate;
             if self.encoder.set_bitrate(bitrate).is_err() {
-                self.encoder = HardwareH264Encoder::open(
+                self.encoder = HardwareVideoEncoder::open(
                     device,
+                    self.codec,
                     profile.width,
                     profile.height,
                     profile.fps,
@@ -99,6 +111,7 @@ impl EncoderLane {
 
     fn config(&self) -> StreamConfig {
         StreamConfig {
+            codec: self.codec,
             width: self.profile.width,
             height: self.profile.height,
             fps: self.profile.fps as u16,
@@ -197,7 +210,7 @@ fn run_device_session(
         }
     };
     unsafe { first.texture.GetDesc(&mut desc) };
-    let mut lanes = HashMap::<VideoTier, EncoderLane>::new();
+    let mut lanes = HashMap::<(VideoTier, VideoCodec), EncoderLane>::new();
     if let Ok(mut inner) = state.lock() {
         inner.status.capture = "dxgi-active";
         inner.status.encoder = "media-foundation-h264";
@@ -210,8 +223,8 @@ fn run_device_session(
     let mut frame_id = 1u64;
     let mut next_frame_at = Instant::now();
     while !transport.stopped() {
-        let active_tiers = transport.active_tiers();
-        if active_tiers.is_empty() {
+        let active_lanes = transport.active_lanes();
+        if active_lanes.is_empty() {
             thread::sleep(Duration::from_millis(100));
             next_frame_at = Instant::now();
             continue;
@@ -232,9 +245,9 @@ fn run_device_session(
         if next_frame_at <= captured_at {
             next_frame_at = captured_at + frame_interval;
         }
-        let requested = active_tiers
+        let requested = active_lanes
             .iter()
-            .map(|(_, bitrate)| *bitrate)
+            .map(|(_, _, bitrate)| *bitrate)
             .min()
             .unwrap_or(12_000_000);
         if let Ok(mut inner) = state.lock() {
@@ -242,9 +255,13 @@ fn run_device_session(
         }
         let timestamp_100ns = started.elapsed().as_nanos().saturating_div(100) as i64;
         let force_keyframe = transport.take_keyframe_request();
-        lanes.retain(|tier, _| active_tiers.iter().any(|(active, _)| active == tier));
-        for (tier, bitrate) in active_tiers {
-            let lane = match lanes.entry(tier) {
+        lanes.retain(|key, _| {
+            active_lanes
+                .iter()
+                .any(|(tier, codec, _)| *key == (*tier, *codec))
+        });
+        for (tier, codec, bitrate) in active_lanes {
+            let lane = match lanes.entry((tier, codec)) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let lane = EncoderLane::open(
@@ -252,6 +269,7 @@ fn run_device_session(
                         &capture.context,
                         desc.Width,
                         desc.Height,
+                        codec,
                         bitrate,
                     )?;
                     transport.queue_config(tier, lane.config());
@@ -273,6 +291,7 @@ fn run_device_session(
                     &capture.context,
                     desc.Width,
                     desc.Height,
+                    codec,
                     bitrate,
                 )?;
                 transport.queue_config(tier, lane.config());
@@ -281,7 +300,7 @@ fn run_device_session(
                 continue;
             }
             if let Some(encoded) = lane.encode(&frame.texture, frame_id, timestamp_100ns)? {
-                let dropped = transport.queue_video(tier, encoded);
+                let dropped = transport.queue_video(tier, codec, encoded);
                 if let Ok(mut inner) = state.lock() {
                     inner.status.dropped_frames += u64::from(dropped);
                     inner.status.encoded_frames += 1;
