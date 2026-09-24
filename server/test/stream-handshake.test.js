@@ -23,6 +23,8 @@ test("real signaling pairs a host with multiple viewers without relaying media",
     const attacker=await connect();
     const reflected=await emit(attacker,"stream:join",{room:"attack",role:"host",endpoint:"203.0.113.55:41000",localEndpoint:"192.168.1.50:41000",publicKey:"a".repeat(43)});
     assert.match(reflected.error,/corresponde/);
+    const malformed=await emit(attacker,"stream:join",{room:"attack",role:"host",endpoint:"127.0.0.1:41000",localEndpoint:"192.168.1.50:41000",publicKey:"curta"});
+    assert.match(malformed.error,/X25519/);
     const host=await connect(); const viewer=await connect(); const viewer2=await connect();
     assert.equal((await emit(host,"stream:join",{room:"race",role:"host",endpoint:"127.0.0.1:41000",localEndpoint:"192.168.1.10:41000",publicKey:"h".repeat(43)})).ok,true);
     const intruder=await connect("wrong-password");
@@ -42,6 +44,11 @@ test("real signaling pairs a host with multiple viewers without relaying media",
     const modernHost=await connect(null); const modernViewer=await connect(null);
     assert.equal((await emit(modernHost,"stream:join",{room:"modern",roomProof:modernProof,role:"host",endpoint:"127.0.0.1:45000",localEndpoint:"192.168.1.50:45000",publicKey:"m".repeat(43)})).ok,true);
     assert.equal((await emit(modernViewer,"stream:join",{room:"modern",roomProof:modernProof,role:"viewer",endpoint:"127.0.0.1:46000",localEndpoint:"192.168.1.60:46000",publicKey:"n".repeat(43)})).ok,true);
+    const wildcardHost=await connect(); const wildcardViewer=await connect();
+    assert.equal((await emit(wildcardHost,"stream:join",{room:"wildcard",role:"host",endpoint:"127.0.0.1:47000",localEndpoint:"0.0.0.0:47000",publicKey:`${"A".repeat(43)}=`})).ok,true);
+    const wildcardJoin=await emit(wildcardViewer,"stream:join",{room:"wildcard",role:"viewer",endpoint:"127.0.0.1:48000",localEndpoint:"192.168.1.80:48000",publicKey:"p".repeat(43)});
+    assert.equal(wildcardJoin.peers[0].endpoint,"127.0.0.1:47000");
+    assert.equal(wildcardJoin.peers[0].publicKey,"A".repeat(43));
     const leavingId=viewer.id; const peerLeft=new Promise(resolve=>host.once("stream:peer-left",resolve));
     viewer.disconnect(); assert.equal((await peerLeft).peerId,leavingId);
   } finally { for(const socket of sockets)socket.disconnect(); child.kill(); }

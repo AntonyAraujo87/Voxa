@@ -5,6 +5,7 @@ import { EVENT_LIMITS, sanitizeId } from "./security.js";
 const HELLO_TIMEOUT_MS = 15_000;
 function endpoint(value) {
   if (typeof value !== "string" || value.length > 80) return null;
+  value = value.trim();
   const match = /^\[([^\]]+)]:(\d+)$/.exec(value) ?? /^([^:]+):(\d+)$/.exec(value);
   if (!match || !isIP(match[1])) return null;
   const port = Number(match[2]); return port >= 1024 && port <= 65535 ? { value, host: match[1] } : null;
@@ -45,16 +46,20 @@ export function registerHandlers({ io, socket, registry, limiter }) {
   socket.on("stream:join", (payload = {}, ack) => {
     if (!identified()) return ack?.({ error: "nao-identificado" });
     if (!guard("stream:join")) return ack?.({ error: "Aguarde antes de trocar de sala" });
-    const roomId = sanitizeId(payload?.room, 64); const role = payload?.role === "host" || payload?.role === "viewer" ? payload.role : null;
+    const roomId = sanitizeId(typeof payload?.room === "string" ? payload.room.trim() : payload?.room, 64); const role = payload?.role === "host" || payload?.role === "viewer" ? payload.role : null;
     const publicEndpoint = endpoint(payload?.endpoint); const localEndpoint = endpoint(payload?.localEndpoint);
-    const publicKey = typeof payload?.publicKey === "string" && /^[A-Za-z0-9_-]{43}$/.test(payload.publicKey) ? payload.publicKey : null;
+    const publicKey = normalizePublicKey(payload?.publicKey);
     const roomProof = normalizeRoomProof(payload?.roomProof, roomId, socket.data.legacyRoomSecret);
-    if (!roomId || !role || !publicEndpoint || !localEndpoint || !publicKey || !roomProof) return ack?.({ error: "Parâmetros de conexão inválidos" });
-    if (isIP(localEndpoint.host) !== 4 || !privateV4(localEndpoint.host)) return ack?.({ error: "Endpoint LAN inválido" });
+    const invalid = invalidJoinField({ roomId, role, publicEndpoint, localEndpoint, publicKey, roomProof });
+    if (invalid) return ack?.({ error: invalid });
+    // Instaladores antigos podiam anunciar o endereço de bind quando o Windows
+    // não conseguia escolher uma interface. 0.0.0.0 nunca é roteável.
+    const usableLocalEndpoint = localEndpoint.host === "0.0.0.0" ? publicEndpoint : localEndpoint;
+    if (isIP(usableLocalEndpoint.host) !== 4 || (!privateV4(usableLocalEndpoint.host) && usableLocalEndpoint !== publicEndpoint)) return ack?.({ error: "Endpoint LAN inválido" });
     if (!sameIp(publicEndpoint.host, socket.data.ip)) return ack?.({ error: "Endpoint público não corresponde à conexão" });
     if (!registry.authorize(roomId, roomProof)) return ack?.({ error: "Senha da sala incorreta" });
     const previous=registry.leave(socket.id); if(previous){socket.leave(`stream:${previous.roomId}`);for(const otherId of previous.otherIds)io.to(otherId).emit("stream:peer-left",{peerId:previous.peerId});}
-    const joined = registry.join(socket.id, roomId, role, publicEndpoint.value, localEndpoint.value, publicKey, roomProof); if (joined.error) return ack?.({ error: joined.error });
+    const joined = registry.join(socket.id, roomId, role, publicEndpoint.value, usableLocalEndpoint.value, publicKey, roomProof); if (joined.error) return ack?.({ error: joined.error });
     socket.join(`stream:${roomId}`); const self = registry.get(socket.id);
     const peers = joined.peers.map(({peer,viewer})=>announcement(peer,self.ip,registry.relay(viewer,self.role)));
     ack?.({ ok: true, peers, peer: peers[0], maxViewers: registry.maxViewers });
@@ -66,12 +71,35 @@ export function registerHandlers({ io, socket, registry, limiter }) {
   });
 }
 
+function invalidJoinField({ roomId, role, publicEndpoint, localEndpoint, publicKey, roomProof }) {
+  if (!roomId) return "Código da sala inválido";
+  if (!role) return "Modo host/espectador inválido";
+  if (!publicEndpoint) return "Endpoint UDP público inválido";
+  if (!localEndpoint) return "Endpoint UDP local inválido";
+  if (!publicKey) return "Chave X25519 inválida; atualize o Voxa";
+  if (!roomProof) return "Senha da sala ausente ou inválida";
+  return null;
+}
+
+function normalizePublicKey(value) {
+  if (typeof value !== "string") return null;
+  const candidate = value.trim();
+  if (/^[A-Za-z0-9_-]{43}$/.test(candidate)) return candidate;
+  if (!/^[A-Za-z0-9_+/=-]{43,44}$/.test(candidate)) return null;
+  try {
+    const raw = Buffer.from(candidate, "base64url");
+    return raw.length === 32 ? raw.toString("base64url") : null;
+  } catch {
+    return null;
+  }
+}
+
 function validLegacySecret(value) {
   return typeof value === "string" && value.length >= 4 && value.length <= 128;
 }
 
 function normalizeRoomProof(proof, roomId, legacySecret) {
-  if (typeof proof === "string" && /^[a-f0-9]{64}$/.test(proof)) return proof;
+  if (typeof proof === "string" && /^[a-f0-9]{64}$/i.test(proof)) return proof.toLowerCase();
   if (!roomId || !validLegacySecret(legacySecret)) return null;
   return createHash("sha256")
     .update("voxa-room-v1\0")
