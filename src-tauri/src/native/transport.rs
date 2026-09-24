@@ -23,6 +23,8 @@ pub struct TransportControl {
     incoming: Arc<Mutex<Option<EncodedFrame>>>,
     outgoing_audio: Arc<Mutex<VecDeque<AudioPacket>>>,
     incoming_audio: Arc<Mutex<VecDeque<AudioPacket>>>,
+    outgoing_cursor: Arc<Mutex<Option<CursorPacket>>>,
+    incoming_cursor: Arc<Mutex<Option<CursorPacket>>>,
     outgoing_config: Arc<Mutex<Option<StreamConfig>>>,
     incoming_config: Arc<Mutex<Option<StreamConfig>>>,
     force_keyframe: Arc<AtomicBool>,
@@ -48,6 +50,8 @@ pub struct TransportHandle {
     incoming: Arc<Mutex<Option<EncodedFrame>>>,
     outgoing_audio: Arc<Mutex<VecDeque<AudioPacket>>>,
     incoming_audio: Arc<Mutex<VecDeque<AudioPacket>>>,
+    outgoing_cursor: Arc<Mutex<Option<CursorPacket>>>,
+    incoming_cursor: Arc<Mutex<Option<CursorPacket>>>,
     outgoing_config: Arc<Mutex<Option<StreamConfig>>>,
     incoming_config: Arc<Mutex<Option<StreamConfig>>>,
     force_keyframe: Arc<AtomicBool>,
@@ -263,6 +267,13 @@ impl HostTransportHandle {
             }
         }
     }
+    pub fn queue_cursor(&self, cursor: CursorPacket) {
+        if let Ok(peers) = self.peers.lock() {
+            for handle in peers.values() {
+                handle.queue_cursor(cursor.clone());
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -279,6 +290,45 @@ pub struct EncodedFrame {
 pub struct AudioPacket {
     pub timestamp_us: u64,
     pub bytes: Arc<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CursorPacket {
+    pub timestamp_us: u64,
+    pub visible: bool,
+    pub x: i32,
+    pub y: i32,
+    pub source_width: u32,
+    pub source_height: u32,
+}
+
+impl CursorPacket {
+    const WIRE_LEN: usize = 17;
+
+    fn encode(&self) -> [u8; Self::WIRE_LEN] {
+        let mut bytes = [0u8; Self::WIRE_LEN];
+        bytes[0] = u8::from(self.visible);
+        bytes[1..5].copy_from_slice(&self.x.to_be_bytes());
+        bytes[5..9].copy_from_slice(&self.y.to_be_bytes());
+        bytes[9..13].copy_from_slice(&self.source_width.to_be_bytes());
+        bytes[13..17].copy_from_slice(&self.source_height.to_be_bytes());
+        bytes
+    }
+
+    fn decode(timestamp_us: u64, bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::WIRE_LEN || bytes[0] > 1 {
+            return None;
+        }
+        let cursor = Self {
+            timestamp_us,
+            visible: bytes[0] == 1,
+            x: i32::from_be_bytes(bytes[1..5].try_into().ok()?),
+            y: i32::from_be_bytes(bytes[5..9].try_into().ok()?),
+            source_width: u32::from_be_bytes(bytes[9..13].try_into().ok()?),
+            source_height: u32::from_be_bytes(bytes[13..17].try_into().ok()?),
+        };
+        (cursor.source_width > 0 && cursor.source_height > 0).then_some(cursor)
+    }
 }
 
 const RELAY_MAGIC: &[u8; 4] = b"VRLY";
@@ -375,6 +425,8 @@ impl TransportControl {
             incoming: self.incoming.clone(),
             outgoing_audio: self.outgoing_audio.clone(),
             incoming_audio: self.incoming_audio.clone(),
+            outgoing_cursor: self.outgoing_cursor.clone(),
+            incoming_cursor: self.incoming_cursor.clone(),
             outgoing_config: self.outgoing_config.clone(),
             incoming_config: self.incoming_config.clone(),
             force_keyframe: self.force_keyframe.clone(),
@@ -423,6 +475,17 @@ impl TransportHandle {
             .lock()
             .ok()
             .and_then(|mut queue| queue.pop_front())
+    }
+    pub fn queue_cursor(&self, cursor: CursorPacket) {
+        if let Ok(mut slot) = self.outgoing_cursor.lock() {
+            *slot = Some(cursor);
+        }
+    }
+    pub fn current_cursor(&self) -> Option<CursorPacket> {
+        self.incoming_cursor
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
     }
 
     pub fn take_keyframe_request(&self) -> bool {
@@ -490,6 +553,8 @@ pub async fn spawn_receiver(
     let incoming = Arc::new(Mutex::new(None::<EncodedFrame>));
     let outgoing_audio = Arc::new(Mutex::new(VecDeque::<AudioPacket>::with_capacity(4)));
     let incoming_audio = Arc::new(Mutex::new(VecDeque::<AudioPacket>::with_capacity(8)));
+    let outgoing_cursor = Arc::new(Mutex::new(None::<CursorPacket>));
+    let incoming_cursor = Arc::new(Mutex::new(None::<CursorPacket>));
     let outgoing_config = Arc::new(Mutex::new(None::<StreamConfig>));
     let incoming_config = Arc::new(Mutex::new(None::<StreamConfig>));
     let force_keyframe = Arc::new(AtomicBool::new(false));
@@ -522,6 +587,7 @@ pub async fn spawn_receiver(
     let recv_force_keyframe = force_keyframe.clone();
     let recv_incoming = incoming.clone();
     let recv_audio = incoming_audio.clone();
+    let recv_cursor = incoming_cursor.clone();
     let recv_config = incoming_config.clone();
     let recv_feedback_rtt = feedback_rtt_ms.clone();
     let recv_feedback_loss = feedback_loss_bits.clone();
@@ -761,6 +827,15 @@ pub async fn spawn_receiver(
                                     }
                                 }
                             }
+                            Kind::Cursor => {
+                                if let Some(cursor) =
+                                    CursorPacket::decode(packet.meta.timestamp_us, &packet.payload)
+                                {
+                                    if let Ok(mut slot) = recv_cursor.lock() {
+                                        *slot = Some(cursor);
+                                    }
+                                }
+                            }
                             Kind::Input => { /* Input permanece desativado até consentimento local explícito. */
                             }
                             Kind::Pong => {}
@@ -984,6 +1059,34 @@ pub async fn spawn_receiver(
         }
     });
 
+    let cursor_route = route.clone();
+    let cursor_stop = stop.clone();
+    let cursor_sequence = sequence.clone();
+    let cursor_outgoing = outgoing_cursor.clone();
+    let cursor_sender = tauri::async_runtime::spawn(async move {
+        while !cursor_stop.load(Ordering::Acquire) {
+            let cursor = cursor_outgoing.lock().ok().and_then(|mut slot| slot.take());
+            let Some(cursor) = cursor else {
+                time::sleep(Duration::from_millis(4)).await;
+                continue;
+            };
+            let payload = cursor.encode();
+            let _ = send(
+                &cursor_route,
+                &send_key,
+                Kind::Cursor,
+                Meta {
+                    stream_id,
+                    sequence: cursor_sequence.fetch_add(1, Ordering::Relaxed),
+                    timestamp_us: cursor.timestamp_us,
+                    ..Default::default()
+                },
+                &payload,
+            )
+            .await;
+        }
+    });
+
     let ping_route = route;
     let ping_stop = stop.clone();
     let ping_sequence = sequence;
@@ -1046,6 +1149,8 @@ pub async fn spawn_receiver(
         incoming,
         outgoing_audio,
         incoming_audio,
+        outgoing_cursor,
+        incoming_cursor,
         outgoing_config,
         incoming_config,
         force_keyframe,
@@ -1053,7 +1158,13 @@ pub async fn spawn_receiver(
         bitrate_bps,
         peer_codecs,
         clock_offset_us,
-        tasks: vec![receiver, video_sender, audio_sender, heartbeat],
+        tasks: vec![
+            receiver,
+            video_sender,
+            audio_sender,
+            cursor_sender,
+            heartbeat,
+        ],
         native_thread: None,
     })
 }
@@ -1214,5 +1325,25 @@ mod tests {
             negotiated_codec(VideoCodec::Av1.bit(), VideoCodec::H264.bit()),
             None
         );
+    }
+
+    #[test]
+    fn cursor_packet_round_trips() {
+        let packet = CursorPacket {
+            timestamp_us: 42,
+            visible: true,
+            x: -12,
+            y: 345,
+            source_width: 2560,
+            source_height: 1440,
+        };
+        let encoded = packet.encode();
+        let decoded = CursorPacket::decode(packet.timestamp_us, &encoded).unwrap();
+        assert_eq!(decoded.timestamp_us, packet.timestamp_us);
+        assert_eq!(decoded.visible, packet.visible);
+        assert_eq!(decoded.x, packet.x);
+        assert_eq!(decoded.y, packet.y);
+        assert_eq!(decoded.source_width, packet.source_width);
+        assert_eq!(decoded.source_height, packet.source_height);
     }
 }

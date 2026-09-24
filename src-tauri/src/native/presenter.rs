@@ -26,8 +26,9 @@ use windows::{
                 DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 DXGI_USAGE_RENDER_TARGET_OUTPUT,
             },
+            Gdi::{GetDC, ReleaseDC},
         },
-        UI::WindowsAndMessaging::GetClientRect,
+        UI::WindowsAndMessaging::{DrawIconEx, GetClientRect, LoadCursorW, DI_NORMAL, IDC_ARROW},
     },
 };
 
@@ -210,6 +211,41 @@ impl NativePresenter {
                 .Present(0, DXGI_PRESENT(0))
                 .ok()
                 .map_err(|e| format!("Apresentação do frame: {e}"))
+        }
+    }
+
+    pub fn present_cursor(&self, cursor: &super::transport::CursorPacket) -> Result<(), String> {
+        if !cursor.visible || cursor.source_width == 0 || cursor.source_height == 0 {
+            return Ok(());
+        }
+        let destination = letterbox(
+            cursor.source_width,
+            cursor.source_height,
+            self.output_width,
+            self.output_height,
+        );
+        let width = (destination.right - destination.left).max(1);
+        let height = (destination.bottom - destination.top).max(1);
+        let x = destination.left
+            + (i64::from(cursor.x).clamp(0, i64::from(cursor.source_width)) * i64::from(width)
+                / i64::from(cursor.source_width)) as i32;
+        let y = destination.top
+            + (i64::from(cursor.y).clamp(0, i64::from(cursor.source_height)) * i64::from(height)
+                / i64::from(cursor.source_height)) as i32;
+        unsafe {
+            let icon = LoadCursorW(None, IDC_ARROW)
+                .map_err(|e| format!("Cursor padrão do Windows: {e}"))?;
+            let dc = GetDC(Some(self.hwnd));
+            if dc.is_invalid() {
+                return Err("Não foi possível desenhar o cursor remoto".into());
+            }
+            let drawn = DrawIconEx(dc, x, y, icon.into(), 0, 0, 0, None, DI_NORMAL).is_ok();
+            let _ = ReleaseDC(Some(self.hwnd), dc);
+            if drawn {
+                Ok(())
+            } else {
+                Err("Falha ao desenhar o cursor remoto".into())
+            }
         }
     }
 

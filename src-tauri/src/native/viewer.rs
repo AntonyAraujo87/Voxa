@@ -202,6 +202,11 @@ fn run_session(
         };
         if let Some(texture) = texture {
             presenter.present(&texture.texture, texture.subresource_index)?;
+            if let Some(cursor) = transport.current_cursor() {
+                if cursor.timestamp_us <= frame.timestamp_us.saturating_add(100_000) {
+                    presenter.present_cursor(&cursor)?;
+                }
+            }
             if let Some(latency) = transport.capture_to_display_ms(frame.timestamp_us) {
                 if latency_samples.len() >= 600 {
                     latency_samples.pop_front();

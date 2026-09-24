@@ -65,6 +65,29 @@ pub fn hardware_encoder_codecs_for_device(
     Ok(available)
 }
 
+pub fn hardware_encoder_capacity_for_device(
+    device: &ID3D11Device,
+    codecs: &[VideoCodec],
+    ceiling: usize,
+) -> usize {
+    let Some(codec) = codecs
+        .iter()
+        .copied()
+        .find(|codec| *codec == VideoCodec::H264)
+        .or_else(|| codecs.first().copied())
+    else {
+        return 0;
+    };
+    let mut sessions = Vec::new();
+    for _ in 0..ceiling.clamp(1, 4) {
+        match HardwareVideoEncoder::open(device, codec, 1280, 720, 30, 2_500_000) {
+            Ok(encoder) => sessions.push(encoder),
+            Err(_) => break,
+        }
+    }
+    sessions.len()
+}
+
 fn subtype(codec: VideoCodec) -> GUID {
     match codec {
         VideoCodec::H264 => MFVideoFormat_H264,

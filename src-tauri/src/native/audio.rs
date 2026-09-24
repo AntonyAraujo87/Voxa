@@ -21,15 +21,15 @@ use windows::{
         Foundation::CloseHandle,
         Media::{
             Audio::{
-                eConsole, eRender, ActivateAudioInterfaceAsync,
+                eConsole, eRender, ActivateAudioInterfaceAsync, AudioSessionStateActive,
                 IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
                 IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient,
-                IAudioRenderClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-                AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_LOOPBACK,
-                AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDIOCLIENT_ACTIVATION_PARAMS,
-                AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-                AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+                IAudioRenderClient, IAudioSessionControl2, IAudioSessionManager2,
+                IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
+                AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+                AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
+                AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
                 PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
                 VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
             },
@@ -63,7 +63,7 @@ pub(super) fn spawn_capture(
         // O relogio pertence a sessao, nao ao dispositivo WASAPI. Se o driver
         // reiniciar, voltar o timestamp a zero faria o espectador descartar
         // todos os pacotes novos como atrasados ate reconectar a sala.
-        let mut timestamp_us = 0u64;
+        let mut timestamp_us = unix_now_us();
         while !transport.stopped() {
             if !transport.has_peers() {
                 set_status(&state, "waiting", None);
@@ -103,6 +103,9 @@ fn capture_loop(
 ) -> Result<(), String> {
     let _com = ComApartment::start()?;
     let (client, capture) = open_capture(process_id)?;
+    // A device can disappear for seconds during sleep, hot-plug or an output
+    // switch. Resume on the shared wall clock instead of emitting stale audio.
+    *timestamp_us = (*timestamp_us).max(unix_now_us());
     let mut encoder = OpusEncoder::new(
         SAMPLE_RATE as i32,
         CHANNELS,
@@ -198,6 +201,22 @@ fn playback_loop(transport: &TransportHandle, state: &Arc<Mutex<Inner>>) -> Resu
     unsafe { client.Start() }.map_err(|e| format!("Inicia saída WASAPI: {e}"))?;
     while !transport.stopped() {
         while let Some(packet) = transport.take_audio() {
+            let video_latency = state
+                .lock()
+                .map(|inner| inner.status.latency_p50_ms)
+                .unwrap_or_default();
+            let target_age = video_latency.clamp(40, 250).saturating_sub(25);
+            if let Some(age) = transport.capture_to_display_ms(packet.timestamp_us) {
+                let wait_ms = sync_wait_ms(age, target_age);
+                if wait_ms > 0 {
+                    thread::sleep(Duration::from_millis(u64::from(wait_ms)));
+                }
+                if let Ok(mut inner) = state.lock() {
+                    inner.status.av_sync_ms = (age as i64 + 25 - i64::from(video_latency))
+                        .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                        as i32;
+                }
+            }
             if let Some(previous) = last_timestamp {
                 if packet.timestamp_us <= previous {
                     continue;
@@ -278,6 +297,28 @@ fn format() -> WAVEFORMATEX {
 
 pub(super) fn enumerate_processes() -> Result<Vec<AudioProcessInfo>, String> {
     unsafe {
+        let _com = ComApartment::start()?;
+        let audio_client = default_render_device()?;
+        let manager: IAudioSessionManager2 = audio_client
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|e| format!("Sessões de áudio do Windows: {e}"))?;
+        let sessions = manager
+            .GetSessionEnumerator()
+            .map_err(|e| format!("Enumera sessões de áudio: {e}"))?;
+        let mut active = std::collections::HashSet::new();
+        for index in 0..sessions.GetCount().unwrap_or_default() {
+            let Ok(control) = sessions.GetSession(index) else {
+                continue;
+            };
+            if control.GetState().ok() != Some(AudioSessionStateActive) {
+                continue;
+            }
+            if let Ok(control) = control.cast::<IAudioSessionControl2>() {
+                if let Ok(process_id) = control.GetProcessId() {
+                    active.insert(process_id);
+                }
+            }
+        }
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
             .map_err(|e| format!("Lista processos de áudio: {e}"))?;
         let mut entry = PROCESSENTRY32W {
@@ -287,7 +328,9 @@ pub(super) fn enumerate_processes() -> Result<Vec<AudioProcessInfo>, String> {
         let mut processes = Vec::new();
         if Process32FirstW(snapshot, &mut entry).is_ok() {
             loop {
-                if entry.th32ProcessID > 4 && entry.th32ProcessID != std::process::id() {
+                if active.contains(&entry.th32ProcessID)
+                    && entry.th32ProcessID != std::process::id()
+                {
                     let end = entry
                         .szExeFile
                         .iter()
@@ -398,14 +441,18 @@ fn process_loopback_client(process_id: u32) -> Result<IAudioClient, String> {
 }
 
 fn default_render_client() -> Result<IAudioClient, String> {
+    let device = default_render_device()?;
+    unsafe { device.Activate(CLSCTX_ALL, None) }
+        .map_err(|e| format!("Ativa dispositivo de áudio: {e}"))
+}
+
+fn default_render_device() -> Result<windows::Win32::Media::Audio::IMMDevice, String> {
     let enumerator: IMMDeviceEnumerator = unsafe {
         CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
             .map_err(|e| format!("Abre dispositivos de áudio: {e}"))?
     };
-    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
-        .map_err(|e| format!("Saída de áudio padrão indisponível: {e}"))?;
-    unsafe { device.Activate(CLSCTX_ALL, None) }
-        .map_err(|e| format!("Ativa dispositivo de áudio: {e}"))
+    unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+        .map_err(|e| format!("Saída de áudio padrão indisponível: {e}"))
 }
 
 fn open_capture(process_id: Option<u32>) -> Result<(IAudioClient, IAudioCaptureClient), String> {
@@ -478,6 +525,18 @@ fn take_timestamp(next: &mut u64) -> u64 {
     current
 }
 
+fn sync_wait_ms(audio_age_ms: u32, target_age_ms: u32) -> u32 {
+    target_age_ms.saturating_sub(audio_age_ms).min(100)
+}
+
+fn unix_now_us() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros()
+        .min(u128::from(u64::MAX)) as u64
+}
+
 fn set_status(state: &Arc<Mutex<Inner>>, audio: &'static str, error: Option<&str>) {
     if let Ok(mut inner) = state.lock() {
         inner.status.audio = audio;
@@ -494,10 +553,17 @@ mod tests {
 
     #[test]
     fn audio_clock_survives_device_session_restart() {
-        let mut next = 0;
-        assert_eq!(take_timestamp(&mut next), 0);
-        assert_eq!(take_timestamp(&mut next), FRAME_US);
+        let mut next = 1_000_000;
+        assert_eq!(take_timestamp(&mut next), 1_000_000);
+        assert_eq!(take_timestamp(&mut next), 1_000_000 + FRAME_US);
         // A mesma variavel e reutilizada quando o WASAPI e reaberto.
-        assert_eq!(take_timestamp(&mut next), FRAME_US * 2);
+        assert_eq!(take_timestamp(&mut next), 1_000_000 + FRAME_US * 2);
+    }
+
+    #[test]
+    fn av_sync_only_delays_early_audio_and_is_bounded() {
+        assert_eq!(sync_wait_ms(20, 70), 50);
+        assert_eq!(sync_wait_ms(80, 70), 0);
+        assert_eq!(sync_wait_ms(0, 500), 100);
     }
 }

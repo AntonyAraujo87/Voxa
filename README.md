@@ -57,6 +57,12 @@ mapeamento descoberto por STUN e perfuração UDP.
 - Até quatro espectadores simultâneos, com saída individual preservada quando
   outro espectador desconecta e pedido automático de IDR para quem entra depois.
 - O botão `Abrir outra sessão` permite hospedar em uma instância e assistir por outra ao mesmo tempo.
+- Áudio e vídeo usam o mesmo relógio de captura; o espectador compensa a diferença e exibe a deriva A/V em milissegundos.
+- O painel de áudio lista somente processos com sessão ativa no mixer do Windows e pode ser atualizado sem reiniciar o Voxa.
+- O limite de encoders é sondado na GPU escolhida. O host reduz o teto de espectadores e mantém a recuperação individual se uma sessão de encode parar.
+- Posição e visibilidade do cursor seguem o timestamp do frame; o host pode ocultar o cursor durante a sessão.
+- Mudanças de resolução e HDR recriam a captura. Cada encoder possui watchdog de dois segundos e solicita nova configuração/keyframe ao voltar.
+- `Exportar diagnóstico` salva em Documentos/Voxa um JSON sem senha ou chaves, contendo GPU/driver, codecs, rotas, relay, perda, latências, estado dos espectadores e erros.
 
 O host não usa fallback de captura web nem encode por CPU. A cadeia nativa compila,
 mas ainda precisa ser validada em dois PCs físicos e GPUs NVENC, AMF e QuickSync.

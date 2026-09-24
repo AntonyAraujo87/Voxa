@@ -15,6 +15,7 @@ const emptyStatus: EngineStatus = {
   receivedFrames: 0, encodedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
   renderer: "closed", capture: "idle", encoder: "idle",
   decoder: "idle", decoderGpu: null, audio: "idle", audioBitrateKbps: 0, audioError: null, rejoinRequired: false, decodedFrames: 0,
+  avSyncMs: 0, encoderCapacity: 1, cursorVisible: true, hdr: false, captureRestarts: 0,
   latencyP50Ms: 0, latencyP95Ms: 0, latencyP99Ms: 0,
   verificationCode: null, connectedPeers: 0, maxPeers: 4, peerVerifications: [], peerMetrics: [], lastError: null,
 };
@@ -33,6 +34,7 @@ export default function App() {
   const [captureTargetIndex, setCaptureTargetIndex] = useState(0);
   const [audioProcesses, setAudioProcesses] = useState<AudioProcessInfo[]>([]);
   const [audioProcessId, setAudioProcessId] = useState(0);
+  const [cursorVisible, setCursorVisible] = useState(true);
   const [graphicsAdapters, setGraphicsAdapters] = useState<GraphicsAdapterInfo[]>([]);
   const [decoderAdapterIndex, setDecoderAdapterIndex] = useState(-1);
   const captureTargetRef = useRef<CaptureTargetInfo | null>(null);
@@ -264,6 +266,27 @@ export default function App() {
     }
   }
 
+  async function toggleCursor() {
+    const next = !cursorVisible;
+    setCursorVisible(next);
+    try {
+      await engine.setCursorVisible(next);
+      setMessage(next ? "Cursor remoto visível" : "Cursor remoto oculto");
+    } catch (error) {
+      setCursorVisible(!next);
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function exportDiagnostic() {
+    try {
+      const path = await engine.exportDiagnostic();
+      setMessage(`Diagnóstico salvo em ${path}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   const active = status.phase !== "idle" && status.phase !== "stopped";
   return (
     <main className="shell">
@@ -294,10 +317,13 @@ export default function App() {
               {captureTargets.length === 0
                 ? <option value={0}>Monitor principal automático</option>
                 : captureTargets.map((target, index) => <option key={`${target.id.adapterIndex}:${target.id.outputIndex}`} value={index}>
-                    {target.primary ? "Principal · " : ""}{target.monitor} · {target.width}×{target.height} · {target.gpu}
+                    {target.primary ? "Principal · " : ""}{target.monitor} · {target.width}×{target.height}{target.hdr ? " · HDR" : ""} · {target.gpu}
                   </option>)}
             </select>
           </label>}
+          {role === "host" && <button className="secondary" type="button" onClick={() => void toggleCursor()} disabled={busy || !active}>
+            {cursorVisible ? "Ocultar cursor transmitido" : "Mostrar cursor transmitido"}
+          </button>}
           {role === "host" && <label>Áudio transmitido
             <select value={audioProcessId} onChange={(event) => void selectAudioSource(Number(event.target.value))} disabled={busy}>
               <option value={0}>Todo o som do sistema (pode incluir Discord)</option>
@@ -312,7 +338,7 @@ export default function App() {
             <select value={decoderAdapterIndex} onChange={(event) => setDecoderAdapterIndex(Number(event.target.value))} disabled={active || busy}>
               <option value={-1}>Automática (melhor GPU compatível)</option>
               {graphicsAdapters.map((adapter) => <option key={adapter.adapterIndex} value={adapter.adapterIndex}>
-                {adapter.name} · {adapter.dedicatedMemoryMb} MB dedicados
+                {adapter.name} · {adapter.dedicatedMemoryMb} MB · driver {adapter.driverVersion ?? "não informado"}
               </option>)}
             </select>
           </label>}
@@ -346,8 +372,11 @@ export default function App() {
           <Metric label="Código E2E" value={role === "host" && status.peerVerifications.length > 0 ? status.peerVerifications.map(({ code }, index) => `#${index + 1} ${code}`).join(" · ") : status.verificationCode ?? "—"} />
           <Metric label="Frames" value={role === "host" ? `${status.encodedFrames} codificados · ${status.droppedFrames} descartados` : `${status.receivedFrames} recebidos · ${status.decodedFrames} exibidos · ${status.droppedFrames} descartados`} />
           <Metric label="Latência vídeo" value={status.latencyP50Ms ? `P50 ${status.latencyP50Ms} · P95 ${status.latencyP95Ms} · P99 ${status.latencyP99Ms} ms` : "medindo..."} />
+          <Metric label="Sincronia A/V" value={`${status.avSyncMs > 0 ? "+" : ""}${status.avSyncMs} ms`} />
+          <Metric label="GPU host" value={`${status.encoderCapacity} encoder(es)${status.hdr ? " · HDR→SDR" : " · SDR"}`} />
           <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.decoder}${status.decoderGpu ? ` (${status.decoderGpu})` : ""} · ${status.renderer}`} />
           <Metric label="Áudio" value={`${status.audio} · ${status.audioBitrateKbps || "—"} kbps`} />
+          <Metric label="Recuperações" value={`${status.captureRestarts} reinício(s) do pipeline`} />
         </div>
         {status.lastError && <small className="native-error">Erro nativo: {status.lastError}</small>}
         {status.audioError && <small className="native-error">Erro de áudio: {status.audioError}</small>}
@@ -361,6 +390,7 @@ export default function App() {
         {(status.verificationCode || status.peerVerifications.length > 0) && <small>Compare cada Código E2E com o espectador correspondente antes de confiar na sessão.</small>}
       </section>
       <section className="card update-card">
+        <button type="button" onClick={() => void exportDiagnostic()} disabled={busy}>Exportar diagnóstico</button>
         <button type="button" onClick={availableUpdate ? installUpdate : checkForUpdate} disabled={busy || active}>
           {updateMessage}
         </button>

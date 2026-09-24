@@ -2,7 +2,7 @@ use super::{
     capture::DxgiCapture,
     converter::GpuColorConverter,
     encoder::HardwareVideoEncoder,
-    transport::{EncodedFrame, HostTransportHandle},
+    transport::{CursorPacket, EncodedFrame, HostTransportHandle},
     CaptureTargetId, Inner,
 };
 use std::{
@@ -33,6 +33,8 @@ struct EncoderLane {
     converter: GpuColorConverter,
     encoder: HardwareVideoEncoder,
     next_frame_at: Instant,
+    last_output_at: Instant,
+    frames_since_output: u32,
 }
 
 impl EncoderLane {
@@ -67,6 +69,8 @@ impl EncoderLane {
                 bitrate,
             )?,
             next_frame_at: Instant::now(),
+            last_output_at: Instant::now(),
+            frames_since_output: 0,
         })
     }
 
@@ -175,6 +179,7 @@ fn run(transport: HostTransportHandle, state: Arc<Mutex<Inner>>) {
                     inner.status.capture = "recovering";
                     inner.status.encoder = "recovering";
                     inner.status.last_error = Some(error.chars().take(240).collect());
+                    inner.status.capture_restarts = inner.status.capture_restarts.saturating_add(1);
                 }
                 let brief = error.chars().take(160).collect::<String>();
                 eprintln!("[voxa] pipeline nativo: {brief}");
@@ -220,6 +225,7 @@ fn run_device_session(
         inner.status.capture = "dxgi-active";
         inner.status.encoder = "media-foundation-hardware";
         inner.status.phase = "streaming";
+        inner.status.hdr = capture.hdr;
         inner.status.last_error = None;
     }
     drop(first);
@@ -251,6 +257,14 @@ fn run_device_session(
             next_frame_at = Instant::now();
             continue;
         };
+        let mut current_desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { frame.texture.GetDesc(&mut current_desc) };
+        if current_desc.Width != desc.Width
+            || current_desc.Height != desc.Height
+            || current_desc.Format != desc.Format
+        {
+            return Err("Resolução ou modo HDR mudou; recriando captura e encoders".into());
+        }
         let captured_at = Instant::now();
         next_frame_at += frame_interval;
         if next_frame_at <= captured_at {
@@ -270,6 +284,18 @@ fn run_device_session(
             .as_nanos()
             .saturating_div(100)
             .min(i64::MAX as u128) as i64;
+        let show_cursor = state
+            .lock()
+            .map(|inner| inner.cursor_visible)
+            .unwrap_or(true);
+        transport.queue_cursor(CursorPacket {
+            timestamp_us: timestamp_100ns.max(0) as u64 / 10,
+            visible: show_cursor && frame.cursor_visible,
+            x: frame.cursor_x,
+            y: frame.cursor_y,
+            source_width: frame.source_width,
+            source_height: frame.source_height,
+        });
         let force_keyframe = transport.take_keyframe_request();
         lanes.retain(|key, _| {
             active_lanes
@@ -356,6 +382,7 @@ fn run_device_session(
             if !lane.due(captured_at) {
                 continue;
             }
+            lane.frames_since_output = lane.frames_since_output.saturating_add(1);
             let encoded = match lane.encode(&frame.texture, frame_id, timestamp_100ns) {
                 Ok(encoded) => encoded,
                 Err(error) => {
@@ -365,13 +392,28 @@ fn run_device_session(
                     continue;
                 }
             };
-            if let Some(encoded) = encoded {
+            let stalled = if let Some(encoded) = encoded {
                 let dropped = transport.queue_video(&peer_id, codec, encoded);
                 if let Ok(mut inner) = state.lock() {
                     inner.status.dropped_frames += u64::from(dropped);
                     inner.status.encoded_frames += 1;
                 }
                 mark_lane_streaming(state, &peer_id);
+                lane.last_output_at = captured_at;
+                lane.frames_since_output = 0;
+                false
+            } else {
+                lane.frames_since_output >= lane.profile.fps.saturating_mul(2)
+                    && lane.last_output_at.elapsed() >= Duration::from_secs(2)
+            };
+            if stalled {
+                lanes.remove(&key);
+                lane_retries.insert(key, captured_at + Duration::from_millis(250));
+                mark_lane_error(
+                    state,
+                    &peer_id,
+                    "encoder sem saída por dois segundos; recriando a sessão",
+                );
             }
         }
         frame_id = frame_id.wrapping_add(1).max(1);

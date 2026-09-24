@@ -7,10 +7,13 @@ export interface PreparedEndpoint { local: string; public: string | null; public
 export interface CaptureTargetId { adapterIndex: number; outputIndex: number; }
 export interface CaptureTargetInfo {
   id: CaptureTargetId; gpu: string; monitor: string;
-  width: number; height: number; primary: boolean;
+  width: number; height: number; primary: boolean; hdr: boolean;
 }
 export interface AudioProcessInfo { processId: number; name: string; }
-export interface GraphicsAdapterInfo { adapterIndex: number; name: string; dedicatedMemoryMb: number; }
+export interface GraphicsAdapterInfo {
+  adapterIndex: number; name: string; dedicatedMemoryMb: number;
+  vendorId: number; deviceId: number; revision: number; driverVersion: string | null;
+}
 export interface EngineStatus {
   phase: EnginePhase; role: StreamRole | null; localEndpoint: string | null;
   publicEndpoint: string | null; peerEndpoint: string | null; rttMs: number;
@@ -18,6 +21,7 @@ export interface EngineStatus {
   droppedFrames: number; keyframeRequests: number; renderer: string;
   capture: string; encoder: string; decoder: string; decoderGpu: string | null; decodedFrames: number;
   audio: string; audioBitrateKbps: number; audioError: string | null;
+  avSyncMs: number; encoderCapacity: number; cursorVisible: boolean; hdr: boolean; captureRestarts: number;
   rejoinRequired: boolean;
   latencyP50Ms: number; latencyP95Ms: number; latencyP99Ms: number;
   verificationCode: string | null; connectedPeers: number; maxPeers: number;
@@ -43,6 +47,10 @@ export class NativeEngine {
   switchAudio(audioProcessId: number | null) {
     return invoke<void>("engine_switch_audio", { audioProcessId });
   }
+  setCursorVisible(visible: boolean) {
+    return invoke<void>("engine_set_cursor_visible", { visible });
+  }
+  exportDiagnostic() { return invoke<string>("engine_export_diagnostic"); }
   prepare(role: StreamRole, captureTarget: CaptureTargetId | null = null, audioProcessId: number | null = null, decoderAdapterIndex: number | null = null, reuseIdentity = false) {
     return invoke<PreparedEndpoint>("engine_prepare", { role, captureTarget, audioProcessId, decoderAdapterIndex, reuseIdentity });
   }

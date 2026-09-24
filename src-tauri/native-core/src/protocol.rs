@@ -34,6 +34,7 @@ pub enum Kind {
     Config = 9,
     VideoFec = 10,
     Audio = 11,
+    Cursor = 12,
 }
 
 impl TryFrom<u8> for Kind {
@@ -51,6 +52,7 @@ impl TryFrom<u8> for Kind {
             9 => Ok(Self::Config),
             10 => Ok(Self::VideoFec),
             11 => Ok(Self::Audio),
+            12 => Ok(Self::Cursor),
             _ => Err("Tipo de pacote desconhecido".into()),
         }
     }

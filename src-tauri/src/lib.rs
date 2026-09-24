@@ -55,6 +55,8 @@ pub fn run() {
             native::engine_graphics_adapters,
             native::engine_switch_capture,
             native::engine_switch_audio,
+            native::engine_set_cursor_visible,
+            native::engine_export_diagnostic,
             native::engine_prepare,
             native::engine_preview_peer,
             native::engine_connect_peer,

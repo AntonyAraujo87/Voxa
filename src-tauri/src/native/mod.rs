@@ -21,7 +21,9 @@ pub mod viewer;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    fs,
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager, State};
 use tokio::net::UdpSocket;
@@ -53,6 +55,7 @@ pub struct CaptureTargetInfo {
     pub width: u32,
     pub height: u32,
     pub primary: bool,
+    pub hdr: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -68,6 +71,10 @@ pub struct GraphicsAdapterInfo {
     pub adapter_index: u32,
     pub name: String,
     pub dedicated_memory_mb: u64,
+    pub vendor_id: u32,
+    pub device_id: u32,
+    pub revision: u32,
+    pub driver_version: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -134,6 +141,11 @@ pub struct EngineStatus {
     audio: &'static str,
     audio_bitrate_kbps: u32,
     audio_error: Option<String>,
+    av_sync_ms: i32,
+    encoder_capacity: usize,
+    cursor_visible: bool,
+    hdr: bool,
+    capture_restarts: u32,
     rejoin_required: bool,
     decoded_frames: u64,
     latency_p50_ms: u32,
@@ -170,6 +182,11 @@ impl Default for EngineStatus {
             audio: "idle",
             audio_bitrate_kbps: 0,
             audio_error: None,
+            av_sync_ms: 0,
+            encoder_capacity: 1,
+            cursor_visible: true,
+            hdr: false,
+            capture_restarts: 0,
             rejoin_required: false,
             decoded_frames: 0,
             latency_p50_ms: 0,
@@ -211,6 +228,8 @@ struct Inner {
     audio_process_id: Option<u32>,
     decoder_adapter_index: Option<u32>,
     supported_codecs: u8,
+    hardware_encoder_capacity: usize,
+    cursor_visible: bool,
 }
 
 #[derive(Default)]
@@ -263,9 +282,11 @@ pub fn engine_switch_capture(
     {
         let capture = capture::DxgiCapture::open(Some(capture_target))
             .map_err(|error| format!("O novo monitor não pode ser capturado: {error}"))?;
-        let codecs = protocol::VideoCodec::mask(
-            encoder::hardware_encoder_codecs_for_device(&capture.device).unwrap_or_default(),
-        );
+        let available =
+            encoder::hardware_encoder_codecs_for_device(&capture.device).unwrap_or_default();
+        let codecs = protocol::VideoCodec::mask(available.iter().copied());
+        let encoder_capacity =
+            encoder::hardware_encoder_capacity_for_device(&capture.device, &available, 4).max(1);
         if codecs == 0 {
             return Err("A GPU do novo monitor não possui encoder compatível".into());
         }
@@ -278,11 +299,20 @@ pub fn engine_switch_capture(
                 "A GPU do novo monitor não possui codec em comum com todos os espectadores".into(),
             );
         }
+        if inner.transports.len() > encoder_capacity {
+            return Err(format!(
+                "A nova GPU suporta somente {encoder_capacity} encoder(es) simultâneo(s)"
+            ));
+        }
         inner.capture_target = Some(capture_target);
         inner.supported_codecs = codecs;
+        inner.hardware_encoder_capacity = encoder_capacity;
         inner.host_fanout.set_supported_codecs(codecs);
         inner.status.capture = "switching-monitor";
         inner.status.encoder = "restarting";
+        inner.status.encoder_capacity = encoder_capacity;
+        inner.status.max_peers = inner.status.max_peers.min(encoder_capacity);
+        inner.status.hdr = capture.hdr;
         inner.host_fanout.request_keyframe();
         Ok(())
     }
@@ -306,6 +336,80 @@ pub fn engine_switch_audio(
     inner.status.audio = "switching-source";
     inner.status.audio_error = None;
     Ok(())
+}
+
+#[tauri::command]
+pub fn engine_set_cursor_visible(
+    visible: bool,
+    engine: State<'_, NativeEngine>,
+) -> Result<(), String> {
+    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+    inner.cursor_visible = visible;
+    inner.status.cursor_visible = visible;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn engine_export_diagnostic(
+    app: AppHandle,
+    engine: State<'_, NativeEngine>,
+) -> Result<String, String> {
+    let (status, capture_target, audio_process_id, supported_codecs, capacity) = {
+        let inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+        (
+            inner.status.clone(),
+            inner.capture_target,
+            inner.audio_process_id,
+            inner.supported_codecs,
+            inner.hardware_encoder_capacity,
+        )
+    };
+    let codec_names = protocol::VideoCodec::ALL
+        .into_iter()
+        .filter(|codec| supported_codecs & codec.bit() != 0)
+        .map(protocol::VideoCodec::name)
+        .collect::<Vec<_>>();
+    #[cfg(target_os = "windows")]
+    let (targets, adapters) = (
+        capture::enumerate_targets().unwrap_or_default(),
+        capture::enumerate_adapters().unwrap_or_default(),
+    );
+    #[cfg(not(target_os = "windows"))]
+    let (targets, adapters): (Vec<CaptureTargetInfo>, Vec<GraphicsAdapterInfo>) =
+        (Vec::new(), Vec::new());
+    let generated_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let report = serde_json::json!({
+        "product": "Voxa",
+        "version": env!("CARGO_PKG_VERSION"),
+        "generatedAtUnix": generated_at,
+        "system": { "os": std::env::consts::OS, "arch": std::env::consts::ARCH },
+        "status": status,
+        "selectedCaptureTarget": capture_target,
+        "audioProcessId": audio_process_id,
+        "supportedCodecs": codec_names,
+        "encoderCapacity": capacity,
+        "captureTargets": targets,
+        "graphicsAdapters": adapters,
+        "panicLog": crate::diagnostico::read_panic_log(app.clone()),
+        "privacy": "Sem senha da sala, chaves de mídia ou conteúdo transmitido"
+    });
+    let documents = app
+        .path()
+        .document_dir()
+        .map_err(|error| format!("Pasta Documentos indisponível: {error}"))?;
+    let directory = documents.join("Voxa");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Não foi possível criar a pasta de diagnóstico: {error}"))?;
+    let path = directory.join(format!("voxa-diagnostico-{generated_at}.json"));
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("Não foi possível salvar o diagnóstico: {error}"))?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -360,12 +464,15 @@ pub async fn engine_prepare(
     };
     let public_key = key_exchange.public_base64();
     #[cfg(target_os = "windows")]
-    let (capture_state, encoder_state, codecs) = if role == StreamRole::Host {
+    let (capture_state, encoder_state, codecs, encoder_capacity, hdr) = if role == StreamRole::Host
+    {
         let capture = capture::DxgiCapture::open(capture_target)
             .map_err(|error| format!("O monitor selecionado não pode ser capturado: {error}"))?;
         let capture_state = "dxgi-ready";
         let available =
             encoder::hardware_encoder_codecs_for_device(&capture.device).unwrap_or_default();
+        let encoder_capacity =
+            encoder::hardware_encoder_capacity_for_device(&capture.device, &available, 4).max(1);
         let encoder_state = if available.is_empty() {
             "hardware-unavailable"
         } else {
@@ -375,6 +482,8 @@ pub async fn engine_prepare(
             capture_state,
             encoder_state,
             protocol::VideoCodec::mask(available),
+            encoder_capacity,
+            capture.hdr,
         )
     } else {
         let available = viewer::hardware_decoder_codecs(decoder_adapter_index).unwrap_or_default();
@@ -382,13 +491,16 @@ pub async fn engine_prepare(
             "disabled",
             "decoder-pending",
             protocol::VideoCodec::mask(available),
+            1,
+            false,
         )
     };
     #[cfg(not(target_os = "windows"))]
-    let (capture_state, encoder_state, codecs) = if role == StreamRole::Host {
-        ("unsupported-os", "hardware-unavailable", 0)
+    let (capture_state, encoder_state, codecs, encoder_capacity, hdr) = if role == StreamRole::Host
+    {
+        ("unsupported-os", "hardware-unavailable", 0, 1, false)
     } else {
-        ("disabled", "decoder-pending", 0)
+        ("disabled", "decoder-pending", 0, 1, false)
     };
     if codecs == 0 {
         return Err("Nenhum codec de vídeo por hardware compatível foi encontrado".into());
@@ -401,12 +513,18 @@ pub async fn engine_prepare(
     inner.audio_process_id = audio_process_id.filter(|_| role == StreamRole::Host);
     inner.decoder_adapter_index = decoder_adapter_index.filter(|_| role == StreamRole::Viewer);
     inner.supported_codecs = codecs;
+    inner.hardware_encoder_capacity = encoder_capacity;
+    inner.cursor_visible = true;
     inner.host_fanout.set_supported_codecs(codecs);
     inner.status.phase = "waiting";
     inner.status.local_endpoint = Some(local.clone());
     inner.status.public_endpoint = public.clone();
     inner.status.capture = capture_state;
     inner.status.encoder = encoder_state;
+    inner.status.encoder_capacity = encoder_capacity;
+    inner.status.max_peers = encoder_capacity.min(4);
+    inner.status.cursor_visible = true;
+    inner.status.hdr = hdr;
     Ok(PreparedEndpoint {
         local,
         public,
@@ -703,10 +821,11 @@ pub fn engine_set_max_peers(
         return Err("Limite de espectadores invalido".into());
     }
     let mut inner = engine.inner.lock().map_err(|_| "Estado indisponivel")?;
-    if inner.transports.len() > max_peers {
+    let effective = max_peers.min(inner.hardware_encoder_capacity.max(1));
+    if inner.transports.len() > effective {
         return Err("O novo limite e menor que o numero de espectadores conectados".into());
     }
-    inner.status.max_peers = max_peers;
+    inner.status.max_peers = effective;
     Ok(())
 }
 
