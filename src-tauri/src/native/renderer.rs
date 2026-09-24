@@ -10,12 +10,19 @@ pub fn open(app: &AppHandle) -> Result<(), String> {
     }
     tauri::window::WindowBuilder::new(app, "stream")
         .title("Voxa Stream")
+        .background_color(tauri::window::Color(0, 0, 0, 255))
         .inner_size(1280.0, 720.0)
         .min_inner_size(640.0, 360.0)
         .resizable(true)
         .build()
         .map(|_| ())
         .map_err(|e| format!("Não foi possível abrir a janela nativa: {e}"))
+}
+
+pub fn set_title(app: &AppHandle, title: &str) {
+    if let Some(window) = app.get_window("stream") {
+        let _ = window.set_title(title);
+    }
 }
 
 pub fn toggle_fullscreen(app: &AppHandle) -> Result<bool, String> {

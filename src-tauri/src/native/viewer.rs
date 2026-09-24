@@ -1,11 +1,13 @@
 use super::{
-    decoder::HardwareH264Decoder, presenter::NativePresenter, transport::TransportHandle, Inner,
+    decoder::HardwareH264Decoder, presenter::NativePresenter, renderer, transport::TransportHandle,
+    Inner,
 };
 use std::{
     sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
+use tauri::AppHandle;
 use windows::Win32::{
     Foundation::{HMODULE, HWND},
     Graphics::{
@@ -21,22 +23,26 @@ use windows::Win32::{
 pub(super) fn spawn(
     transport: TransportHandle,
     state: Arc<Mutex<Inner>>,
+    app: AppHandle,
     hwnd: isize,
 ) -> thread::JoinHandle<()> {
-    thread::spawn(move || run(transport, state, hwnd))
+    thread::spawn(move || run(transport, state, app, hwnd))
 }
 
-fn run(transport: TransportHandle, state: Arc<Mutex<Inner>>, hwnd: isize) {
+fn run(transport: TransportHandle, state: Arc<Mutex<Inner>>, app: AppHandle, hwnd: isize) {
+    renderer::set_title(&app, "Voxa Stream — aguardando vídeo");
     if let Err(error) = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok() {
         fail(&state, "com-unavailable", &error.to_string());
+        renderer::set_title(&app, "Voxa Stream — falha nativa; veja o painel");
         return;
     }
     let _apartment = ComApartment;
     while !transport.stopped() {
-        match run_session(&transport, &state, hwnd) {
+        match run_session(&transport, &state, &app, hwnd) {
             Ok(()) => return,
             Err(error) => {
                 fail(&state, "recovering", &error);
+                renderer::set_title(&app, "Voxa Stream — recuperando decoder");
                 thread::sleep(Duration::from_millis(500));
             }
         }
@@ -46,9 +52,12 @@ fn run(transport: TransportHandle, state: Arc<Mutex<Inner>>, hwnd: isize) {
 fn run_session(
     transport: &TransportHandle,
     state: &Arc<Mutex<Inner>>,
+    app: &AppHandle,
     hwnd: isize,
 ) -> Result<(), String> {
     let mut config_wait = std::time::Instant::now();
+    let waiting_since = std::time::Instant::now();
+    let mut reported_waiting = false;
     let mut config = loop {
         if transport.stopped() {
             return Ok(());
@@ -60,8 +69,17 @@ fn run_session(
             transport.request_keyframe();
             config_wait = std::time::Instant::now();
         }
+        if !reported_waiting && waiting_since.elapsed() >= Duration::from_secs(5) {
+            if let Ok(mut inner) = state.lock() {
+                inner.status.last_error =
+                    Some("Sem configuração de vídeo do host; verificando a rota UDP".into());
+            }
+            renderer::set_title(app, "Voxa Stream — aguardando dados UDP");
+            reported_waiting = true;
+        }
         thread::sleep(Duration::from_millis(2));
     };
+    renderer::set_title(app, "Voxa Stream — iniciando decoder");
     let (device, context) = create_device()?;
     let mut decoder =
         HardwareH264Decoder::open(&device, config.width, config.height, config.fps.into())?;
@@ -76,8 +94,10 @@ fn run_session(
     if let Ok(mut inner) = state.lock() {
         inner.status.decoder = "media-foundation-h264";
         inner.status.phase = "decoding";
+        inner.status.last_error = None;
     }
     let mut duration = 10_000_000i64 / i64::from(config.fps);
+    let mut first_present = true;
     while !transport.stopped() {
         if let Some(new_config) = transport.current_config() {
             if new_config != config {
@@ -127,6 +147,11 @@ fn run_session(
                 inner.status.decoded_frames += 1;
                 inner.status.renderer = "d3d11-swapchain";
                 inner.status.phase = "streaming";
+                inner.status.last_error = None;
+            }
+            if first_present {
+                renderer::set_title(app, "Voxa Stream");
+                first_present = false;
             }
         }
     }
@@ -165,6 +190,7 @@ fn fail(state: &Arc<Mutex<Inner>>, decoder: &'static str, error: &str) {
             "failed"
         };
         inner.status.decoder = decoder;
+        inner.status.last_error = Some(error.chars().take(240).collect());
     }
     eprintln!(
         "[voxa] decoder nativo: {}",

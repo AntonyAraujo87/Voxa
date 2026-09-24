@@ -7,11 +7,12 @@ export interface PreparedEndpoint { local: string; public: string | null; public
 export interface EngineStatus {
   phase: EnginePhase; role: StreamRole | null; localEndpoint: string | null;
   publicEndpoint: string | null; peerEndpoint: string | null; rttMs: number;
-  lossPct: number; bitrateKbps: number; receivedFrames: number;
+  lossPct: number; bitrateKbps: number; receivedFrames: number; encodedFrames: number;
   droppedFrames: number; keyframeRequests: number; renderer: string;
   capture: string; encoder: string; decoder: string; decodedFrames: number;
   verificationCode: string | null; connectedPeers: number; maxPeers: number;
   peerVerifications: Array<{ peerId: string; code: string }>;
+  lastError: string | null;
 }
 
 export class NativeEngine {

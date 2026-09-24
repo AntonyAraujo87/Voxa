@@ -79,3 +79,10 @@ test('endpoint nativo preserva o contrato camelCase consumido pelo React', () =>
     /#\[derive\(Serialize\)\]\s*#\[serde\(rename_all = "camelCase"\)\]\s*pub struct PreparedEndpoint/,
   );
 });
+
+test('decoder renegocia NV12 quando o Media Foundation muda o formato', () => {
+  const source = readFileSync(new URL('../src-tauri/src/native/decoder.rs', import.meta.url), 'utf8');
+  assert.match(source, /MF_E_TRANSFORM_STREAM_CHANGE/);
+  assert.match(source, /GetOutputAvailableType\(0, index\)/);
+  assert.match(source, /SetOutputType\(0, &candidate, 0\)/);
+});

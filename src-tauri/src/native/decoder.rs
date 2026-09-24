@@ -16,9 +16,9 @@ use windows::{
             MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER,
             MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO,
             MF_EVENT_FLAG_NO_WAIT, MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_NEED_MORE_INPUT,
-            MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
-            MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
-            MR_BUFFER_SERVICE,
+            MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
+            MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
+            MF_VERSION, MR_BUFFER_SERVICE,
         },
         System::Com::CoTaskMemFree,
     },
@@ -148,34 +148,66 @@ impl HardwareH264Decoder {
             if let Some(events) = &self.events {
                 wait_for(events, METransformHaveOutput.0 as u32)?;
             }
-            let mut output = MFT_OUTPUT_DATA_BUFFER {
-                dwStreamID: 0,
-                pSample: ManuallyDrop::new(None),
-                dwStatus: 0,
-                pEvents: ManuallyDrop::new(None),
-            };
-            let mut status = 0;
-            let result = self
-                .transform
-                .ProcessOutput(0, slice::from_mut(&mut output), &mut status);
-            let sample = ManuallyDrop::take(&mut output.pSample);
-            drop(ManuallyDrop::take(&mut output.pEvents));
-            if let Err(error) = result {
-                if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT {
-                    return Ok(None);
+            for attempt in 0..2 {
+                let mut output = MFT_OUTPUT_DATA_BUFFER {
+                    dwStreamID: 0,
+                    pSample: ManuallyDrop::new(None),
+                    dwStatus: 0,
+                    pEvents: ManuallyDrop::new(None),
+                };
+                let mut status = 0;
+                let result =
+                    self.transform
+                        .ProcessOutput(0, slice::from_mut(&mut output), &mut status);
+                let sample = ManuallyDrop::take(&mut output.pSample);
+                drop(ManuallyDrop::take(&mut output.pEvents));
+                if let Err(error) = result {
+                    if error.code() == MF_E_TRANSFORM_STREAM_CHANGE && attempt == 0 {
+                        self.renegotiate_output()?;
+                        continue;
+                    }
+                    if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT {
+                        return Ok(None);
+                    }
+                    return Err(format!("Saída NV12 do decoder: {error}"));
                 }
-                return Err(format!("Saída NV12 do decoder: {error}"));
+                let sample = sample.ok_or("Decoder não retornou amostra NV12")?;
+                let service: IMFGetService = sample
+                    .GetBufferByIndex(0)
+                    .and_then(|buffer| buffer.cast())
+                    .map_err(|e| format!("Buffer DXGI decodificado: {e}"))?;
+                return service
+                    .GetService::<ID3D11Texture2D>(&MR_BUFFER_SERVICE)
+                    .map(Some)
+                    .map_err(|e| format!("Textura NV12 decodificada: {e}"));
             }
-            let sample = sample.ok_or("Decoder não retornou amostra NV12")?;
-            let service: IMFGetService = sample
-                .GetBufferByIndex(0)
-                .and_then(|buffer| buffer.cast())
-                .map_err(|e| format!("Buffer DXGI decodificado: {e}"))?;
-            service
-                .GetService::<ID3D11Texture2D>(&MR_BUFFER_SERVICE)
-                .map(Some)
-                .map_err(|e| format!("Textura NV12 decodificada: {e}"))
+            Err("Decoder mudou de formato repetidamente".into())
         }
+    }
+
+    fn renegotiate_output(&self) -> Result<(), String> {
+        unsafe {
+            for index in 0..32 {
+                let Ok(candidate) = self.transform.GetOutputAvailableType(0, index) else {
+                    break;
+                };
+                if candidate.GetGUID(&MF_MT_SUBTYPE).ok() != Some(MFVideoFormat_NV12) {
+                    continue;
+                }
+                self.transform
+                    .SetOutputType(0, &candidate, 0)
+                    .map_err(|e| format!("Renegociação NV12 do decoder: {e}"))?;
+                let stream = self
+                    .transform
+                    .GetOutputStreamInfo(0)
+                    .map_err(|e| e.to_string())?;
+                if stream.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 == 0 {
+                    return Err("Decoder renegociado não fornece superfícies DXGI".into());
+                }
+                return Ok(());
+            }
+        }
+        Err("Decoder não ofereceu NV12 após mudar o formato".into())
     }
 }
 

@@ -42,6 +42,7 @@ fn run(transport: HostTransportHandle, state: Arc<Mutex<Inner>>) {
                     inner.status.phase = "failed";
                     inner.status.capture = "recovering";
                     inner.status.encoder = "recovering";
+                    inner.status.last_error = Some(error.chars().take(240).collect());
                 }
                 let brief = error.chars().take(160).collect::<String>();
                 eprintln!("[voxa] pipeline nativo: {brief}");
@@ -92,6 +93,7 @@ fn run_device_session(
         inner.status.capture = "dxgi-active";
         inner.status.encoder = "media-foundation-h264";
         inner.status.phase = "streaming";
+        inner.status.last_error = None;
     }
     drop(first);
 
@@ -151,6 +153,10 @@ fn run_device_session(
                 if let Ok(mut inner) = state.lock() {
                     inner.status.dropped_frames += 1;
                 }
+            }
+            if let Ok(mut inner) = state.lock() {
+                inner.status.encoded_frames += 1;
+                inner.status.last_error = None;
             }
             frame_id = frame_id.wrapping_add(1).max(1);
         }

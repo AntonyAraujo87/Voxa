@@ -12,10 +12,10 @@ const DEFAULT_SIGNALING =
 const emptyStatus: EngineStatus = {
   phase: "idle", role: null, localEndpoint: null, publicEndpoint: null,
   peerEndpoint: null, rttMs: 0, lossPct: 0, bitrateKbps: 0,
-  receivedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
+  receivedFrames: 0, encodedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
   renderer: "closed", capture: "idle", encoder: "idle",
   decoder: "idle", decodedFrames: 0,
-  verificationCode: null, connectedPeers: 0, maxPeers: 4, peerVerifications: [],
+  verificationCode: null, connectedPeers: 0, maxPeers: 4, peerVerifications: [], lastError: null,
 };
 
 export default function App() {
@@ -186,9 +186,10 @@ export default function App() {
           <Metric label="Perda" value={`${status.lossPct.toFixed(1)}%`} />
           <Metric label="Bitrate" value={`${status.bitrateKbps} kbps`} />
           <Metric label="Código E2E" value={role === "host" && status.peerVerifications.length > 0 ? status.peerVerifications.map(({ code }, index) => `#${index + 1} ${code}`).join(" · ") : status.verificationCode ?? "—"} />
-          <Metric label="Frames" value={`${status.decodedFrames} exibidos · ${status.droppedFrames} descartados`} />
+          <Metric label="Frames" value={role === "host" ? `${status.encodedFrames} codificados · ${status.droppedFrames} descartados` : `${status.receivedFrames} recebidos · ${status.decodedFrames} exibidos · ${status.droppedFrames} descartados`} />
           <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.decoder} · ${status.renderer}`} />
         </div>
+        {status.lastError && <small className="native-error">Erro nativo: {status.lastError}</small>}
         {(status.verificationCode || status.peerVerifications.length > 0) && <small>Compare cada Código E2E com o espectador correspondente antes de confiar na sessão.</small>}
       </section>
       <section className="card update-card">

@@ -35,4 +35,5 @@ details { color: #7f899d; font-size: 13px; } summary { cursor: pointer; margin-b
 .metrics > div { display: grid; gap: 4px; padding: 16px 18px; border-right: 1px solid #1b2230; border-bottom: 1px solid #1b2230; overflow: hidden; }
 .metrics span { color: #687386; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; }
 .metrics strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.native-error { display: block; padding: 14px 18px; color: #ff9eaa; background: rgba(183,49,66,.12); }
 @media (max-width: 650px) { .shell { width: min(100% - 24px,940px); } .hero { padding-top: 30px; } .role-picker, .metrics { grid-template-columns: 1fr; } }

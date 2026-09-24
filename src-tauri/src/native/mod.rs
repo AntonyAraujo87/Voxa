@@ -52,6 +52,7 @@ pub struct EngineStatus {
     loss_pct: f32,
     bitrate_kbps: u32,
     received_frames: u64,
+    encoded_frames: u64,
     dropped_frames: u64,
     keyframe_requests: u64,
     renderer: &'static str,
@@ -63,6 +64,7 @@ pub struct EngineStatus {
     connected_peers: usize,
     max_peers: usize,
     peer_verifications: Vec<PeerVerification>,
+    last_error: Option<String>,
 }
 
 impl Default for EngineStatus {
@@ -77,6 +79,7 @@ impl Default for EngineStatus {
             loss_pct: 0.0,
             bitrate_kbps: 12_000,
             received_frames: 0,
+            encoded_frames: 0,
             dropped_frames: 0,
             keyframe_requests: 0,
             renderer: "closed",
@@ -88,6 +91,7 @@ impl Default for EngineStatus {
             connected_peers: 0,
             max_peers: 4,
             peer_verifications: Vec::new(),
+            last_error: None,
         }
     }
 }
@@ -320,7 +324,7 @@ pub async fn engine_connect_peer(
                 return Err(error);
             }
         };
-        let pipeline = viewer::spawn(control.handle(), engine.inner.clone(), hwnd);
+        let pipeline = viewer::spawn(control.handle(), engine.inner.clone(), app.clone(), hwnd);
         control.attach_native_thread(pipeline);
     }
     let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
