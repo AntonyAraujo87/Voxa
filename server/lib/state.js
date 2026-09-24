@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export const DEFAULT_MAX_VIEWERS = 4;
 
@@ -23,11 +23,18 @@ export class StreamRegistry {
 
   get(socketId) { return this.#clients.get(socketId); }
 
-  join(socketId, roomId, role, endpoint, localEndpoint, publicKey) {
+  authorize(roomId, roomProof) {
+    if (!validRoomProof(roomProof)) return false;
+    const existing = this.#rooms.get(roomId);
+    return !existing || safeProof(existing.proof, roomProof);
+  }
+
+  join(socketId, roomId, role, endpoint, localEndpoint, publicKey, roomProof) {
     const client = this.#clients.get(socketId);
     if (!client) return { error: "nao-identificado" };
+    if (!this.authorize(roomId, roomProof)) return { error: "Senha da sala incorreta" };
     let room = this.#rooms.get(roomId);
-    if (!room) room = { host: null, viewers: new Set() };
+    if (!room) room = { host: null, viewers: new Set(), proof: roomProof };
 
     if (role === "host") {
       if (room.host && room.host !== socketId) return { error: "Esta sala ja possui um host" };
@@ -88,6 +95,15 @@ export class StreamRegistry {
 }
 
 function randomRelaySession() { return randomBytes(8).toString("hex"); }
+
+function validRoomProof(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function safeProof(left, right) {
+  if (!validRoomProof(left) || !validRoomProof(right)) return false;
+  return timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
+}
 
 function relayAuth(secret, session, role) {
   return createHmac("sha256", secret)

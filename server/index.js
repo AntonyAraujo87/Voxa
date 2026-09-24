@@ -26,7 +26,6 @@ import {
   clientIp,
   observedClientIp,
   requestIp,
-  safeEqual,
 } from "./lib/security.js";
 
 const PORT = Number(process.env.PORT || 3001);
@@ -46,12 +45,6 @@ if ((RELAY_PUBLIC_ENDPOINT || RELAY_PORT > 0) && RELAY_SECRET.length < 32) {
 }
 
 /**
- * Senha da sala. Sem ela, qualquer um que descubra o endereco entra e escuta.
- * Vazio = servidor aberto, aceitavel apenas em localhost.
- */
-const TOKEN = process.env.VOXA_TOKEN || "";
-
-/**
  * Logs deliberadamente pobres.
  *
  * O servidor ve endpoints UDP, ids de sala e ids efemeros de dispositivos.
@@ -63,8 +56,6 @@ const log = {
   info: (...a) => console.log("[voxa]", ...a),
   warn: (...a) => console.warn("[voxa]", ...a),
 };
-
-if (!TOKEN) log.warn("AVISO: rodando sem VOXA_TOKEN — servidor aberto.");
 
 const registry = new StreamRegistry(RELAY_PUBLIC_ENDPOINT, RELAY_SECRET, MAX_VIEWERS);
 const limiter = new RateLimiter();
@@ -122,19 +113,11 @@ io.use((socket, next) => {
     return next(new Error("limite de conexoes"));
   }
 
-  // Caminho novo: token no handshake, rejeitado antes de abrir o socket.
-  // Caminho antigo (app ja instalado): token vem no evento `hello`.
-  const enviado = socket.handshake.auth?.token;
-  if (TOKEN && typeof enviado === "string" && enviado.length > 0) {
-    if (!safeEqual(enviado, TOKEN)) return next(new Error("nao autorizado"));
-    socket.data.authed = true;
-  }
-
   next();
 });
 
 io.on("connection", (socket) => {
-  registerHandlers({ io, socket, registry, limiter, token: TOKEN, log });
+  registerHandlers({ io, socket, registry, limiter, log });
 });
 
 /* ------------------------------ manutencao -------------------------------- */
@@ -146,7 +129,7 @@ sweeper.unref?.();
 
 httpServer.listen(PORT, () => {
   log.info(`ws://localhost:${PORT} (health: /health)`);
-  log.info(`protegido por token: ${TOKEN ? "sim" : "NAO"}`);
+  log.info("salas protegidas por credencial efemera: sim");
 });
 
 for (const sig of ["SIGINT", "SIGTERM"]) {

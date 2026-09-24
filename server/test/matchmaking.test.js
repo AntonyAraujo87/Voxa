@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { StreamRegistry } from "../lib/state.js";
 
+const ROOM_PROOF = "a".repeat(64);
 const join = (registry, id, role, port, key = id[0]) =>
-  registry.join(id, "game", role, `203.0.113.${port % 200 + 1}:${port}`, `192.168.1.${port % 200 + 1}:${port}`, key.repeat(43));
+  registry.join(id, "game", role, `203.0.113.${port % 200 + 1}:${port}`, `192.168.1.${port % 200 + 1}:${port}`, key.repeat(43), ROOM_PROOF);
 
 test("pairs one host with four viewers and keeps public keys isolated", () => {
   const registry = new StreamRegistry();
@@ -34,6 +35,15 @@ test("rejects a second host and deletes empty rooms", () => {
   assert.match(join(registry, "b", "host", 4001, "b").error, /host/);
   registry.remove("a");
   assert.equal(registry.summary().streamRooms, 0);
+});
+
+test("isolates a room by password proof without exposing it to peers", () => {
+  const registry = new StreamRegistry();
+  registry.identify("host", "203.0.113.10"); registry.identify("viewer", "203.0.113.11");
+  assert.equal(join(registry, "host", "host", 41000, "h").error, undefined);
+  const rejected = registry.join("viewer", "game", "viewer", "203.0.113.11:42000", "192.168.1.11:42000", "v".repeat(43), "b".repeat(64));
+  assert.match(rejected.error, /Senha da sala/);
+  assert.equal(registry.get("viewer").room, null);
 });
 
 test("leaving one viewer preserves the other pairings", () => {

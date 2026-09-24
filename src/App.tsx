@@ -22,7 +22,7 @@ export default function App() {
   const engine = useMemo(() => new NativeEngine(), []);
   const [serverUrl, setServerUrl] = useState(DEFAULT_SIGNALING);
   const [room, setRoom] = useState(() => localStorage.getItem("voxa-room") ?? randomRoom());
-  const [token, setToken] = useState("");
+  const [roomPassword, setRoomPassword] = useState("");
   const [role, setRole] = useState<StreamRole>("viewer");
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
   const [message, setMessage] = useState("Pronto para conectar");
@@ -30,6 +30,7 @@ export default function App() {
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [updateMessage, setUpdateMessage] = useState("Verificar atualização");
   const roomValid = /^[a-zA-Z0-9._:-]{1,64}$/.test(room);
+  const passwordValid = roomPassword.length >= 4 && roomPassword.length <= 128;
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -92,15 +93,16 @@ export default function App() {
 
   async function connect(event: FormEvent) {
     event.preventDefault();
-    if (!roomValid || busy) return;
+    if (!roomValid || !passwordValid || busy) return;
     setBusy(true);
     setMessage("Abrindo o socket UDP nativo...");
     let matchmaking: Matchmaking | null = null;
     try {
-      localStorage.setItem("voxa-room", room.trim());
+      const roomId = room.trim();
+      const roomProof = await deriveRoomProof(roomId, roomPassword);
+      localStorage.setItem("voxa-room", roomId);
       const endpoint = await engine.prepare(role);
       matchmaking = new Matchmaking(serverUrl, {
-        token,
         onPeer: async (peer: PeerAnnouncement) => {
           setMessage("Perfurando o NAT e autenticando o par...");
           await engine.connectPeer(peer);
@@ -113,7 +115,7 @@ export default function App() {
           } else {
             setMessage("O host desconectou. Renovando as chaves...");
             const refreshed = await engine.prepare(role);
-            if (matchmaking) await matchmaking.join(room.trim(), role, refreshed);
+            if (matchmaking) await matchmaking.join(roomId, role, refreshed, roomProof);
           }
         },
         onCapacity: (maxViewers) => engine.setMaxPeers(maxViewers),
@@ -121,7 +123,7 @@ export default function App() {
         refreshEndpoint: (reconnectingRole) => engine.prepare(reconnectingRole),
       });
       engine.attachMatchmaking(matchmaking);
-      await matchmaking.join(room.trim(), role, endpoint);
+      await matchmaking.join(roomId, role, endpoint, roomProof);
       setMessage(role === "host" ? "Aguardando espectador..." : "Procurando o computador host...");
       setStatus(await engine.status());
     } catch (error) {
@@ -165,14 +167,14 @@ export default function App() {
             </button>
           </div>
           <label>Código da sala<input value={room} onChange={(event) => setRoom(event.target.value)} maxLength={64} pattern="[a-zA-Z0-9._:-]+" title="Use letras, números, ponto, dois-pontos, hífen ou sublinhado" placeholder="ex.: sala-do-jogo" disabled={active} /></label>
-          <label>Chave de acesso do servidor<input value={token} onChange={(event) => setToken(event.target.value)} type="password" maxLength={256} placeholder="A mesma configurada no Render" disabled={active} /></label>
+          <label>Senha da sala<input value={roomPassword} onChange={(event) => setRoomPassword(event.target.value)} type="password" minLength={4} maxLength={128} autoComplete="new-password" placeholder="A mesma senha nos dois computadores" disabled={active} /></label>
           <details>
             <summary>Servidor de matchmaking</summary>
             <label>URL<input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} inputMode="url" disabled={active} /></label>
           </details>
           {active
             ? <><button className="primary" type="button" onClick={() => void engine.toggleFullscreen().catch((error) => setMessage(String(error)))} disabled={busy || role !== "viewer"}>Tela cheia</button><button className="primary danger" type="button" onClick={stop} disabled={busy}>Encerrar</button></>
-            : <button className="primary" type="submit" disabled={busy || !roomValid}>{busy ? "Conectando..." : role === "host" ? "Começar transmissão" : "Conectar ao host"}</button>}
+            : <button className="primary" type="submit" disabled={busy || !roomValid || !passwordValid}>{busy ? "Conectando..." : role === "host" ? "Começar transmissão" : "Conectar ao host"}</button>}
         </form>
       </section>
       <section className="telemetry" aria-live="polite">
@@ -207,4 +209,10 @@ function randomRoom() {
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+async function deriveRoomProof(room: string, password: string) {
+  const material = new TextEncoder().encode(`voxa-room-v1\0${room}\0${password}`);
+  const digest = await crypto.subtle.digest("SHA-256", material);
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
 }

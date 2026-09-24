@@ -10,7 +10,6 @@ Variáveis necessárias:
 
 | Variável | Uso |
 |---|---|
-| `VOXA_TOKEN` | Senha do serviço, digitada no painel |
 | `TRUST_PROXY=1` | Usa o último IP de `X-Forwarded-For` atrás do Render |
 | `ORIGIN` | Origem permitida para o Socket.IO |
 | `VITE_SIGNALING_URL` | URL WSS gravada no painel durante o build |
@@ -19,6 +18,11 @@ Variáveis necessárias:
 
 Execute `node scripts/check-deployment.mjs` depois do deploy. O health não expõe
 salas, IPs, endpoints ou chaves.
+
+A senha escolhida no aplicativo pertence somente à sala. O cliente envia um
+proof SHA-256 vinculado ao ID da sala e o processo do Render o mantém apenas em
+memória enquanto houver participantes. Não configure nem distribua uma senha
+global do signaling.
 
 ## UDP e NAT
 

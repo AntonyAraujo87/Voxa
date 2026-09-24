@@ -55,7 +55,7 @@ test("HTTP real responde 429 no limite e health nao revela ocupacao", async () =
 });
 
 test("flood de transportes sem Socket.IO hello e bloqueado antes da autenticacao", { timeout: 15000 }, async () => {
-  const child = spawn(process.execPath, ["server/index.js"], { env: { ...process.env, PORT: "3302", VOXA_TOKEN: "local-only", TRUST_PROXY: "0" }, stdio: "ignore", windowsHide: true });
+  const child = spawn(process.execPath, ["server/index.js"], { env: { ...process.env, PORT: "3302", TRUST_PROXY: "0" }, stdio: "ignore", windowsHide: true });
   const sockets = [];
   const open = () => new Promise(resolve => {
     const socket = new WebSocket("ws://127.0.0.1:3302/socket.io/?EIO=4&transport=websocket");

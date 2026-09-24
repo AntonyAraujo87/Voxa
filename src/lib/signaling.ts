@@ -12,7 +12,6 @@ export interface PeerAnnouncement {
 }
 
 interface Options {
-  token: string;
   onPeer: (peer: PeerAnnouncement) => void | Promise<void>;
   onPeerLeft: (peerId: string) => void | Promise<void>;
   onCapacity: (maxViewers: number) => void | Promise<void>;
@@ -24,7 +23,7 @@ type Ack = { ok?: boolean; error?: string; peers?: PeerAnnouncement[]; maxViewer
 
 export class Matchmaking {
   private readonly socket: Socket;
-  private desired: { room: string; role: StreamRole; endpoint: PreparedEndpoint } | null = null;
+  private desired: { room: string; role: StreamRole; endpoint: PreparedEndpoint; roomProof: string } | null = null;
   private rejoinArmed = false;
   private closed = false;
   constructor(url: string, private readonly options: Options) {
@@ -33,7 +32,6 @@ export class Matchmaking {
       reconnection: true,
       reconnectionDelay: 500,
       reconnectionDelayMax: 5_000,
-      auth: { token: options.token },
     });
     this.socket.on("stream:peer", (peer: PeerAnnouncement) => {
       void Promise.resolve(options.onPeer(peer)).catch((error) => options.onError(messageOf(error)));
@@ -54,20 +52,21 @@ export class Matchmaking {
     });
   }
 
-  async join(room: string, role: StreamRole, endpoint: PreparedEndpoint) {
-    this.desired = { room, role, endpoint };
+  async join(room: string, role: StreamRole, endpoint: PreparedEndpoint, roomProof: string) {
+    this.desired = { room, role, endpoint, roomProof };
     await this.performJoin(this.desired);
     this.rejoinArmed = true;
   }
 
-  private async performJoin({ room, role, endpoint }: { room: string; role: StreamRole; endpoint: PreparedEndpoint }) {
-    await this.emit("hello", { token: this.options.token });
+  private async performJoin({ room, role, endpoint, roomProof }: { room: string; role: StreamRole; endpoint: PreparedEndpoint; roomProof: string }) {
+    await this.emit("hello", {});
     const response = await this.emit("stream:join", {
       room,
       role,
       endpoint: endpoint.public ?? endpoint.local,
       localEndpoint: endpoint.local,
       publicKey: endpoint.publicKey,
+      roomProof,
     });
     await this.options.onCapacity(response.maxViewers ?? 4);
     for (const peer of response.peers ?? []) await this.options.onPeer(peer);
