@@ -15,6 +15,7 @@ use windows::Win32::Graphics::Direct3D11::D3D11_TEXTURE2D_DESC;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
 const FPS: u32 = 60;
+const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / FPS as u64);
 
 pub(super) fn spawn(
     transport: HostTransportHandle,
@@ -100,14 +101,28 @@ fn run_device_session(
     let started = Instant::now();
     let duration_100ns = 10_000_000i64 / FPS as i64;
     let mut frame_id = 1u64;
+    let mut next_frame_at = Instant::now();
     while !transport.stopped() {
         if transport.peer_count() == 0 {
             thread::sleep(Duration::from_millis(100));
+            next_frame_at = Instant::now();
             continue;
         }
+        let now = Instant::now();
+        if now < next_frame_at {
+            thread::sleep(next_frame_at - now);
+        }
         let Some(frame) = capture.acquire(20)? else {
+            // Uma tela estatica pode nao produzir frames DXGI. Nao acumular
+            // atraso para depois codificar uma rajada quando ela mudar.
+            next_frame_at = Instant::now();
             continue;
         };
+        let captured_at = Instant::now();
+        next_frame_at += FRAME_INTERVAL;
+        if next_frame_at <= captured_at {
+            next_frame_at = captured_at + FRAME_INTERVAL;
+        }
         let requested = transport.target_bitrate();
         if let Ok(mut inner) = state.lock() {
             inner.status.bitrate_kbps = requested / 1000;

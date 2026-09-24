@@ -6,7 +6,7 @@ use windows::{
     Win32::{
         Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D},
         Media::MediaFoundation::{
-            IMFActivate, IMFDXGIDeviceManager, IMFGetService, IMFMediaEventGenerator, IMFMediaType,
+            IMFActivate, IMFDXGIBuffer, IMFDXGIDeviceManager, IMFMediaEventGenerator, IMFMediaType,
             IMFTransform, METransformHaveOutput, METransformNeedInput, MFCreateDXGIDeviceManager,
             MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFShutdown,
             MFStartup, MFTEnumEx, MFVideoFormat_H264, MFVideoFormat_NV12,
@@ -18,7 +18,7 @@ use windows::{
             MF_EVENT_FLAG_NO_WAIT, MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_NEED_MORE_INPUT,
             MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
             MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
-            MF_VERSION, MR_BUFFER_SERVICE,
+            MF_VERSION,
         },
         System::Com::CoTaskMemFree,
     },
@@ -46,6 +46,13 @@ pub struct HardwareH264Decoder {
     activation: IMFActivate,
     events: Option<IMFMediaEventGenerator>,
     _runtime: MediaFoundation,
+}
+
+/// Superficie produzida pelo decoder. Decoders D3D11 normalmente usam uma
+/// textura-array como pool; o frame valido nem sempre ocupa o slice zero.
+pub struct DecodedSurface {
+    pub texture: ID3D11Texture2D,
+    pub subresource_index: u32,
 }
 
 impl HardwareH264Decoder {
@@ -119,7 +126,7 @@ impl HardwareH264Decoder {
         bytes: &[u8],
         timestamp_100ns: i64,
         duration_100ns: i64,
-    ) -> Result<Option<ID3D11Texture2D>, String> {
+    ) -> Result<Option<DecodedSurface>, String> {
         if bytes.is_empty() {
             return Ok(None);
         }
@@ -172,14 +179,22 @@ impl HardwareH264Decoder {
                     return Err(format!("Saída NV12 do decoder: {error}"));
                 }
                 let sample = sample.ok_or("Decoder não retornou amostra NV12")?;
-                let service: IMFGetService = sample
+                let buffer: IMFDXGIBuffer = sample
                     .GetBufferByIndex(0)
                     .and_then(|buffer| buffer.cast())
                     .map_err(|e| format!("Buffer DXGI decodificado: {e}"))?;
-                return service
-                    .GetService::<ID3D11Texture2D>(&MR_BUFFER_SERVICE)
-                    .map(Some)
-                    .map_err(|e| format!("Textura NV12 decodificada: {e}"));
+                let mut resource = ptr::null_mut();
+                buffer
+                    .GetResource(&ID3D11Texture2D::IID, &mut resource)
+                    .map_err(|e| format!("Textura NV12 decodificada: {e}"))?;
+                let texture = ID3D11Texture2D::from_raw(resource);
+                let subresource_index = buffer
+                    .GetSubresourceIndex()
+                    .map_err(|e| format!("Slice NV12 decodificado: {e}"))?;
+                return Ok(Some(DecodedSurface {
+                    texture,
+                    subresource_index,
+                }));
             }
             Err("Decoder mudou de formato repetidamente".into())
         }

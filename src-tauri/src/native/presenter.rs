@@ -119,7 +119,11 @@ impl NativePresenter {
         }
     }
 
-    pub fn present(&mut self, nv12: &ID3D11Texture2D) -> Result<(), String> {
+    pub fn present(
+        &mut self,
+        nv12: &ID3D11Texture2D,
+        subresource_index: u32,
+    ) -> Result<(), String> {
         unsafe {
             if !self.resize_if_needed()? {
                 return Ok(());
@@ -130,7 +134,7 @@ impl NativePresenter {
                 Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
                     Texture2D: D3D11_TEX2D_VPIV {
                         MipSlice: 0,
-                        ArraySlice: 0,
+                        ArraySlice: subresource_index,
                     },
                 },
             };

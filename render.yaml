@@ -13,8 +13,6 @@ services:
     startCommand: node index.js
     healthCheckPath: /health
     envVars:
-      - key: VOXA_TOKEN
-        generateValue: true   # compartilhar com convidados; digitada no login, nunca no bundle
       - key: TRUST_PROXY
         value: "1"  # somente atras do proxy confiavel do Render
       - key: ORIGIN

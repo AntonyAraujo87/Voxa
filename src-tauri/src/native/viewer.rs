@@ -142,7 +142,7 @@ fn run_session(
             }
         };
         if let Some(texture) = texture {
-            presenter.present(&texture)?;
+            presenter.present(&texture.texture, texture.subresource_index)?;
             if let Ok(mut inner) = state.lock() {
                 inner.status.decoded_frames += 1;
                 inner.status.renderer = "d3d11-swapchain";

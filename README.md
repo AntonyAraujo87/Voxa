@@ -65,7 +65,7 @@ estiver instalado. O teste local executa o núcleo nativo; os testes que ligam o
 runtime Tauri rodam no CI com MSVC porque o linker GNU mistura manifests do PE.
 O CI usa a imagem fixa `windows-2025` e também valida Rust com Clippy.
 
-Copie `.env.example` para `.env`. A chave de acesso do servidor é digitada no painel e nunca
+Copie `.env.example` para `.env`. A senha da sala é digitada no painel e nunca
 deve entrar em uma variável `VITE_*`.
 
 ## Limitações de rede

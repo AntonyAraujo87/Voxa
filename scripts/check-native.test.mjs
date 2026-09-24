@@ -86,3 +86,10 @@ test('decoder renegocia NV12 quando o Media Foundation muda o formato', () => {
   assert.match(source, /GetOutputAvailableType\(0, index\)/);
   assert.match(source, /SetOutputType\(0, &candidate, 0\)/);
 });
+
+test('presenter usa o subrecurso DXGI devolvido pelo decoder', () => {
+  const decoder = readFileSync(new URL('../src-tauri/src/native/decoder.rs', import.meta.url), 'utf8');
+  const presenter = readFileSync(new URL('../src-tauri/src/native/presenter.rs', import.meta.url), 'utf8');
+  assert.match(decoder, /GetSubresourceIndex\(\)/);
+  assert.match(presenter, /ArraySlice:\s*subresource_index/);
+});
