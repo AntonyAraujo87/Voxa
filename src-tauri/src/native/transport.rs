@@ -26,6 +26,7 @@ pub struct TransportControl {
     force_keyframe: Arc<AtomicBool>,
     request_remote_keyframe: Arc<AtomicBool>,
     bitrate_bps: Arc<AtomicU32>,
+    assigned_tier: Arc<AtomicU32>,
     tasks: Vec<JoinHandle<()>>,
     native_thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -40,6 +41,7 @@ pub struct TransportHandle {
     force_keyframe: Arc<AtomicBool>,
     request_remote_keyframe: Arc<AtomicBool>,
     bitrate_bps: Arc<AtomicU32>,
+    assigned_tier: Arc<AtomicU32>,
 }
 
 #[derive(Clone)]
@@ -97,16 +99,46 @@ impl DatagramHub {
 #[derive(Clone, Default)]
 pub struct HostTransportHandle {
     peers: Arc<Mutex<HashMap<String, TransportHandle>>>,
-    config: Arc<Mutex<Option<StreamConfig>>>,
+    configs: Arc<Mutex<HashMap<VideoTier, StreamConfig>>>,
     force_keyframe: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VideoTier {
+    Low,
+    High,
+}
+
+impl VideoTier {
+    fn for_bitrate(bitrate: u32) -> Self {
+        if bitrate < 4_000_000 {
+            Self::Low
+        } else {
+            Self::High
+        }
+    }
+
+    fn code(self) -> u32 {
+        match self {
+            Self::Low => 1,
+            Self::High => 2,
+        }
+    }
+}
+
 impl HostTransportHandle {
     pub fn add(&self, peer_id: String, handle: TransportHandle) {
-        if let Some(config) = self.config.lock().ok().and_then(|config| *config) {
+        let tier = VideoTier::for_bitrate(handle.target_bitrate());
+        if let Some(config) = self
+            .configs
+            .lock()
+            .ok()
+            .and_then(|configs| configs.get(&tier).copied())
+        {
             handle.queue_config(config);
         }
+        handle.assigned_tier.store(tier.code(), Ordering::Release);
         if let Ok(mut peers) = self.peers.lock() {
             peers.insert(peer_id, handle);
         }
@@ -122,9 +154,6 @@ impl HostTransportHandle {
             peers.clear();
         }
     }
-    pub fn peer_count(&self) -> usize {
-        self.peers.lock().map(|peers| peers.len()).unwrap_or(0)
-    }
     pub fn stopped(&self) -> bool {
         self.stop.load(Ordering::Acquire)
     }
@@ -132,23 +161,43 @@ impl HostTransportHandle {
         self.stop.store(true, Ordering::Release);
         self.clear();
     }
-    pub fn queue_video(&self, frame: EncodedFrame) -> bool {
+    pub fn queue_video(&self, tier: VideoTier, frame: EncodedFrame) -> bool {
+        let config = self
+            .configs
+            .lock()
+            .ok()
+            .and_then(|configs| configs.get(&tier).copied());
         let handles = self
             .peers
             .lock()
             .map(|peers| peers.values().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
         handles.into_iter().fold(false, |dropped, handle| {
+            if VideoTier::for_bitrate(handle.target_bitrate()) != tier {
+                return dropped;
+            }
+            let changed = handle.assigned_tier.swap(tier.code(), Ordering::AcqRel) != tier.code();
+            if changed {
+                if let Some(config) = config {
+                    handle.queue_config(config);
+                }
+                self.force_keyframe.store(true, Ordering::Release);
+                if !frame.keyframe {
+                    return true;
+                }
+            }
             dropped | handle.queue_video(frame.clone())
         })
     }
-    pub fn queue_config(&self, config: StreamConfig) {
-        if let Ok(mut current) = self.config.lock() {
-            *current = Some(config);
+    pub fn queue_config(&self, tier: VideoTier, config: StreamConfig) {
+        if let Ok(mut current) = self.configs.lock() {
+            current.insert(tier, config);
         }
         if let Ok(peers) = self.peers.lock() {
             for handle in peers.values() {
-                handle.queue_config(config);
+                if VideoTier::for_bitrate(handle.target_bitrate()) == tier {
+                    handle.queue_config(config);
+                }
             }
         }
     }
@@ -160,12 +209,21 @@ impl HostTransportHandle {
                 .map(|peers| peers.values().any(TransportHandle::take_keyframe_request))
                 .unwrap_or(false)
     }
-    pub fn target_bitrate(&self) -> u32 {
-        self.peers
-            .lock()
-            .ok()
-            .and_then(|peers| peers.values().map(TransportHandle::target_bitrate).min())
-            .unwrap_or(12_000_000)
+    pub fn active_tiers(&self) -> Vec<(VideoTier, u32)> {
+        let Ok(peers) = self.peers.lock() else {
+            return Vec::new();
+        };
+        [VideoTier::Low, VideoTier::High]
+            .into_iter()
+            .filter_map(|tier| {
+                peers
+                    .values()
+                    .filter(|handle| VideoTier::for_bitrate(handle.target_bitrate()) == tier)
+                    .map(TransportHandle::target_bitrate)
+                    .min()
+                    .map(|bitrate| (tier, bitrate))
+            })
+            .collect()
     }
 }
 
@@ -276,6 +334,7 @@ impl TransportControl {
             force_keyframe: self.force_keyframe.clone(),
             request_remote_keyframe: self.request_remote_keyframe.clone(),
             bitrate_bps: self.bitrate_bps.clone(),
+            assigned_tier: self.assigned_tier.clone(),
         }
     }
     pub fn attach_native_thread(&mut self, thread: std::thread::JoinHandle<()>) {
@@ -361,6 +420,7 @@ pub async fn spawn_receiver(
     let force_keyframe = Arc::new(AtomicBool::new(false));
     let request_remote_keyframe = Arc::new(AtomicBool::new(false));
     let bitrate_bps = Arc::new(AtomicU32::new(12_000_000));
+    let assigned_tier = Arc::new(AtomicU32::new(0));
     // Feedback pertence a este par. Guardar RTT/perda apenas no status global
     // fazia um espectador lento reduzir (ou acelerar) os demais transportes.
     let feedback_rtt_ms = Arc::new(AtomicU32::new(0));
@@ -820,6 +880,7 @@ pub async fn spawn_receiver(
         force_keyframe,
         request_remote_keyframe,
         bitrate_bps,
+        assigned_tier,
         tasks: vec![receiver, video_sender, heartbeat],
         native_thread: None,
     })
