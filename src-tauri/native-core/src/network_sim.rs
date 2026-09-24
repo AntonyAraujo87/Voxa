@@ -45,7 +45,10 @@ fn keyframe_survives_jitter_and_one_loss_per_fec_group() {
             .unwrap()
             .or(completed);
     }
-    assert_eq!(completed.expect("FEC deve completar o frame").bytes, original);
+    assert_eq!(
+        completed.expect("FEC deve completar o frame").bytes,
+        original
+    );
 }
 
 #[test]

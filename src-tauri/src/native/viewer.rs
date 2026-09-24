@@ -1,5 +1,5 @@
 use super::{
-    decoder::HardwareVideoDecoder, presenter::NativePresenter, renderer,
+    audio, decoder::HardwareVideoDecoder, presenter::NativePresenter, renderer,
     transport::TransportHandle, Inner,
 };
 use std::{
@@ -40,9 +40,10 @@ fn run(transport: TransportHandle, state: Arc<Mutex<Inner>>, app: AppHandle, hwn
         return;
     }
     let _apartment = ComApartment;
+    let audio = audio::spawn_playback(transport.clone(), state.clone());
     while !transport.stopped() {
         match run_session(&transport, &state, &app, hwnd) {
-            Ok(()) => return,
+            Ok(()) => break,
             Err(error) => {
                 fail(&state, "recovering", &error);
                 renderer::set_title(&app, "Voxa Stream — recuperando decoder");
@@ -50,6 +51,7 @@ fn run(transport: TransportHandle, state: Arc<Mutex<Inner>>, app: AppHandle, hwn
             }
         }
     }
+    let _ = audio.join();
 }
 
 fn run_session(

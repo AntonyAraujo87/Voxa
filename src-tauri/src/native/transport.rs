@@ -1,6 +1,6 @@
 use super::{Inner, StreamRole};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -21,6 +21,8 @@ pub struct TransportControl {
     stop: Arc<AtomicBool>,
     outgoing: Arc<Mutex<Option<EncodedFrame>>>,
     incoming: Arc<Mutex<Option<EncodedFrame>>>,
+    outgoing_audio: Arc<Mutex<VecDeque<AudioPacket>>>,
+    incoming_audio: Arc<Mutex<VecDeque<AudioPacket>>>,
     outgoing_config: Arc<Mutex<Option<StreamConfig>>>,
     incoming_config: Arc<Mutex<Option<StreamConfig>>>,
     force_keyframe: Arc<AtomicBool>,
@@ -44,6 +46,8 @@ pub struct TransportHandle {
     stop: Arc<AtomicBool>,
     outgoing: Arc<Mutex<Option<EncodedFrame>>>,
     incoming: Arc<Mutex<Option<EncodedFrame>>>,
+    outgoing_audio: Arc<Mutex<VecDeque<AudioPacket>>>,
+    incoming_audio: Arc<Mutex<VecDeque<AudioPacket>>>,
     outgoing_config: Arc<Mutex<Option<StreamConfig>>>,
     incoming_config: Arc<Mutex<Option<StreamConfig>>>,
     force_keyframe: Arc<AtomicBool>,
@@ -262,6 +266,13 @@ impl HostTransportHandle {
             .map(|((tier, codec), bitrate)| (tier, codec, bitrate))
             .collect()
     }
+    pub fn queue_audio(&self, packet: AudioPacket) {
+        if let Ok(peers) = self.peers.lock() {
+            for handle in peers.values() {
+                handle.queue_audio(packet.clone());
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -271,6 +282,12 @@ pub struct EncodedFrame {
     pub keyframe: bool,
     // O bitstream e imutavel. Arc evita copiar um frame H.264 inteiro para
     // cada espectador no fanout do host.
+    pub bytes: Arc<Vec<u8>>,
+}
+
+#[derive(Clone)]
+pub struct AudioPacket {
+    pub timestamp_us: u64,
     pub bytes: Arc<Vec<u8>>,
 }
 
@@ -366,6 +383,8 @@ impl TransportControl {
             stop: self.stop.clone(),
             outgoing: self.outgoing.clone(),
             incoming: self.incoming.clone(),
+            outgoing_audio: self.outgoing_audio.clone(),
+            incoming_audio: self.incoming_audio.clone(),
             outgoing_config: self.outgoing_config.clone(),
             incoming_config: self.incoming_config.clone(),
             force_keyframe: self.force_keyframe.clone(),
@@ -400,6 +419,20 @@ impl TransportHandle {
     }
     pub fn take_video(&self) -> Option<EncodedFrame> {
         self.incoming.lock().ok().and_then(|mut slot| slot.take())
+    }
+    pub fn queue_audio(&self, packet: AudioPacket) {
+        if let Ok(mut queue) = self.outgoing_audio.lock() {
+            if queue.len() >= 4 {
+                queue.pop_front();
+            }
+            queue.push_back(packet);
+        }
+    }
+    pub fn take_audio(&self) -> Option<AudioPacket> {
+        self.incoming_audio
+            .lock()
+            .ok()
+            .and_then(|mut queue| queue.pop_front())
     }
 
     pub fn take_keyframe_request(&self) -> bool {
@@ -457,6 +490,8 @@ pub async fn spawn_receiver(
     let sequence = Arc::new(AtomicU64::new(1));
     let outgoing = Arc::new(Mutex::new(None::<EncodedFrame>));
     let incoming = Arc::new(Mutex::new(None::<EncodedFrame>));
+    let outgoing_audio = Arc::new(Mutex::new(VecDeque::<AudioPacket>::with_capacity(4)));
+    let incoming_audio = Arc::new(Mutex::new(VecDeque::<AudioPacket>::with_capacity(8)));
     let outgoing_config = Arc::new(Mutex::new(None::<StreamConfig>));
     let incoming_config = Arc::new(Mutex::new(None::<StreamConfig>));
     let force_keyframe = Arc::new(AtomicBool::new(false));
@@ -488,6 +523,7 @@ pub async fn spawn_receiver(
     let recv_state = state.clone();
     let recv_force_keyframe = force_keyframe.clone();
     let recv_incoming = incoming.clone();
+    let recv_audio = incoming_audio.clone();
     let recv_config = incoming_config.clone();
     let recv_feedback_rtt = feedback_rtt_ms.clone();
     let recv_feedback_loss = feedback_loss_bits.clone();
@@ -681,6 +717,19 @@ pub async fn spawn_receiver(
                                     }
                                 }
                             }
+                            Kind::Audio => {
+                                if packet.payload.len() <= protocol::MAX_PAYLOAD {
+                                    if let Ok(mut queue) = recv_audio.lock() {
+                                        if queue.len() >= 8 {
+                                            queue.pop_front();
+                                        }
+                                        queue.push_back(AudioPacket {
+                                            timestamp_us: packet.meta.timestamp_us,
+                                            bytes: Arc::new(packet.payload),
+                                        });
+                                    }
+                                }
+                            }
                             Kind::Input => { /* Input permanece desativado até consentimento local explícito. */
                             }
                             Kind::Pong => {}
@@ -858,6 +907,44 @@ pub async fn spawn_receiver(
         }
     });
 
+    // Áudio tem um transmissor próprio. Um keyframe grande pode ocupar dezenas
+    // de milissegundos no sender de vídeo e não deve causar estalos no som.
+    let audio_route = route.clone();
+    let audio_stop = stop.clone();
+    let audio_sequence = sequence.clone();
+    let audio_outgoing = outgoing_audio.clone();
+    let audio_state = state.clone();
+    let audio_sender = tauri::async_runtime::spawn(async move {
+        while !audio_stop.load(Ordering::Acquire) {
+            let packet = audio_outgoing
+                .lock()
+                .ok()
+                .and_then(|mut queue| queue.pop_front());
+            let Some(packet) = packet else {
+                time::sleep(Duration::from_millis(1)).await;
+                continue;
+            };
+            if send(
+                &audio_route,
+                &send_key,
+                Kind::Audio,
+                Meta {
+                    stream_id,
+                    sequence: audio_sequence.fetch_add(1, Ordering::Relaxed),
+                    timestamp_us: packet.timestamp_us,
+                    ..Default::default()
+                },
+                &packet.bytes,
+            )
+            .await
+            .is_err()
+            {
+                audio_route.reset();
+                mark_failed(&audio_state);
+            }
+        }
+    });
+
     let ping_route = route;
     let ping_stop = stop.clone();
     let ping_sequence = sequence;
@@ -918,6 +1005,8 @@ pub async fn spawn_receiver(
         stop,
         outgoing,
         incoming,
+        outgoing_audio,
+        incoming_audio,
         outgoing_config,
         incoming_config,
         force_keyframe,
@@ -925,7 +1014,7 @@ pub async fn spawn_receiver(
         bitrate_bps,
         peer_codecs,
         assigned_tier,
-        tasks: vec![receiver, video_sender, heartbeat],
+        tasks: vec![receiver, video_sender, audio_sender, heartbeat],
         native_thread: None,
     })
 }

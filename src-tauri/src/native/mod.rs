@@ -1,6 +1,8 @@
 mod transport;
 
 #[cfg(target_os = "windows")]
+mod audio;
+#[cfg(target_os = "windows")]
 pub mod capture;
 #[cfg(target_os = "windows")]
 pub mod converter;
@@ -107,6 +109,7 @@ pub struct EngineStatus {
     capture: &'static str,
     encoder: &'static str,
     decoder: &'static str,
+    audio: &'static str,
     decoded_frames: u64,
     verification_code: Option<String>,
     connected_peers: usize,
@@ -135,6 +138,7 @@ impl Default for EngineStatus {
             capture: "idle",
             encoder: "idle",
             decoder: "idle",
+            audio: "idle",
             decoded_frames: 0,
             verification_code: None,
             connected_peers: 0,
@@ -163,6 +167,7 @@ struct Inner {
     transports: HashMap<String, TransportControl>,
     host_fanout: HostTransportHandle,
     host_pipeline: Option<std::thread::JoinHandle<()>>,
+    host_audio: Option<std::thread::JoinHandle<()>>,
     verification_codes: HashMap<String, String>,
     peer_metrics: HashMap<String, PeerMetric>,
     key_exchange: Option<protocol::EphemeralKey>,
@@ -411,6 +416,12 @@ pub async fn engine_connect_peer(
                 capture_target,
             ));
         }
+        if inner.host_audio.is_none() {
+            inner.host_audio = Some(audio::spawn_capture(
+                inner.host_fanout.clone(),
+                engine.inner.clone(),
+            ));
+        }
     } else {
         let hwnd = match renderer::open(&app).and_then(|_| renderer::hwnd(&app)) {
             Ok(hwnd) => hwnd.0 as isize,
@@ -533,7 +544,7 @@ fn refresh_peer_list(inner: &mut Inner) {
 
 #[tauri::command]
 pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Result<(), String> {
-    let (controls, datagrams, fanout, pipeline) = {
+    let (controls, datagrams, fanout, pipeline, audio) = {
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
         let controls = std::mem::take(&mut inner.transports)
             .into_values()
@@ -541,9 +552,10 @@ pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Res
         let datagrams = inner.datagrams.take();
         let fanout = inner.host_fanout.clone();
         let pipeline = inner.host_pipeline.take();
+        let audio = inner.host_audio.take();
         *inner = Inner::default();
         inner.status.phase = "stopped";
-        (controls, datagrams, fanout, pipeline)
+        (controls, datagrams, fanout, pipeline, audio)
     };
     fanout.stop();
     if let Some(datagrams) = datagrams {
@@ -554,6 +566,9 @@ pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Res
     }
     if let Some(pipeline) = pipeline {
         let _ = pipeline.join();
+    }
+    if let Some(audio) = audio {
+        let _ = audio.join();
     }
     if let Some(window) = app.get_window("stream") {
         let _ = window.hide();
@@ -605,9 +620,11 @@ mod tests {
             local: "192.168.1.2:40000".into(),
             public: Some("203.0.113.2:50000".into()),
             public_key: "A".repeat(43),
+            codecs: protocol::VideoCodec::H264.bit(),
         })
         .unwrap();
         assert_eq!(json["publicKey"], "A".repeat(43));
+        assert_eq!(json["codecs"], 1);
         assert!(json.get("public_key").is_none());
     }
 }

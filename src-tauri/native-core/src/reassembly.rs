@@ -114,14 +114,17 @@ impl Reassembler {
         if last_fragment_len == 0 || last_fragment_len > crate::protocol::FEC_DATA_PAYLOAD {
             return Err("Comprimento FEC inválido".into());
         }
-        let frame = self.pending.entry(frame_id).or_insert_with(|| PendingFrame {
-            created: Instant::now(),
-            keyframe: true,
-            timestamp_us,
-            parts: vec![None; count],
-            bytes: 0,
-            fec: HashMap::new(),
-        });
+        let frame = self
+            .pending
+            .entry(frame_id)
+            .or_insert_with(|| PendingFrame {
+                created: Instant::now(),
+                keyframe: true,
+                timestamp_us,
+                parts: vec![None; count],
+                bytes: 0,
+                fec: HashMap::new(),
+            });
         if !frame.keyframe || frame.parts.len() != count || frame.timestamp_us != timestamp_us {
             self.pending.remove(&frame_id);
             return Err("Metadados FEC divergentes".into());
@@ -242,8 +245,12 @@ mod tests {
         let a = vec![1u8; crate::protocol::FEC_DATA_PAYLOAD];
         let b = vec![2u8; 17];
         let mut parity = vec![0u8; crate::protocol::FEC_DATA_PAYLOAD];
-        for (index, byte) in a.iter().enumerate() { parity[index] ^= byte; }
-        for (index, byte) in b.iter().enumerate() { parity[index] ^= byte; }
+        for (index, byte) in a.iter().enumerate() {
+            parity[index] ^= byte;
+        }
+        for (index, byte) in b.iter().enumerate() {
+            parity[index] ^= byte;
+        }
         let mut fec = (b.len() as u16).to_be_bytes().to_vec();
         fec.extend_from_slice(&parity);
         assert!(r.push(7, 0, 2, true, 99, &a).unwrap().is_none());

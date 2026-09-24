@@ -33,6 +33,7 @@ pub enum Kind {
     Input = 8,
     Config = 9,
     VideoFec = 10,
+    Audio = 11,
 }
 
 impl TryFrom<u8> for Kind {
@@ -49,6 +50,7 @@ impl TryFrom<u8> for Kind {
             8 => Ok(Self::Input),
             9 => Ok(Self::Config),
             10 => Ok(Self::VideoFec),
+            11 => Ok(Self::Audio),
             _ => Err("Tipo de pacote desconhecido".into()),
         }
     }
@@ -200,11 +202,16 @@ impl EphemeralKey {
         let raw = URL_SAFE_NO_PAD
             .decode(peer_public.trim())
             .map_err(|_| "Chave pública X25519 inválida")?;
-        let peer: [u8; 32] = raw.try_into().map_err(|_| "A chave X25519 deve ter 256 bits")?;
+        let peer: [u8; 32] = raw
+            .try_into()
+            .map_err(|_| "A chave X25519 deve ter 256 bits")?;
         if peer == [0; 32] {
             return Err("Chave X25519 de baixa ordem recusada".into());
         }
-        let shared = self.private.diffie_hellman(&PublicKey::from(peer)).to_bytes();
+        let shared = self
+            .private
+            .diffie_hellman(&PublicKey::from(peer))
+            .to_bytes();
         if shared == [0; 32] {
             return Err("Chave X25519 de baixa ordem recusada".into());
         }
@@ -218,7 +225,11 @@ impl EphemeralKey {
 }
 
 fn verification_code(own: &[u8; 32], peer: &[u8; 32], key: &[u8; 32]) -> String {
-    let (first, second) = if own <= peer { (own, peer) } else { (peer, own) };
+    let (first, second) = if own <= peer {
+        (own, peer)
+    } else {
+        (peer, own)
+    };
     let mut digest = Sha256::new();
     digest.update(b"voxa-verify-v1\0");
     digest.update(first);
@@ -400,6 +411,27 @@ mod tests {
         assert!(decoded.meta.keyframe);
     }
     #[test]
+    fn encrypted_audio_packet_round_trip() {
+        let key = [17u8; 32];
+        let encoded = seal(
+            &key,
+            Kind::Audio,
+            Meta {
+                sequence: 81,
+                frame_id: 1_920,
+                timestamp_us: 20_000,
+                ..Default::default()
+            },
+            b"opus-packet",
+        )
+        .unwrap();
+        let decoded = open(&key, &encoded).unwrap();
+        assert_eq!(decoded.kind, Kind::Audio);
+        assert_eq!(decoded.meta.frame_id, 1_920);
+        assert_eq!(decoded.meta.timestamp_us, 20_000);
+        assert_eq!(decoded.payload, b"opus-packet");
+    }
+    #[test]
     fn tampering_is_rejected() {
         let key = [1u8; 32];
         let mut encoded = seal(
@@ -450,7 +482,10 @@ mod tests {
             height: 1440,
             fps: 120,
         };
-        assert_eq!(StreamConfig::decode(&config.encode().unwrap()).unwrap(), config);
+        assert_eq!(
+            StreamConfig::decode(&config.encode().unwrap()).unwrap(),
+            config
+        );
         assert!(StreamConfig::decode(&[1, 0]).is_err());
         assert!(StreamConfig {
             codec: VideoCodec::H264,
@@ -466,8 +501,17 @@ mod tests {
     fn codec_negotiation_prefers_efficiency_and_keeps_h264_fallback() {
         let h264_h265 = VideoCodec::mask([VideoCodec::H264, VideoCodec::H265]);
         let all = VideoCodec::mask(VideoCodec::ALL);
-        assert_eq!(VideoCodec::best_common(h264_h265, all), Some(VideoCodec::H265));
-        assert_eq!(VideoCodec::best_common(VideoCodec::H264.bit(), all), Some(VideoCodec::H264));
-        assert_eq!(VideoCodec::best_common(VideoCodec::Av1.bit(), VideoCodec::H264.bit()), None);
+        assert_eq!(
+            VideoCodec::best_common(h264_h265, all),
+            Some(VideoCodec::H265)
+        );
+        assert_eq!(
+            VideoCodec::best_common(VideoCodec::H264.bit(), all),
+            Some(VideoCodec::H264)
+        );
+        assert_eq!(
+            VideoCodec::best_common(VideoCodec::Av1.bit(), VideoCodec::H264.bit()),
+            None
+        );
     }
 }

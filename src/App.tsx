@@ -14,7 +14,7 @@ const emptyStatus: EngineStatus = {
   peerEndpoint: null, rttMs: 0, lossPct: 0, bitrateKbps: 0,
   receivedFrames: 0, encodedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
   renderer: "closed", capture: "idle", encoder: "idle",
-  decoder: "idle", decodedFrames: 0,
+  decoder: "idle", audio: "idle", decodedFrames: 0,
   verificationCode: null, connectedPeers: 0, maxPeers: 4, peerVerifications: [], peerMetrics: [], lastError: null,
 };
 
@@ -196,7 +196,7 @@ export default function App() {
             <label>URL<input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} inputMode="url" disabled={active} /></label>
           </details>
           {active
-            ? <><button className="primary" type="button" onClick={() => void engine.toggleFullscreen().catch((error) => setMessage(String(error)))} disabled={busy || role !== "viewer"}>Tela cheia</button><button className="primary danger" type="button" onClick={stop} disabled={busy}>Encerrar</button></>
+            ? <><button className="primary" type="button" onClick={() => void engine.toggleFullscreen().catch((error) => setMessage(String(error)))} disabled={busy || role !== "viewer"}>Tela cheia</button><button className="primary" type="button" onClick={() => void engine.openNewSession().catch((error) => setMessage(String(error)))} disabled={busy}>Abrir outra sessão</button><button className="primary danger" type="button" onClick={stop} disabled={busy}>Encerrar</button></>
             : <button className="primary" type="submit" disabled={busy || !roomValid || !passwordValid}>{busy ? "Conectando..." : role === "host" ? "Começar transmissão" : "Conectar ao host"}</button>}
         </form>
       </section>
@@ -211,6 +211,7 @@ export default function App() {
           <Metric label="Código E2E" value={role === "host" && status.peerVerifications.length > 0 ? status.peerVerifications.map(({ code }, index) => `#${index + 1} ${code}`).join(" · ") : status.verificationCode ?? "—"} />
           <Metric label="Frames" value={role === "host" ? `${status.encodedFrames} codificados · ${status.droppedFrames} descartados` : `${status.receivedFrames} recebidos · ${status.decodedFrames} exibidos · ${status.droppedFrames} descartados`} />
           <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.decoder} · ${status.renderer}`} />
+          <Metric label="Áudio" value={status.audio} />
         </div>
         {status.lastError && <small className="native-error">Erro nativo: {status.lastError}</small>}
         {role === "host" && status.peerMetrics.length > 0 && <div className="peer-metrics">

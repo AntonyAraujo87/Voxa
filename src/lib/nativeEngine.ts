@@ -15,6 +15,7 @@ export interface EngineStatus {
   lossPct: number; bitrateKbps: number; receivedFrames: number; encodedFrames: number;
   droppedFrames: number; keyframeRequests: number; renderer: string;
   capture: string; encoder: string; decoder: string; decodedFrames: number;
+  audio: string;
   verificationCode: string | null; connectedPeers: number; maxPeers: number;
   peerVerifications: Array<{ peerId: string; code: string }>;
   peerMetrics: Array<{ peerId: string; endpoint: string | null; phase: string; rttMs: number;
@@ -30,14 +31,15 @@ export class NativeEngine {
     return invoke<PreparedEndpoint>("engine_prepare", { role, captureTarget });
   }
   setMaxPeers(maxPeers: number) { return invoke<void>("engine_set_max_peers", { maxPeers }); }
-  connectPeer(peer: { endpoint: string; publicKey: string; peerId: string; codecs: number; relayEndpoint: string | null; relaySession: string | null; relayAuth: string | null }) {
+  connectPeer(peer: { endpoint: string; publicKey: string; peerId: string; codecs?: number; relayEndpoint: string | null; relaySession: string | null; relayAuth: string | null }) {
     return invoke<void>("engine_connect_peer", { request: {
-      endpoint: peer.endpoint, peerPublicKey: peer.publicKey, peerId: peer.peerId, peerCodecs: peer.codecs,
+      endpoint: peer.endpoint, peerPublicKey: peer.publicKey, peerId: peer.peerId, peerCodecs: peer.codecs ?? 1,
       relayEndpoint: peer.relayEndpoint, relaySession: peer.relaySession, relayAuth: peer.relayAuth,
     } });
   }
   disconnectPeer(peerId: string) { return invoke<void>("engine_disconnect_peer", { peerId }); }
   status() { return invoke<EngineStatus>("engine_status"); }
   toggleFullscreen() { return invoke<boolean>("engine_toggle_fullscreen"); }
+  openNewSession() { return invoke<void>("open_new_session"); }
   async stop() { this.matchmaking?.close(); this.matchmaking = null; await invoke("engine_stop"); }
 }

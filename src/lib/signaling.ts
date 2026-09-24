@@ -6,7 +6,7 @@ export interface PeerAnnouncement {
   role: StreamRole;
   endpoint: string;
   publicKey: string;
-  codecs: number;
+  codecs?: number;
   relayEndpoint: string | null;
   relaySession: string | null;
   relayAuth: string | null;

@@ -21,8 +21,8 @@ incompletos expiram em 250 ms; keyframes recebem até 1,5 s por serem maiores.
 Frames atrasados ou incompletos são descartados e geram pedido de keyframe, sem
 retransmissão. O bitrate cai rápido com perda/RTT e sobe gradualmente.
 
-O matchmaking aceita um `host` e até quatro `viewers` por sala. O host codifica
-cada frame uma vez e o distribui para sessões UDP independentes. Cada espectador
+O matchmaking aceita um `host` e até quatro `viewers` por sala. O host mantém
+faixas de qualidade independentes por resolução e codec e as distribui para sessões UDP independentes. Cada espectador
 possui segredo X25519, controle de congestionamento e alocação de relay próprios.
 O servidor não recebe frames nem input. Para pares no mesmo IP público, anuncia o
 endpoint LAN; fora da LAN, usa o mapeamento descoberto por STUN e perfuração UDP.
@@ -35,16 +35,21 @@ endpoint LAN; fora da LAN, usa o mapeamento descoberto por STUN e perfuração U
 - X25519 efêmero entre os computadores; o signaling nunca cria nem recebe a chave de mídia.
 - Relay UDP cego opcional para NAT simétrico/CGNAT, disputado em paralelo com a rota direta.
 - Túnel autenticado, antirreplay, heartbeat/RTT, fragmentação e keyframe request.
-- Captura DXGI, conversão BGRA→NV12 e entrada no encoder H.264 permanecem na GPU.
-- O host usa Media Foundation hardware, suporta MFT assíncrono e envia o bitstream pelo túnel.
+- Seleção explícita de monitor/GPU; captura DXGI, conversão BGRA→NV12, escala e entrada no encoder permanecem na GPU.
+- O host usa Media Foundation hardware e negocia AV1, H.265 ou H.264 conforme as duas GPUs, sempre com fallback H.264.
 - O encoder solicita low-latency, GOP de 1 s, zero B-frames e bitrate dinâmico por `ICodecAPI`.
-- O espectador decodifica H.264 por hardware para uma textura NV12 e apresenta por
+- O espectador decodifica o codec negociado por hardware para uma textura NV12 e apresenta por
   D3D11 em swapchain `flip-discard`, com resize, letterbox, fullscreen e recriação após device-lost.
+- Som do sistema capturado por WASAPI loopback, comprimido em Opus 48 kHz estéreo e reproduzido por WASAPI em uma fila de baixa latência.
+- Resolução e FPS adaptam-se ao bitrate (1080p60, 720p60, 720p30 ou 540p30); um espectador lento usa uma faixa própria.
+- FEC XOR protege keyframes e recupera um fragmento perdido por grupo sem retransmissão.
+- Métricas de rota, RTT, perda e bitrate são mantidas separadamente para cada espectador.
 - O painel verifica, baixa e instala updates assinados sem interromper uma transmissão ativa.
 - A configuração de codec, dimensões e FPS viaja autenticada e é repetida para
   tolerar perda UDP.
 - Até quatro espectadores simultâneos, com saída individual preservada quando
   outro espectador desconecta e pedido automático de IDR para quem entra depois.
+- O botão `Abrir outra sessão` permite hospedar em uma instância e assistir por outra ao mesmo tempo.
 
 O host não usa fallback de captura web nem encode por CPU. A cadeia nativa compila,
 mas ainda precisa ser validada em dois PCs físicos e GPUs NVENC, AMF e QuickSync.

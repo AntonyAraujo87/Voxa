@@ -28,7 +28,10 @@ pub async fn discover(socket: &UdpSocket, server: &str) -> Result<SocketAddr, St
         request[..2].copy_from_slice(&1u16.to_be_bytes());
         request[4..8].copy_from_slice(&MAGIC.to_be_bytes());
         request[8..].copy_from_slice(&transaction);
-        socket.send_to(&request, target).await.map_err(|e| e.to_string())?;
+        socket
+            .send_to(&request, target)
+            .await
+            .map_err(|e| e.to_string())?;
         let deadline = Instant::now() + ATTEMPT_TIMEOUT;
         let mut response = [0u8; 1024];
         loop {
@@ -56,7 +59,10 @@ pub async fn discover_any(socket: &UdpSocket, servers: &[&str]) -> Result<Socket
             Err(error) => failures.push(format!("{server}: {error}")),
         }
     }
-    Err(format!("Todos os servidores STUN falharam ({})", failures.join("; ")))
+    Err(format!(
+        "Todos os servidores STUN falharam ({})",
+        failures.join("; ")
+    ))
 }
 
 fn parse(data: &[u8], transaction: [u8; 12]) -> Result<SocketAddr, String> {
@@ -81,8 +87,8 @@ fn parse(data: &[u8], transaction: [u8; 12]) -> Result<SocketAddr, String> {
             break;
         }
         if kind == 0x0020 && len >= 8 && data[start + 1] == 0x01 {
-            let port = u16::from_be_bytes([data[start + 2], data[start + 3]])
-                ^ (MAGIC >> 16) as u16;
+            let port =
+                u16::from_be_bytes([data[start + 2], data[start + 3]]) ^ (MAGIC >> 16) as u16;
             let magic = MAGIC.to_be_bytes();
             let ip = Ipv4Addr::new(
                 data[start + 4] ^ magic[0],
@@ -115,7 +121,10 @@ mod tests {
         for index in 0..4 {
             data.push(ip[index] ^ magic[index]);
         }
-        assert_eq!(parse(&data, tx).unwrap(), "192.168.1.9:54321".parse().unwrap());
+        assert_eq!(
+            parse(&data, tx).unwrap(),
+            "192.168.1.9:54321".parse().unwrap()
+        );
     }
 
     #[test]
@@ -138,6 +147,9 @@ mod tests {
     #[tokio::test]
     async fn refuses_empty_fallback_list() {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        assert!(discover_any(&socket, &[]).await.unwrap_err().contains("Nenhum"));
+        assert!(discover_any(&socket, &[])
+            .await
+            .unwrap_err()
+            .contains("Nenhum"));
     }
 }
