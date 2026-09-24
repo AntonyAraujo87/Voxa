@@ -57,6 +57,21 @@ pub struct CaptureTargetInfo {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AudioProcessInfo {
+    pub process_id: u32,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphicsAdapterInfo {
+    pub adapter_index: u32,
+    pub name: String,
+    pub dedicated_memory_mb: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PeerVerification {
     peer_id: String,
     code: String,
@@ -73,6 +88,9 @@ pub struct PeerMetric {
     bitrate_kbps: u32,
     received_frames: u64,
     dropped_frames: u64,
+    latency_p50_ms: u32,
+    latency_p95_ms: u32,
+    latency_p99_ms: u32,
 }
 
 impl PeerMetric {
@@ -86,6 +104,9 @@ impl PeerMetric {
             bitrate_kbps: 12_000,
             received_frames: 0,
             dropped_frames: 0,
+            latency_p50_ms: 0,
+            latency_p95_ms: 0,
+            latency_p99_ms: 0,
         }
     }
 }
@@ -109,9 +130,15 @@ pub struct EngineStatus {
     capture: &'static str,
     encoder: &'static str,
     decoder: &'static str,
+    decoder_gpu: Option<String>,
     audio: &'static str,
+    audio_bitrate_kbps: u32,
     audio_error: Option<String>,
+    rejoin_required: bool,
     decoded_frames: u64,
+    latency_p50_ms: u32,
+    latency_p95_ms: u32,
+    latency_p99_ms: u32,
     verification_code: Option<String>,
     connected_peers: usize,
     max_peers: usize,
@@ -139,9 +166,15 @@ impl Default for EngineStatus {
             capture: "idle",
             encoder: "idle",
             decoder: "idle",
+            decoder_gpu: None,
             audio: "idle",
+            audio_bitrate_kbps: 0,
             audio_error: None,
+            rejoin_required: false,
             decoded_frames: 0,
+            latency_p50_ms: 0,
+            latency_p95_ms: 0,
+            latency_p99_ms: 0,
             verification_code: None,
             connected_peers: 0,
             max_peers: 4,
@@ -175,6 +208,8 @@ struct Inner {
     peer_metrics: HashMap<String, PeerMetric>,
     key_exchange: Option<protocol::EphemeralKey>,
     capture_target: Option<CaptureTargetId>,
+    audio_process_id: Option<u32>,
+    decoder_adapter_index: Option<u32>,
     supported_codecs: u8,
 }
 
@@ -196,12 +231,103 @@ pub fn engine_capture_targets() -> Result<Vec<CaptureTargetInfo>, String> {
 }
 
 #[tauri::command]
+pub fn engine_audio_processes() -> Result<Vec<AudioProcessInfo>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        audio::enumerate_processes()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
+#[tauri::command]
+pub fn engine_graphics_adapters() -> Result<Vec<GraphicsAdapterInfo>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        capture::enumerate_adapters()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
+#[tauri::command]
+pub fn engine_switch_capture(
+    capture_target: CaptureTargetId,
+    engine: State<'_, NativeEngine>,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let capture = capture::DxgiCapture::open(Some(capture_target))
+            .map_err(|error| format!("O novo monitor não pode ser capturado: {error}"))?;
+        let codecs = protocol::VideoCodec::mask(
+            encoder::hardware_encoder_codecs_for_device(&capture.device).unwrap_or_default(),
+        );
+        if codecs == 0 {
+            return Err("A GPU do novo monitor não possui encoder compatível".into());
+        }
+        let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+        if inner.status.role != Some(StreamRole::Host) || inner.socket.is_none() {
+            return Err("Inicie uma hospedagem antes de trocar o monitor".into());
+        }
+        if !inner.host_fanout.peers_support_any(codecs) {
+            return Err(
+                "A GPU do novo monitor não possui codec em comum com todos os espectadores".into(),
+            );
+        }
+        inner.capture_target = Some(capture_target);
+        inner.supported_codecs = codecs;
+        inner.host_fanout.set_supported_codecs(codecs);
+        inner.status.capture = "switching-monitor";
+        inner.status.encoder = "restarting";
+        inner.host_fanout.request_keyframe();
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (capture_target, engine);
+        Err("Captura nativa disponível somente no Windows".into())
+    }
+}
+
+#[tauri::command]
+pub fn engine_switch_audio(
+    audio_process_id: Option<u32>,
+    engine: State<'_, NativeEngine>,
+) -> Result<(), String> {
+    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+    if inner.status.role != Some(StreamRole::Host) || inner.socket.is_none() {
+        return Err("Inicie uma hospedagem antes de trocar a origem de áudio".into());
+    }
+    inner.audio_process_id = audio_process_id;
+    inner.status.audio = "switching-source";
+    inner.status.audio_error = None;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn engine_prepare(
     app: AppHandle,
     role: StreamRole,
     capture_target: Option<CaptureTargetId>,
+    audio_process_id: Option<u32>,
+    decoder_adapter_index: Option<u32>,
+    reuse_identity: bool,
     engine: State<'_, NativeEngine>,
 ) -> Result<PreparedEndpoint, String> {
+    let preserved_identity = if reuse_identity {
+        engine
+            .inner
+            .lock()
+            .map_err(|_| "Estado indisponível")?
+            .key_exchange
+            .take()
+    } else {
+        None
+    };
     engine_stop(app, engine.clone()).await?;
     {
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
@@ -228,14 +354,18 @@ pub async fn engine_prepare(
     .await
     .ok()
     .map(|endpoint| endpoint.to_string());
-    let key_exchange = protocol::EphemeralKey::generate()?;
+    let key_exchange = match preserved_identity {
+        Some(identity) => identity,
+        None => protocol::EphemeralKey::generate()?,
+    };
     let public_key = key_exchange.public_base64();
     #[cfg(target_os = "windows")]
     let (capture_state, encoder_state, codecs) = if role == StreamRole::Host {
-        capture::probe(capture_target)
+        let capture = capture::DxgiCapture::open(capture_target)
             .map_err(|error| format!("O monitor selecionado não pode ser capturado: {error}"))?;
         let capture_state = "dxgi-ready";
-        let available = encoder::hardware_encoder_codecs().unwrap_or_default();
+        let available =
+            encoder::hardware_encoder_codecs_for_device(&capture.device).unwrap_or_default();
         let encoder_state = if available.is_empty() {
             "hardware-unavailable"
         } else {
@@ -247,7 +377,7 @@ pub async fn engine_prepare(
             protocol::VideoCodec::mask(available),
         )
     } else {
-        let available = decoder::hardware_decoder_codecs().unwrap_or_default();
+        let available = viewer::hardware_decoder_codecs(decoder_adapter_index).unwrap_or_default();
         (
             "disabled",
             "decoder-pending",
@@ -268,6 +398,8 @@ pub async fn engine_prepare(
     inner.socket = Some(socket);
     inner.key_exchange = Some(key_exchange);
     inner.capture_target = capture_target;
+    inner.audio_process_id = audio_process_id.filter(|_| role == StreamRole::Host);
+    inner.decoder_adapter_index = decoder_adapter_index.filter(|_| role == StreamRole::Viewer);
     inner.supported_codecs = codecs;
     inner.host_fanout.set_supported_codecs(codecs);
     inner.status.phase = "waiting";
@@ -293,6 +425,27 @@ pub struct ConnectRequest {
     relay_endpoint: Option<String>,
     relay_session: Option<String>,
     relay_auth: Option<String>,
+}
+
+#[tauri::command]
+pub fn engine_preview_peer(
+    peer_id: String,
+    peer_public_key: String,
+    engine: State<'_, NativeEngine>,
+) -> Result<String, String> {
+    if peer_id.is_empty() || peer_id.len() > 128 {
+        return Err("Identidade do computador inválida".into());
+    }
+    let inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+    if inner.status.role != Some(StreamRole::Host) || inner.socket.is_none() {
+        return Err("Aprovação disponível somente para o host ativo".into());
+    }
+    let (_, verification) = inner
+        .key_exchange
+        .as_ref()
+        .ok_or("Troca X25519 ausente; prepare a conexão novamente")?
+        .agree(&peer_public_key)?;
+    Ok(verification)
 }
 
 #[tauri::command]
@@ -429,11 +582,9 @@ pub async fn engine_connect_peer(
         }
         inner.host_fanout.add(peer_id.clone(), handle);
         if inner.host_pipeline.is_none() {
-            let capture_target = inner.capture_target;
             inner.host_pipeline = Some(pipeline::spawn(
                 inner.host_fanout.clone(),
                 engine.inner.clone(),
-                capture_target,
             ));
         }
         if inner.host_audio.is_none() {
@@ -464,7 +615,18 @@ pub async fn engine_connect_peer(
             control.stop();
             return Err("A sessão foi encerrada durante a conexão".into());
         }
-        let pipeline = viewer::spawn(control.handle(), engine.inner.clone(), app.clone(), hwnd);
+        let decoder_adapter_index = engine
+            .inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.decoder_adapter_index);
+        let pipeline = viewer::spawn(
+            control.handle(),
+            engine.inner.clone(),
+            app.clone(),
+            hwnd,
+            decoder_adapter_index,
+        );
         control.attach_native_thread(pipeline);
     }
     let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
@@ -685,8 +847,10 @@ mod tests {
 
     #[tokio::test]
     async fn stopped_generation_rejects_late_peer_connection() {
-        let mut inner = Inner::default();
-        inner.generation = 7;
+        let mut inner = Inner {
+            generation: 7,
+            ..Default::default()
+        };
         inner.status.role = Some(StreamRole::Host);
         assert!(!session_is_current(&inner, 7, StreamRole::Host));
         inner.socket = Some(Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()));

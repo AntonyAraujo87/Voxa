@@ -3,6 +3,7 @@ use super::{
     transport::TransportHandle, Inner,
 };
 use std::{
+    collections::VecDeque,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -13,26 +14,64 @@ use windows::{
     Win32::{
         Foundation::{HMODULE, HWND},
         Graphics::{
-            Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0},
+            Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0},
             Direct3D11::{
                 D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
             },
+            Dxgi::{CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory1},
         },
         System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED},
     },
 };
+
+pub fn hardware_decoder_codecs(
+    selected: Option<u32>,
+) -> Result<Vec<voxa_native_core::protocol::VideoCodec>, String> {
+    unsafe {
+        let factory: IDXGIFactory1 =
+            CreateDXGIFactory1().map_err(|e| format!("DXGI do espectador: {e}"))?;
+        let mut adapters = Vec::new();
+        for index in 0..32 {
+            let Ok(adapter) = factory.EnumAdapters(index) else {
+                break;
+            };
+            if selected.is_none() || selected == Some(index) {
+                adapters.push(adapter);
+            }
+        }
+        let mut available = Vec::new();
+        for codec in voxa_native_core::protocol::VideoCodec::ALL {
+            let supported = adapters.iter().any(|adapter| {
+                create_device_on_adapter(adapter).is_ok_and(|(device, _)| {
+                    HardwareVideoDecoder::open(&device, codec, 1280, 720, 30).is_ok()
+                })
+            });
+            if supported {
+                available.push(codec);
+            }
+        }
+        Ok(available)
+    }
+}
 
 pub(super) fn spawn(
     transport: TransportHandle,
     state: Arc<Mutex<Inner>>,
     app: AppHandle,
     hwnd: isize,
+    decoder_adapter_index: Option<u32>,
 ) -> thread::JoinHandle<()> {
-    thread::spawn(move || run(transport, state, app, hwnd))
+    thread::spawn(move || run(transport, state, app, hwnd, decoder_adapter_index))
 }
 
-fn run(transport: TransportHandle, state: Arc<Mutex<Inner>>, app: AppHandle, hwnd: isize) {
+fn run(
+    transport: TransportHandle,
+    state: Arc<Mutex<Inner>>,
+    app: AppHandle,
+    hwnd: isize,
+    decoder_adapter_index: Option<u32>,
+) {
     renderer::set_title(&app, "Voxa Stream — aguardando vídeo");
     if let Err(error) = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok() {
         fail(&state, "com-unavailable", &error.to_string());
@@ -42,7 +81,7 @@ fn run(transport: TransportHandle, state: Arc<Mutex<Inner>>, app: AppHandle, hwn
     let _apartment = ComApartment;
     let audio = audio::spawn_playback(transport.clone(), state.clone());
     while !transport.stopped() {
-        match run_session(&transport, &state, &app, hwnd) {
+        match run_session(&transport, &state, &app, hwnd, decoder_adapter_index) {
             Ok(()) => break,
             Err(error) => {
                 fail(&state, "recovering", &error);
@@ -59,6 +98,7 @@ fn run_session(
     state: &Arc<Mutex<Inner>>,
     app: &AppHandle,
     hwnd: isize,
+    decoder_adapter_index: Option<u32>,
 ) -> Result<(), String> {
     let mut config_wait = std::time::Instant::now();
     let waiting_since = std::time::Instant::now();
@@ -85,13 +125,12 @@ fn run_session(
         thread::sleep(Duration::from_millis(2));
     };
     renderer::set_title(app, "Voxa Stream — iniciando decoder");
-    let (device, context) = create_device()?;
-    let mut decoder = HardwareVideoDecoder::open(
-        &device,
+    let (device, context, mut decoder, decoder_gpu) = create_device(
         config.codec,
         config.width,
         config.height,
         config.fps.into(),
+        decoder_adapter_index,
     )?;
     let mut presenter = NativePresenter::new(
         &device,
@@ -107,11 +146,14 @@ fn run_session(
             voxa_native_core::protocol::VideoCodec::H265 => "media-foundation-h265",
             voxa_native_core::protocol::VideoCodec::Av1 => "media-foundation-av1",
         };
+        inner.status.decoder_gpu = Some(decoder_gpu);
         inner.status.phase = "decoding";
         inner.status.last_error = None;
     }
     let mut duration = 10_000_000i64 / i64::from(config.fps);
     let mut first_present = true;
+    let mut latency_samples = VecDeque::<u32>::with_capacity(600);
+    let mut frames_since_latency_update = 0u32;
     while !transport.stopped() {
         if let Some(new_config) = transport.current_config() {
             if new_config != config {
@@ -160,11 +202,25 @@ fn run_session(
         };
         if let Some(texture) = texture {
             presenter.present(&texture.texture, texture.subresource_index)?;
+            if let Some(latency) = transport.capture_to_display_ms(frame.timestamp_us) {
+                if latency_samples.len() >= 600 {
+                    latency_samples.pop_front();
+                }
+                latency_samples.push_back(latency);
+                frames_since_latency_update += 1;
+            }
             if let Ok(mut inner) = state.lock() {
                 inner.status.decoded_frames += 1;
                 inner.status.renderer = "d3d11-swapchain";
                 inner.status.phase = "streaming";
                 inner.status.last_error = None;
+                if frames_since_latency_update >= 30 {
+                    let (p50, p95, p99) = latency_percentiles(&latency_samples);
+                    inner.status.latency_p50_ms = p50;
+                    inner.status.latency_p95_ms = p95;
+                    inner.status.latency_p99_ms = p99;
+                    frames_since_latency_update = 0;
+                }
             }
             if first_present {
                 renderer::set_title(app, "Voxa Stream");
@@ -175,14 +231,75 @@ fn run_session(
     Ok(())
 }
 
-fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext), String> {
+fn create_device(
+    codec: voxa_native_core::protocol::VideoCodec,
+    width: u32,
+    height: u32,
+    fps: u32,
+    selected: Option<u32>,
+) -> Result<
+    (
+        ID3D11Device,
+        ID3D11DeviceContext,
+        HardwareVideoDecoder,
+        String,
+    ),
+    String,
+> {
+    unsafe {
+        let factory: IDXGIFactory1 =
+            CreateDXGIFactory1().map_err(|e| format!("DXGI do espectador: {e}"))?;
+        let mut adapters = Vec::<(u32, usize)>::new();
+        for index in 0..32 {
+            let Ok(adapter) = factory.EnumAdapters(index) else {
+                break;
+            };
+            let dedicated = adapter
+                .GetDesc()
+                .map(|desc| desc.DedicatedVideoMemory)
+                .unwrap_or(0);
+            adapters.push((index, dedicated));
+        }
+        if let Some(selected) = selected {
+            adapters.retain(|(index, _)| *index == selected);
+        } else {
+            adapters.sort_by_key(|(_, dedicated)| std::cmp::Reverse(*dedicated));
+        }
+        let mut failures = Vec::new();
+        for (index, _) in adapters {
+            let adapter = factory
+                .EnumAdapters(index)
+                .map_err(|e| format!("GPU {index} do espectador: {e}"))?;
+            let description = adapter
+                .GetDesc()
+                .map(|desc| wide_string(&desc.Description))
+                .unwrap_or_else(|_| format!("GPU {index}"));
+            match create_device_on_adapter(&adapter).and_then(|(device, context)| {
+                HardwareVideoDecoder::open(&device, codec, width, height, fps)
+                    .map(|decoder| (device, context, decoder, description.clone()))
+            }) {
+                Ok(stack) => return Ok(stack),
+                Err(error) => failures.push(format!("{description}: {error}")),
+            }
+        }
+        Err(format!(
+            "Nenhuma GPU conseguiu decodificar {}: {}",
+            codec.name(),
+            failures.join(" | ")
+        ))
+    }
+}
+
+unsafe fn create_device_on_adapter(
+    adapter: &IDXGIAdapter,
+) -> Result<(ID3D11Device, ID3D11DeviceContext), String> {
     unsafe {
         let mut device = None;
         let mut context = None;
         let levels = [D3D_FEATURE_LEVEL_11_0];
         D3D11CreateDevice(
-            None,
-            D3D_DRIVER_TYPE_HARDWARE,
+            adapter,
+            D3D_DRIVER_TYPE_UNKNOWN,
             HMODULE::default(),
             D3D11_CREATE_DEVICE_BGRA_SUPPORT,
             Some(&levels),
@@ -200,6 +317,24 @@ fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext), String> {
         let _ = multithread.SetMultithreadProtected(true);
         Ok((device, context))
     }
+}
+
+fn wide_string<const N: usize>(value: &[u16; N]) -> String {
+    let length = value.iter().position(|unit| *unit == 0).unwrap_or(N);
+    String::from_utf16_lossy(&value[..length])
+}
+
+fn latency_percentiles(samples: &VecDeque<u32>) -> (u32, u32, u32) {
+    if samples.is_empty() {
+        return (0, 0, 0);
+    }
+    let mut ordered = samples.iter().copied().collect::<Vec<_>>();
+    ordered.sort_unstable();
+    let percentile = |percent: usize| {
+        let index = (ordered.len() - 1).saturating_mul(percent) / 100;
+        ordered[index]
+    };
+    (percentile(50), percentile(95), percentile(99))
 }
 
 fn fail(state: &Arc<Mutex<Inner>>, decoder: &'static str, error: &str) {
@@ -222,5 +357,16 @@ struct ComApartment;
 impl Drop for ComApartment {
     fn drop(&mut self) {
         unsafe { CoUninitialize() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn computes_stable_latency_percentiles() {
+        let samples = (1..=100).collect::<VecDeque<_>>();
+        assert_eq!(latency_percentiles(&samples), (50, 95, 99));
     }
 }

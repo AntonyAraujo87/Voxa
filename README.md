@@ -1,6 +1,6 @@
 # Voxa Stream
 
-O Voxa 0.6 é um projeto de streaming P2P para Windows. O Tauri/React funciona
+O Voxa 0.7 é um projeto de streaming P2P para Windows. O Tauri/React funciona
 somente como painel de conexão. Captura, transporte, telemetria e a janela de
 reprodução pertencem ao processo Rust; não existem tags HTML de áudio ou vídeo.
 
@@ -22,8 +22,8 @@ Frames atrasados ou incompletos são descartados e geram pedido de keyframe, sem
 retransmissão. O bitrate cai rápido com perda/RTT e sobe gradualmente.
 
 O matchmaking aceita um `host` e até quatro `viewers` por sala. O host mantém
-faixas de qualidade independentes por resolução e codec e as distribui para
-sessões UDP independentes. Cada espectador possui segredo X25519, controle de
+um encoder, resolução, FPS e bitrate independentes para cada espectador. Cada
+espectador possui segredo X25519, controle de
 congestionamento e alocação de relay próprios. O matchmaking não recebe mídia;
 quando necessário, o relay vê somente datagramas cifrados e não conhece a chave.
 Para pares no mesmo IP público, anuncia o endpoint LAN; fora da LAN, usa o
@@ -38,14 +38,19 @@ mapeamento descoberto por STUN e perfuração UDP.
 - Relay UDP cego opcional para NAT simétrico/CGNAT, disputado em paralelo com a rota direta.
 - Túnel autenticado, antirreplay, heartbeat/RTT, fragmentação e keyframe request.
 - Seleção explícita de monitor/GPU; captura DXGI, conversão BGRA→NV12, escala e entrada no encoder permanecem na GPU.
-- O host usa Media Foundation hardware e negocia AV1, H.265 ou H.264 conforme as duas GPUs, sempre com fallback H.264.
+- O host testa os encoders Media Foundation na GPU do monitor escolhido e negocia AV1, H.265 ou H.264 somente quando a GPU do espectador também aceita o codec.
 - O encoder solicita low-latency, GOP de 1 s, zero B-frames e bitrate dinâmico por `ICodecAPI`.
 - O espectador decodifica o codec negociado por hardware para uma textura NV12 e apresenta por
   D3D11 em swapchain `flip-discard`, com resize, letterbox, fullscreen e recriação após device-lost.
-- Som do sistema capturado por WASAPI loopback, comprimido em Opus 48 kHz estéreo e reproduzido por WASAPI em uma fila de baixa latência.
-- Resolução e FPS adaptam-se ao bitrate (1080p60, 720p60, 720p30 ou 540p30); um espectador lento usa uma faixa própria.
+- Áudio WASAPI do processo do jogo e seus filhos, ou loopback completo como opção, comprimido em Opus 48 kHz estéreo com bitrate adaptativo. Isolar o jogo impede retorno de Discord/Voxa.
+- Resolução e FPS adaptam-se ao bitrate (1080p60, 720p60, 720p30 ou 540p30); cada espectador possui um encoder próprio e não reduz a qualidade dos demais.
 - FEC XOR protege keyframes e recupera um fragmento perdido por grupo sem retransmissão.
 - Métricas de rota, RTT, perda e bitrate são mantidas separadamente para cada espectador.
+- O host aprova cada espectador depois de comparar o código E2E; tela e áudio não saem antes dessa aprovação.
+- A senha da sala exige 12 caracteres e vira uma prova Argon2id de 64 MiB/3 iterações fora da thread da interface.
+- Monitor e origem de áudio podem ser trocados durante a sessão; o espectador pode escolher a GPU de decodificação.
+- A rota direta é refeita automaticamente quando a interface de rede ou o endereço público muda.
+- Latência captura→tela é estimada com compensação de relógio e exibida em P50/P95/P99.
 - O painel verifica, baixa e instala updates assinados sem interromper uma transmissão ativa.
 - A configuração de codec, dimensões e FPS viaja autenticada e é repetida para
   tolerar perda UDP.
@@ -81,7 +86,13 @@ O Render Web Service continua hospedando apenas WSS/HTTP. Para NAT simétrico e
 CGNAT, execute `npm run relay --prefix server` numa VM com UDP público e configure
 o endpoint no Render. A rota direta continua preferida e não consome banda da VM.
 Cada código E2E de seis dígitos exibido no host deve coincidir com o código do
-espectador correspondente; isso detecta substituição maliciosa das chaves públicas.
+espectador correspondente. O host precisa aprová-lo antes de liberar a mídia;
+isso detecta substituição maliciosa das chaves públicas.
+
+A captura isolada por processo requer Windows 10 build 20348 ou superior. Em
+versões anteriores, selecione o loopback completo do sistema. O Voxa não captura
+microfone; por isso a prevenção de retorno do Discord é feita excluindo Discord e
+o próprio Voxa da origem transmitida, em vez de aplicar cancelamento acústico.
 
 Detalhes de implantação estão em [docs/DEPLOY.md](docs/DEPLOY.md) e a sequência
 técnica está em [docs/NATIVE-STREAMING-ROADMAP.md](docs/NATIVE-STREAMING-ROADMAP.md).

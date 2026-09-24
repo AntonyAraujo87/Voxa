@@ -2,14 +2,14 @@ use super::{
     capture::DxgiCapture,
     converter::GpuColorConverter,
     encoder::HardwareVideoEncoder,
-    transport::{EncodedFrame, HostTransportHandle, VideoTier},
+    transport::{EncodedFrame, HostTransportHandle},
     CaptureTargetId, Inner,
 };
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use voxa_native_core::protocol::{StreamConfig, VideoCodec};
 use windows::Win32::Graphics::Direct3D11::{
@@ -149,16 +149,11 @@ impl EncoderLane {
 pub(super) fn spawn(
     transport: HostTransportHandle,
     state: Arc<Mutex<Inner>>,
-    capture_target: Option<CaptureTargetId>,
 ) -> thread::JoinHandle<()> {
-    thread::spawn(move || run(transport, state, capture_target))
+    thread::spawn(move || run(transport, state))
 }
 
-fn run(
-    transport: HostTransportHandle,
-    state: Arc<Mutex<Inner>>,
-    capture_target: Option<CaptureTargetId>,
-) {
+fn run(transport: HostTransportHandle, state: Arc<Mutex<Inner>>) {
     let apartment = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     if let Err(error) = apartment.ok() {
         if let Ok(mut inner) = state.lock() {
@@ -170,8 +165,10 @@ fn run(
     }
     let _apartment = ComApartment;
     while !transport.stopped() {
+        let capture_target = state.lock().ok().and_then(|inner| inner.capture_target);
         match run_device_session(&transport, &state, capture_target) {
-            Ok(()) => return,
+            Ok(()) if transport.stopped() => return,
+            Ok(()) => continue,
             Err(error) => {
                 if let Ok(mut inner) = state.lock() {
                     inner.status.phase = "failed";
@@ -205,24 +202,38 @@ fn run_device_session(
         if transport.stopped() {
             return Ok(());
         }
+        if state
+            .lock()
+            .map(|inner| inner.capture_target != capture_target)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
         if let Some(frame) = capture.acquire(100)? {
             break frame;
         }
     };
     unsafe { first.texture.GetDesc(&mut desc) };
-    let mut lanes = HashMap::<(VideoTier, VideoCodec), EncoderLane>::new();
+    let mut lanes = HashMap::<(String, VideoCodec), EncoderLane>::new();
+    let mut lane_retries = HashMap::<(String, VideoCodec), Instant>::new();
     if let Ok(mut inner) = state.lock() {
         inner.status.capture = "dxgi-active";
-        inner.status.encoder = "media-foundation-h264";
+        inner.status.encoder = "media-foundation-hardware";
         inner.status.phase = "streaming";
         inner.status.last_error = None;
     }
     drop(first);
 
-    let started = Instant::now();
     let mut frame_id = 1u64;
     let mut next_frame_at = Instant::now();
     while !transport.stopped() {
+        if state
+            .lock()
+            .map(|inner| inner.capture_target != capture_target)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
         let active_lanes = transport.active_lanes();
         if active_lanes.is_empty() {
             thread::sleep(Duration::from_millis(100));
@@ -253,64 +264,164 @@ fn run_device_session(
         if let Ok(mut inner) = state.lock() {
             inner.status.bitrate_kbps = requested / 1000;
         }
-        let timestamp_100ns = started.elapsed().as_nanos().saturating_div(100) as i64;
+        let timestamp_100ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .saturating_div(100)
+            .min(i64::MAX as u128) as i64;
         let force_keyframe = transport.take_keyframe_request();
         lanes.retain(|key, _| {
             active_lanes
                 .iter()
-                .any(|(tier, codec, _)| *key == (*tier, *codec))
+                .any(|(peer_id, codec, _)| key == &(peer_id.clone(), *codec))
         });
-        for (tier, codec, bitrate) in active_lanes {
-            let lane = match lanes.entry((tier, codec)) {
-                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    let lane = EncoderLane::open(
-                        &capture.device,
-                        &capture.context,
-                        desc.Width,
-                        desc.Height,
-                        codec,
-                        bitrate,
-                    )?;
-                    transport.queue_config(tier, lane.config());
-                    entry.insert(lane)
-                }
-            };
-            if lane.update(
-                &capture.device,
-                &capture.context,
-                desc.Width,
-                desc.Height,
-                bitrate,
-            )? {
-                transport.queue_config(tier, lane.config());
+        for (peer_id, codec, bitrate) in active_lanes {
+            let key = (peer_id.clone(), codec);
+            if lane_retries
+                .get(&key)
+                .is_some_and(|retry_at| *retry_at > captured_at)
+            {
+                continue;
             }
-            if force_keyframe && lane.encoder.force_keyframe().is_err() {
-                *lane = EncoderLane::open(
+            lane_retries.remove(&key);
+            if !lanes.contains_key(&key) {
+                match EncoderLane::open(
                     &capture.device,
                     &capture.context,
                     desc.Width,
                     desc.Height,
                     codec,
                     bitrate,
-                )?;
-                transport.queue_config(tier, lane.config());
+                ) {
+                    Ok(lane) => {
+                        transport.queue_config(&peer_id, lane.config());
+                        lanes.insert(key.clone(), lane);
+                    }
+                    Err(error) => {
+                        mark_lane_error(state, &peer_id, &error);
+                        lane_retries.insert(key, captured_at + Duration::from_secs(2));
+                        continue;
+                    }
+                }
+            }
+            let Some(lane) = lanes.get_mut(&key) else {
+                continue;
+            };
+            let update = lane.update(
+                &capture.device,
+                &capture.context,
+                desc.Width,
+                desc.Height,
+                bitrate,
+            );
+            match update {
+                Ok(true) => {
+                    if let Some(lane) = lanes.get(&key) {
+                        transport.queue_config(&peer_id, lane.config());
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    lanes.remove(&key);
+                    lane_retries.insert(key, captured_at + Duration::from_secs(2));
+                    mark_lane_error(state, &peer_id, &error);
+                    continue;
+                }
+            }
+            let Some(lane) = lanes.get_mut(&key) else {
+                continue;
+            };
+            if force_keyframe && lane.encoder.force_keyframe().is_err() {
+                match EncoderLane::open(
+                    &capture.device,
+                    &capture.context,
+                    desc.Width,
+                    desc.Height,
+                    codec,
+                    bitrate,
+                ) {
+                    Ok(replacement) => {
+                        *lane = replacement;
+                        transport.queue_config(&peer_id, lane.config());
+                    }
+                    Err(error) => {
+                        lanes.remove(&key);
+                        lane_retries.insert(key, captured_at + Duration::from_secs(2));
+                        mark_lane_error(state, &peer_id, &error);
+                        continue;
+                    }
+                }
             }
             if !lane.due(captured_at) {
                 continue;
             }
-            if let Some(encoded) = lane.encode(&frame.texture, frame_id, timestamp_100ns)? {
-                let dropped = transport.queue_video(tier, codec, encoded);
+            let encoded = match lane.encode(&frame.texture, frame_id, timestamp_100ns) {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    lanes.remove(&key);
+                    lane_retries.insert(key, captured_at + Duration::from_secs(2));
+                    mark_lane_error(state, &peer_id, &error);
+                    continue;
+                }
+            };
+            if let Some(encoded) = encoded {
+                let dropped = transport.queue_video(&peer_id, codec, encoded);
                 if let Ok(mut inner) = state.lock() {
                     inner.status.dropped_frames += u64::from(dropped);
                     inner.status.encoded_frames += 1;
-                    inner.status.last_error = None;
                 }
+                mark_lane_streaming(state, &peer_id);
             }
         }
         frame_id = frame_id.wrapping_add(1).max(1);
     }
     Ok(())
+}
+
+fn mark_lane_error(state: &Arc<Mutex<Inner>>, peer_id: &str, error: &str) {
+    if let Ok(mut inner) = state.lock() {
+        let message = format!(
+            "Encoder do espectador: {}",
+            error.chars().take(180).collect::<String>()
+        );
+        inner.status.last_error = Some(message);
+        if let Some(metric) = inner.peer_metrics.get_mut(peer_id) {
+            metric.phase = "encoder-retrying";
+        }
+        if let Some(metric) = inner
+            .status
+            .peer_metrics
+            .iter_mut()
+            .find(|metric| metric.peer_id == peer_id)
+        {
+            metric.phase = "encoder-retrying";
+        }
+    }
+}
+
+fn mark_lane_streaming(state: &Arc<Mutex<Inner>>, peer_id: &str) {
+    if let Ok(mut inner) = state.lock() {
+        if let Some(metric) = inner.peer_metrics.get_mut(peer_id) {
+            metric.phase = "streaming";
+        }
+        if let Some(metric) = inner
+            .status
+            .peer_metrics
+            .iter_mut()
+            .find(|metric| metric.peer_id == peer_id)
+        {
+            metric.phase = "streaming";
+        }
+        if !inner
+            .status
+            .peer_metrics
+            .iter()
+            .any(|metric| metric.phase == "encoder-retrying")
+        {
+            inner.status.last_error = None;
+        }
+    }
 }
 
 fn profile_for(source_width: u32, source_height: u32, bitrate: u32) -> VideoProfile {

@@ -27,6 +27,8 @@ export class Matchmaking {
   private desired: { room: string; role: StreamRole; endpoint: PreparedEndpoint; roomProof: string } | null = null;
   private rejoinArmed = false;
   private closed = false;
+  private recovering = false;
+  private peerEvents: Promise<void> = Promise.resolve();
   constructor(url: string, private readonly options: Options) {
     this.socket = io(url, {
       transports: ["websocket"],
@@ -36,11 +38,11 @@ export class Matchmaking {
       reconnectionDelayMax: 5_000,
     });
     this.socket.on("stream:peer", (peer: PeerAnnouncement) => {
-      void Promise.resolve(options.onPeer(peer)).catch((error) => options.onError(messageOf(error)));
+      void this.enqueuePeerEvent(() => options.onPeer(peer));
     });
     this.socket.on("stream:peer-left", (payload?: { peerId?: string }) => {
       if (!payload?.peerId) return options.onError("Identidade do computador desconectado ausente");
-      void Promise.resolve(options.onPeerLeft(payload.peerId)).catch((error) => options.onError(messageOf(error)));
+      void this.enqueuePeerEvent(() => options.onPeerLeft(payload.peerId!));
     });
     this.socket.on("connect_error", (error) => options.onError(
       this.socket.active
@@ -65,6 +67,25 @@ export class Matchmaking {
     this.rejoinArmed = true;
   }
 
+  async recover() {
+    if (this.closed || this.recovering || !this.desired) return;
+    this.recovering = true;
+    try {
+      await this.waitForConnection();
+      if (this.closed || !this.desired) return;
+      const endpoint = await this.options.refreshEndpoint(this.desired.role);
+      if (this.closed || !this.desired) return;
+      this.desired = { ...this.desired, endpoint };
+      await this.performJoin(this.desired);
+    } catch (error) {
+      this.options.onError(`Reconexão automática: ${messageOf(error)}`);
+      if (!this.closed) window.setTimeout(() => void this.recover(), 1_500);
+      throw error;
+    } finally {
+      this.recovering = false;
+    }
+  }
+
   private async performJoin({ room, role, endpoint, roomProof }: { room: string; role: StreamRole; endpoint: PreparedEndpoint; roomProof: string }) {
     await this.emit("hello", {});
     const response = await this.emit("stream:join", {
@@ -77,7 +98,15 @@ export class Matchmaking {
       roomProof,
     });
     await this.options.onCapacity(response.maxViewers ?? 4);
-    for (const peer of response.peers ?? []) await this.options.onPeer(peer);
+    for (const peer of response.peers ?? []) {
+      await this.enqueuePeerEvent(() => this.options.onPeer(peer));
+    }
+  }
+
+  private enqueuePeerEvent(task: () => void | Promise<void>) {
+    const execution = this.peerEvents.then(() => task());
+    this.peerEvents = execution.catch((error) => this.options.onError(messageOf(error)));
+    return execution;
   }
 
   close() { this.closed = true; this.desired = null; this.socket.disconnect(); }

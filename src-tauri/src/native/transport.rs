@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -29,7 +29,7 @@ pub struct TransportControl {
     request_remote_keyframe: Arc<AtomicBool>,
     bitrate_bps: Arc<AtomicU32>,
     peer_codecs: Arc<AtomicU32>,
-    assigned_tier: Arc<AtomicU32>,
+    clock_offset_us: Arc<AtomicI64>,
     tasks: Vec<JoinHandle<()>>,
     native_thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -54,7 +54,7 @@ pub struct TransportHandle {
     request_remote_keyframe: Arc<AtomicBool>,
     bitrate_bps: Arc<AtomicU32>,
     peer_codecs: Arc<AtomicU32>,
-    assigned_tier: Arc<AtomicU32>,
+    clock_offset_us: Arc<AtomicI64>,
 }
 
 #[derive(Clone)]
@@ -112,55 +112,37 @@ impl DatagramHub {
 #[derive(Clone, Default)]
 pub struct HostTransportHandle {
     peers: Arc<Mutex<HashMap<String, TransportHandle>>>,
-    configs: Arc<Mutex<HashMap<(VideoTier, VideoCodec), StreamConfig>>>,
+    configs: Arc<Mutex<HashMap<(String, VideoCodec), StreamConfig>>>,
     supported_codecs: Arc<AtomicU32>,
     force_keyframe: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum VideoTier {
-    Low,
-    High,
+fn negotiated_codec(local: u8, remote: u8) -> Option<VideoCodec> {
+    VideoCodec::best_common(local, remote)
 }
 
-impl VideoTier {
-    fn for_bitrate(bitrate: u32) -> Self {
-        if bitrate < 4_000_000 {
-            Self::Low
-        } else {
-            Self::High
-        }
+fn opus_bitrate_for_video(video_bitrate: u32) -> i32 {
+    match video_bitrate {
+        0..=1_499_999 => 64_000,
+        1_500_000..=3_999_999 => 80_000,
+        4_000_000..=7_999_999 => 96_000,
+        _ => 128_000,
     }
-
-    fn code(self) -> u32 {
-        match self {
-            Self::Low => 1,
-            Self::High => 2,
-        }
-    }
-}
-
-fn negotiated_codec(local: u8, remote: u8) -> VideoCodec {
-    VideoCodec::best_common(local, remote).unwrap_or(VideoCodec::H264)
 }
 
 impl HostTransportHandle {
     pub fn add(&self, peer_id: String, handle: TransportHandle) {
-        let tier = VideoTier::for_bitrate(handle.target_bitrate());
-        let codec = self.codec_for(&handle);
-        if let Some(config) = self
-            .configs
-            .lock()
-            .ok()
-            .and_then(|configs| configs.get(&(tier, codec)).copied())
-        {
-            handle.queue_config(config);
+        if let Some(codec) = self.codec_for(&handle) {
+            if let Some(config) = self
+                .configs
+                .lock()
+                .ok()
+                .and_then(|configs| configs.get(&(peer_id.clone(), codec)).copied())
+            {
+                handle.queue_config(config);
+            }
         }
-        handle.assigned_tier.store(
-            tier.code() | (u32::from(codec as u8) << 8),
-            Ordering::Release,
-        );
         if let Ok(mut peers) = self.peers.lock() {
             peers.insert(peer_id, handle);
         }
@@ -170,10 +152,16 @@ impl HostTransportHandle {
         if let Ok(mut peers) = self.peers.lock() {
             peers.remove(peer_id);
         }
+        if let Ok(mut configs) = self.configs.lock() {
+            configs.retain(|(configured_peer, _), _| configured_peer != peer_id);
+        }
     }
     pub fn clear(&self) {
         if let Ok(mut peers) = self.peers.lock() {
             peers.clear();
+        }
+        if let Ok(mut configs) = self.configs.lock() {
+            configs.clear();
         }
     }
     pub fn stopped(&self) -> bool {
@@ -185,6 +173,15 @@ impl HostTransportHandle {
             .map(|peers| !peers.is_empty())
             .unwrap_or(false)
     }
+    pub fn audio_bitrate_bps(&self) -> i32 {
+        let video = self
+            .peers
+            .lock()
+            .ok()
+            .and_then(|peers| peers.values().map(TransportHandle::target_bitrate).min())
+            .unwrap_or(12_000_000);
+        opus_bitrate_for_video(video)
+    }
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Release);
         self.clear();
@@ -193,52 +190,44 @@ impl HostTransportHandle {
         self.supported_codecs
             .store(u32::from(codecs), Ordering::Release);
     }
-    fn codec_for(&self, handle: &TransportHandle) -> VideoCodec {
+    fn codec_for(&self, handle: &TransportHandle) -> Option<VideoCodec> {
         negotiated_codec(
             self.supported_codecs.load(Ordering::Acquire) as u8,
             handle.peer_codecs.load(Ordering::Acquire) as u8,
         )
     }
-    pub fn queue_video(&self, tier: VideoTier, codec: VideoCodec, frame: EncodedFrame) -> bool {
-        let config = self
-            .configs
+    pub fn peers_support_any(&self, local_codecs: u8) -> bool {
+        self.peers
             .lock()
-            .ok()
-            .and_then(|configs| configs.get(&(tier, codec)).copied());
-        let handles = self
+            .map(|peers| {
+                peers.values().all(|handle| {
+                    negotiated_codec(
+                        local_codecs,
+                        handle.peer_codecs.load(Ordering::Acquire) as u8,
+                    )
+                    .is_some()
+                })
+            })
+            .unwrap_or(false)
+    }
+    pub fn queue_video(&self, peer_id: &str, codec: VideoCodec, frame: EncodedFrame) -> bool {
+        let handle = self
             .peers
             .lock()
-            .map(|peers| peers.values().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
-        handles.into_iter().fold(false, |dropped, handle| {
-            if VideoTier::for_bitrate(handle.target_bitrate()) != tier
-                || self.codec_for(&handle) != codec
-            {
-                return dropped;
-            }
-            let assignment = tier.code() | (u32::from(codec as u8) << 8);
-            let changed = handle.assigned_tier.swap(assignment, Ordering::AcqRel) != assignment;
-            if changed {
-                if let Some(config) = config {
-                    handle.queue_config(config);
-                }
-                self.force_keyframe.store(true, Ordering::Release);
-                if !frame.keyframe {
-                    return true;
-                }
-            }
-            dropped | handle.queue_video(frame.clone())
-        })
+            .ok()
+            .and_then(|peers| peers.get(peer_id).cloned());
+        handle
+            .filter(|handle| self.codec_for(handle) == Some(codec))
+            .map(|handle| handle.queue_video(frame))
+            .unwrap_or(false)
     }
-    pub fn queue_config(&self, tier: VideoTier, config: StreamConfig) {
+    pub fn queue_config(&self, peer_id: &str, config: StreamConfig) {
         if let Ok(mut current) = self.configs.lock() {
-            current.insert((tier, config.codec), config);
+            current.insert((peer_id.to_owned(), config.codec), config);
         }
         if let Ok(peers) = self.peers.lock() {
-            for handle in peers.values() {
-                if VideoTier::for_bitrate(handle.target_bitrate()) == tier
-                    && self.codec_for(handle) == config.codec
-                {
+            if let Some(handle) = peers.get(peer_id) {
+                if self.codec_for(handle) == Some(config.codec) {
                     handle.queue_config(config);
                 }
             }
@@ -252,24 +241,19 @@ impl HostTransportHandle {
                 .map(|peers| peers.values().any(TransportHandle::take_keyframe_request))
                 .unwrap_or(false)
     }
-    pub fn active_lanes(&self) -> Vec<(VideoTier, VideoCodec, u32)> {
+    pub fn request_keyframe(&self) {
+        self.force_keyframe.store(true, Ordering::Release);
+    }
+    pub fn active_lanes(&self) -> Vec<(String, VideoCodec, u32)> {
         let Ok(peers) = self.peers.lock() else {
             return Vec::new();
         };
-        let mut lanes = HashMap::<(VideoTier, VideoCodec), u32>::new();
-        for handle in peers.values() {
-            let key = (
-                VideoTier::for_bitrate(handle.target_bitrate()),
-                self.codec_for(handle),
-            );
-            lanes
-                .entry(key)
-                .and_modify(|value| *value = (*value).min(handle.target_bitrate()))
-                .or_insert_with(|| handle.target_bitrate());
-        }
-        lanes
-            .into_iter()
-            .map(|((tier, codec), bitrate)| (tier, codec, bitrate))
+        peers
+            .iter()
+            .filter_map(|(peer_id, handle)| {
+                self.codec_for(handle)
+                    .map(|codec| (peer_id.clone(), codec, handle.target_bitrate()))
+            })
             .collect()
     }
     pub fn queue_audio(&self, packet: AudioPacket) {
@@ -397,7 +381,7 @@ impl TransportControl {
             request_remote_keyframe: self.request_remote_keyframe.clone(),
             bitrate_bps: self.bitrate_bps.clone(),
             peer_codecs: self.peer_codecs.clone(),
-            assigned_tier: self.assigned_tier.clone(),
+            clock_offset_us: self.clock_offset_us.clone(),
         }
     }
     pub fn attach_native_thread(&mut self, thread: std::thread::JoinHandle<()>) {
@@ -452,6 +436,14 @@ impl TransportHandle {
     pub fn target_bitrate(&self) -> u32 {
         self.bitrate_bps.load(Ordering::Acquire)
     }
+    pub fn capture_to_display_ms(&self, remote_timestamp_us: u64) -> Option<u32> {
+        let offset = self.clock_offset_us.load(Ordering::Acquire);
+        if offset == i64::MIN {
+            return None;
+        }
+        let latency = i128::from(now_us()) + i128::from(offset) - i128::from(remote_timestamp_us);
+        Some(latency.clamp(0, 60_000_000) as u32 / 1_000)
+    }
 }
 
 pub async fn spawn_receiver(
@@ -504,7 +496,7 @@ pub async fn spawn_receiver(
     let request_remote_keyframe = Arc::new(AtomicBool::new(false));
     let bitrate_bps = Arc::new(AtomicU32::new(12_000_000));
     let peer_codecs = Arc::new(AtomicU32::new(u32::from(peer_codecs)));
-    let assigned_tier = Arc::new(AtomicU32::new(0));
+    let clock_offset_us = Arc::new(AtomicI64::new(i64::MIN));
     // Feedback pertence a este par. Guardar RTT/perda apenas no status global
     // fazia um espectador lento reduzir (ou acelerar) os demais transportes.
     let feedback_rtt_ms = Arc::new(AtomicU32::new(0));
@@ -535,6 +527,7 @@ pub async fn spawn_receiver(
     let recv_feedback_loss = feedback_loss_bits.clone();
     let recv_feedback_at = feedback_at_us.clone();
     let recv_measured_rtt = measured_rtt_ms;
+    let recv_clock_offset = clock_offset_us.clone();
     let recv_peer_id = peer_id.clone();
     let receiver = tauri::async_runtime::spawn(async move {
         let mut frames = Reassembler::default();
@@ -548,6 +541,12 @@ pub async fn spawn_receiver(
                 recv_route.reset();
                 if let Ok(mut inner) = recv_state.lock() {
                     inner.status.phase = "recovering";
+                    if role == StreamRole::Viewer
+                        && recv_route.relay.is_none()
+                        && last_authenticated.elapsed() >= Duration::from_secs(8)
+                    {
+                        inner.status.rejoin_required = true;
+                    }
                 }
                 update_peer(&recv_state, &recv_peer_id, |metric| {
                     metric.phase = "recovering"
@@ -578,6 +577,9 @@ pub async fn spawn_receiver(
                         // nao provam que a rota atual continua viva. Atualizar estes
                         // marcadores antes do antirreplay impediria a recuperacao.
                         last_authenticated = Instant::now();
+                        if let Ok(mut inner) = recv_state.lock() {
+                            inner.status.rejoin_required = false;
+                        }
                         let selected = recv_route.select(source);
                         let observed_endpoint = if selected == 2 {
                             format!("relay://{}", source)
@@ -605,19 +607,39 @@ pub async fn spawn_receiver(
                             }
                             Kind::HelloAck => mark_connected(&recv_state, role, &recv_peer_id),
                             Kind::Ping => {
+                                let mut pong = packet.payload;
+                                if pong.len() == 8 {
+                                    pong.extend_from_slice(&now_us().to_be_bytes());
+                                }
                                 let _ = send(
                                     &recv_route,
                                     &send_key,
                                     Kind::Pong,
                                     next_meta(&recv_sequence, stream_id),
-                                    &packet.payload,
+                                    &pong,
                                 )
                                 .await;
                             }
-                            Kind::Pong if packet.payload.len() == 8 => {
+                            Kind::Pong
+                                if packet.payload.len() == 8 || packet.payload.len() == 16 =>
+                            {
                                 let sent =
                                     u64::from_be_bytes(packet.payload[..8].try_into().unwrap());
-                                let rtt = now_us().saturating_sub(sent) / 1000;
+                                let received = now_us();
+                                let rtt = received.saturating_sub(sent) / 1000;
+                                if packet.payload.len() == 16 {
+                                    let remote = u64::from_be_bytes(
+                                        packet.payload[8..16].try_into().unwrap(),
+                                    );
+                                    let midpoint =
+                                        sent.saturating_add(received.saturating_sub(sent) / 2);
+                                    let offset = i128::from(remote) - i128::from(midpoint);
+                                    recv_clock_offset.store(
+                                        offset.clamp(i128::from(i64::MIN + 1), i128::from(i64::MAX))
+                                            as i64,
+                                        Ordering::Release,
+                                    );
+                                }
                                 recv_measured_rtt
                                     .store(rtt.min(u32::MAX as u64) as u32, Ordering::Release);
                                 if let Ok(mut inner) = recv_state.lock() {
@@ -745,10 +767,18 @@ pub async fn spawn_receiver(
                         }
                         if last_feedback.elapsed() >= Duration::from_millis(500) {
                             let rtt = recv_measured_rtt.load(Ordering::Acquire);
-                            let mut feedback = Vec::with_capacity(8);
+                            let mut feedback = Vec::with_capacity(20);
                             feedback.extend_from_slice(&rtt.to_be_bytes());
                             feedback
                                 .extend_from_slice(&loss.take_percent().to_bits().to_be_bytes());
+                            if let Ok(inner) = recv_state.lock() {
+                                feedback
+                                    .extend_from_slice(&inner.status.latency_p50_ms.to_be_bytes());
+                                feedback
+                                    .extend_from_slice(&inner.status.latency_p95_ms.to_be_bytes());
+                                feedback
+                                    .extend_from_slice(&inner.status.latency_p99_ms.to_be_bytes());
+                            }
                             let _ = send(
                                 &recv_route,
                                 &send_key,
@@ -1022,7 +1052,7 @@ pub async fn spawn_receiver(
         request_remote_keyframe,
         bitrate_bps,
         peer_codecs,
-        assigned_tier,
+        clock_offset_us,
         tasks: vec![receiver, video_sender, audio_sender, heartbeat],
         native_thread: None,
     })
@@ -1080,6 +1110,11 @@ fn apply_feedback(
         update_peer(state, peer_id, |metric| {
             metric.rtt_ms = rtt;
             metric.loss_pct = loss;
+            if payload.len() >= 20 {
+                metric.latency_p50_ms = u32::from_be_bytes(payload[8..12].try_into().unwrap());
+                metric.latency_p95_ms = u32::from_be_bytes(payload[12..16].try_into().unwrap());
+                metric.latency_p99_ms = u32::from_be_bytes(payload[16..20].try_into().unwrap());
+            }
         });
     }
 }
@@ -1159,4 +1194,25 @@ fn now_us() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_micros() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_bitrate_tracks_constrained_video() {
+        assert_eq!(opus_bitrate_for_video(800_000), 64_000);
+        assert_eq!(opus_bitrate_for_video(2_000_000), 80_000);
+        assert_eq!(opus_bitrate_for_video(5_000_000), 96_000);
+        assert_eq!(opus_bitrate_for_video(12_000_000), 128_000);
+    }
+
+    #[test]
+    fn codec_negotiation_never_invents_h264() {
+        assert_eq!(
+            negotiated_codec(VideoCodec::Av1.bit(), VideoCodec::H264.bit()),
+            None
+        );
+    }
 }

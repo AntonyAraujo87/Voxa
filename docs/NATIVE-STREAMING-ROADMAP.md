@@ -1,6 +1,6 @@
 # Motor nativo de streaming
 
-## Entregue na base 0.6
+## Entregue na base 0.7
 
 - Exclusão do produto social, Supabase e mídia WebRTC.
 - Painel React restrito a hospedar, conectar, encerrar e mostrar telemetria.
@@ -24,26 +24,34 @@
 - `ICodecAPI` para low-latency, GOP curto, zero B-frames, IDR e bitrate dinâmico.
 - Resize, letterbox, fullscreen e reconstrução de device/decoder após falha D3D11.
 - Updater assinado verificado e instalado pelo painel.
-- Fan-out de vídeo codificado uma vez para até quatro sessões UDP, cada uma com
-  chave X25519, congestionamento e alocação de relay independentes.
+- Até quatro encoders independentes, um por espectador, cada sessão com chave
+  X25519, perfil adaptativo, congestionamento e alocação de relay próprios.
 - Seleção explícita de monitor/GPU, perfis adaptativos de 540p30 a 1080p60 e
-  duas faixas de encode para isolar espectadores lentos.
+  qualidade totalmente independente para isolar espectadores lentos.
 - Negociação por espectador entre H.264, H.265 e AV1 conforme os MFTs de hardware.
 - FEC XOR para recuperar um fragmento perdido por grupo de keyframe.
 - Métricas de rota, RTT, perda e bitrate por espectador.
 - Captura WASAPI loopback e reprodução Opus 48 kHz estéreo pelo túnel cifrado.
 - Segunda instância independente para hospedar e assistir simultaneamente.
+- Aprovação local obrigatória por código E2E antes de liberar tela e áudio.
+- Senha de pelo menos 12 caracteres derivada com Argon2id (64 MiB, 3 iterações).
+- Captura WASAPI isolada no processo do jogo para excluir Discord e Voxa.
+- Troca de monitor e áudio durante a sessão; seleção da GPU de decodificação.
+- Codec validado no adaptador D3D11 selecionado e proteção multithread explícita.
+- Reconstrução do matchmaking após mudança de rede na rota direta.
+- Bitrate Opus adaptativo e latência captura→tela P50/P95/P99.
+- Testes determinísticos de perda, jitter, FEC e controle de congestionamento.
+- RustSec no CI e Dependabot para Cargo, npm e GitHub Actions.
 
 ## Melhorias futuras prioritárias
 
-1. **Admissão local:** o host deve aprovar cada espectador pelo código E2E antes
-   de iniciar vídeo e áudio para aquele computador.
-2. **Áudio por processo:** selecionar somente o executável do jogo e excluir a
-   reprodução do próprio Voxa do loopback do host.
-3. **Troca em sessão:** permitir mudar o monitor/GPU sem encerrar a sala.
-4. **Feedback:** atraso interframe, fila do
+1. **Feedback:** atraso interframe, fila do
    socket e tempo encode/decode para dirigir bitrate, resolução e FPS.
-5. **Rede hostil:** medir disponibilidade/custo do relay e adicionar relay regional.
+2. **Rede hostil:** medir disponibilidade/custo do relay e adicionar relay regional.
+3. **Autenticação formal:** migrar a prova Argon2id para um PAKE auditado se o
+   matchmaking passar a autenticar contas ou armazenar credenciais persistentes.
+4. **Validação de hardware:** medir limites de sessões simultâneas de NVENC, AMF
+   e QuickSync e reduzir o limite de espectadores quando o driver exigir.
 
 Input remoto permanece fora do escopo atual de transmissão. Se voltar ao produto,
 deve exigir consentimento local, indicador persistente e botão de emergência.

@@ -27,6 +27,13 @@ input:disabled, select:disabled, button:disabled { opacity: .55; cursor: not-all
 details { color: #7f899d; font-size: 13px; } summary { cursor: pointer; margin-bottom: 12px; }
 .primary { border: 0; border-radius: 10px; background: linear-gradient(135deg,#2f7dff,#175fe2); padding: 14px 20px; font-weight: 800; cursor: pointer; box-shadow: 0 10px 30px rgba(47,125,255,.24); }
 .primary.danger { background: #b73142; box-shadow: none; }
+.secondary { width: fit-content; border: 1px solid #334056; border-radius: 8px; background: #141b27; padding: 8px 12px; cursor: pointer; }
+.approvals { margin-top: 18px; display: grid; gap: 12px; border-color: #725d24; }
+.approvals h2 { margin: 0; font-size: 18px; }
+.approvals p { margin: 0; color: #aab3c4; line-height: 1.5; }
+.approval { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid #3c4658; border-radius: 10px; background: #090d14; }
+.approval div { display: grid; gap: 5px; }
+.approval span { color: #72b2ff; font-family: ui-monospace, "Cascadia Code", monospace; font-weight: 700; }
 .telemetry { margin-top: 18px; border: 1px solid #1b2230; border-radius: 16px; background: rgba(10,13,19,.76); overflow: hidden; }
 .status { display: flex; align-items: center; gap: 10px; padding: 15px 18px; border-bottom: 1px solid #1b2230; color: #b9c1d1; }
 .status i { width: 8px; height: 8px; border-radius: 50%; background: #6a7487; }

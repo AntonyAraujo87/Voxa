@@ -3,7 +3,7 @@
 //! The concrete backend owns DXGI Desktop Duplication textures. Encoders receive
 //! an `ID3D11Texture2D` directly; this API deliberately has no CPU byte buffer.
 #[cfg(target_os = "windows")]
-use super::{CaptureTargetId, CaptureTargetInfo};
+use super::{CaptureTargetId, CaptureTargetInfo, GraphicsAdapterInfo};
 #[cfg(target_os = "windows")]
 use windows::{
     core::Interface,
@@ -33,7 +33,6 @@ pub struct DxgiCapture {
 #[cfg(target_os = "windows")]
 pub struct GpuFrame<'a> {
     pub texture: ID3D11Texture2D,
-    pub timestamp_qpc: i64,
     duplication: &'a IDXGIOutputDuplication,
 }
 
@@ -113,7 +112,6 @@ impl DxgiCapture {
                         .map_err(|e| e.to_string())?;
                     Ok(Some(GpuFrame {
                         texture,
-                        timestamp_qpc: info.LastPresentTime,
                         duplication: &self.duplication,
                     }))
                 }
@@ -172,17 +170,34 @@ pub fn enumerate_targets() -> Result<Vec<CaptureTargetInfo>, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn wide_string<const N: usize>(value: &[u16; N]) -> String {
-    let length = value.iter().position(|unit| *unit == 0).unwrap_or(N);
-    String::from_utf16_lossy(&value[..length])
+pub fn enumerate_adapters() -> Result<Vec<GraphicsAdapterInfo>, String> {
+    unsafe {
+        let factory: IDXGIFactory1 =
+            CreateDXGIFactory1().map_err(|e| format!("DXGI factory: {e}"))?;
+        let mut adapters = Vec::new();
+        for adapter_index in 0..32 {
+            let Ok(adapter) = factory.EnumAdapters(adapter_index) else {
+                break;
+            };
+            let desc = adapter
+                .GetDesc()
+                .map_err(|e| format!("Descrição da GPU: {e}"))?;
+            adapters.push(GraphicsAdapterInfo {
+                adapter_index,
+                name: wide_string(&desc.Description),
+                dedicated_memory_mb: desc.DedicatedVideoMemory as u64 / (1024 * 1024),
+            });
+        }
+        if adapters.is_empty() {
+            Err("Nenhuma GPU D3D11 foi encontrada".into())
+        } else {
+            Ok(adapters)
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
-pub fn probe(target: Option<CaptureTargetId>) -> Result<(), String> {
-    let capture = DxgiCapture::open(target)?;
-    let _gpu_handles = (&capture.device, &capture.context);
-    if let Some(frame) = capture.acquire(0)? {
-        let _gpu_frame = (&frame.texture, frame.timestamp_qpc);
-    }
-    Ok(())
+fn wide_string<const N: usize>(value: &[u16; N]) -> String {
+    let length = value.iter().position(|unit| *unit == 0).unwrap_or(N);
+    String::from_utf16_lossy(&value[..length])
 }

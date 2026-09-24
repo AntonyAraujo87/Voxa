@@ -49,12 +49,20 @@ impl Drop for MediaFoundation {
     }
 }
 
-pub fn hardware_encoder_codecs() -> Result<Vec<VideoCodec>, String> {
-    let _runtime = MediaFoundation::start()?;
-    Ok(VideoCodec::ALL
-        .into_iter()
-        .filter(|codec| enumerate(*codec).is_ok_and(|items| !items.is_empty()))
-        .collect())
+pub fn hardware_encoder_codecs_for_device(
+    device: &ID3D11Device,
+) -> Result<Vec<VideoCodec>, String> {
+    let mut available = Vec::new();
+    for codec in VideoCodec::ALL {
+        // Enumerar MFTs no sistema nao garante que o encoder aceite o mesmo
+        // adapter D3D11 usado pelo Desktop Duplication. A abertura real faz a
+        // negociacao com o gerenciador DXGI e elimina falsos positivos em
+        // notebooks com GPU integrada + dedicada.
+        if HardwareVideoEncoder::open(device, codec, 1280, 720, 30, 2_500_000).is_ok() {
+            available.push(codec);
+        }
+    }
+    Ok(available)
 }
 
 fn subtype(codec: VideoCodec) -> GUID {
@@ -99,6 +107,65 @@ fn enumerate(codec: VideoCodec) -> Result<Vec<IMFActivate>, String> {
     }
 }
 
+fn activate_for_device(
+    device: &ID3D11Device,
+    codec: VideoCodec,
+) -> Result<(IMFActivate, IMFTransform, IMFDXGIDeviceManager, bool), String> {
+    let mut failures = Vec::new();
+    for activation in enumerate(codec)? {
+        let attempt = unsafe {
+            (|| {
+                let transform: IMFTransform = activation
+                    .ActivateObject()
+                    .map_err(|e| format!("ativação: {e}"))?;
+                let attributes = transform
+                    .GetAttributes()
+                    .map_err(|e| format!("atributos: {e}"))?;
+                let asynchronous = attributes
+                    .GetUINT32(&MF_TRANSFORM_ASYNC)
+                    .unwrap_or_default()
+                    != 0;
+                if asynchronous {
+                    attributes
+                        .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
+                        .map_err(|e| format!("encoder assíncrono: {e}"))?;
+                }
+                let mut reset_token = 0;
+                let mut manager = None;
+                MFCreateDXGIDeviceManager(&mut reset_token, &mut manager)
+                    .map_err(|e| format!("DXGI manager: {e}"))?;
+                let manager = manager.ok_or("Media Foundation não retornou o gerenciador DXGI")?;
+                manager
+                    .ResetDevice(device, reset_token)
+                    .map_err(|e| format!("GPU selecionada: {e}"))?;
+                transform
+                    .ProcessMessage(
+                        MFT_MESSAGE_SET_D3D_MANAGER,
+                        Interface::as_raw(&manager) as usize,
+                    )
+                    .map_err(|e| format!("vínculo D3D11: {e}"))?;
+                Ok::<_, String>((transform, manager, asynchronous))
+            })()
+        };
+        match attempt {
+            Ok((transform, manager, asynchronous)) => {
+                return Ok((activation, transform, manager, asynchronous));
+            }
+            Err(error) => {
+                failures.push(error);
+                unsafe {
+                    let _ = activation.ShutdownObject();
+                }
+            }
+        }
+    }
+    Err(format!(
+        "Nenhum encoder {} aceitou a GPU selecionada: {}",
+        codec.name(),
+        failures.join(" | ")
+    ))
+}
+
 /// Owns a hardware MFT configured for NV12 textures and an H.264 bitstream.
 /// Raw desktop BGRA must be converted to an NV12 D3D11 texture before input.
 #[expect(dead_code, reason = "ativado pelo ciclo de captura no próximo estágio")]
@@ -134,41 +201,8 @@ impl HardwareVideoEncoder {
             ));
         }
         let runtime = MediaFoundation::start()?;
-        let activation = enumerate(codec)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| format!("Nenhum encoder {} por hardware disponível", codec.name()))?;
+        let (activation, transform, manager, asynchronous) = activate_for_device(device, codec)?;
         unsafe {
-            let transform: IMFTransform = activation
-                .ActivateObject()
-                .map_err(|e| format!("Ativação do encoder: {e}"))?;
-            let attributes = transform
-                .GetAttributes()
-                .map_err(|e| format!("Atributos do encoder: {e}"))?;
-            let asynchronous = attributes
-                .GetUINT32(&MF_TRANSFORM_ASYNC)
-                .unwrap_or_default()
-                != 0;
-            if asynchronous {
-                attributes
-                    .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
-                    .map_err(|e| format!("Desbloqueio do encoder assíncrono: {e}"))?;
-            }
-            let mut reset_token = 0;
-            let mut manager = None;
-            MFCreateDXGIDeviceManager(&mut reset_token, &mut manager)
-                .map_err(|e| format!("DXGI Device Manager: {e}"))?;
-            let manager = manager.ok_or("Media Foundation não retornou o gerenciador DXGI")?;
-            manager
-                .ResetDevice(device, reset_token)
-                .map_err(|e| format!("Registro da GPU no encoder: {e}"))?;
-            transform
-                .ProcessMessage(
-                    MFT_MESSAGE_SET_D3D_MANAGER,
-                    Interface::as_raw(&manager) as usize,
-                )
-                .map_err(|e| format!("Encoder recusou o gerenciador D3D11: {e}"))?;
-
             let codec_api: Option<ICodecAPI> = transform.cast().ok();
             if let Some(codec) = &codec_api {
                 // Some vendor MFTs expose only a subset. Apply every low-latency

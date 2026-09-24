@@ -2,28 +2,49 @@
 
 use super::{
     transport::{AudioPacket, HostTransportHandle, TransportHandle},
-    Inner,
+    AudioProcessInfo, Inner,
 };
 use rusty_opus::{Application, OpusDecoder, OpusEncoder};
 use std::{
     collections::VecDeque,
+    mem::{size_of, ManuallyDrop},
+    ops::Deref,
+    pin::Pin,
     ptr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
     thread,
     time::Duration,
 };
-use windows::Win32::{
-    Media::{
-        Audio::{
-            eConsole, eRender, IAudioCaptureClient, IAudioClient, IAudioRenderClient,
-            IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
-            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-            AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, WAVEFORMATEX,
+use windows::{
+    core::{implement, IUnknown, Interface, Ref, HRESULT},
+    Win32::{
+        Foundation::CloseHandle,
+        Media::{
+            Audio::{
+                eConsole, eRender, ActivateAudioInterfaceAsync,
+                IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
+                IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient,
+                IAudioRenderClient, IMMDeviceEnumerator, MMDeviceEnumerator,
+                AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_LOOPBACK,
+                AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDIOCLIENT_ACTIVATION_PARAMS,
+                AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+                AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+                PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+                VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
+            },
+            Multimedia::WAVE_FORMAT_IEEE_FLOAT,
         },
-        Multimedia::WAVE_FORMAT_IEEE_FLOAT,
-    },
-    System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize,
+            StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0},
+            BLOB, CLSCTX_ALL, COINIT_MULTITHREADED,
+        },
+        System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        },
+        System::Variant::VT_BLOB,
     },
 };
 
@@ -31,7 +52,6 @@ const SAMPLE_RATE: usize = 48_000;
 const CHANNELS: usize = 2;
 const FRAME_SAMPLES: usize = 960;
 const FRAME_US: u64 = 20_000;
-const OPUS_BITRATE: i32 = 128_000;
 const OPUS_MAX_PACKET: usize = 1_275;
 const WASAPI_BUFFER_100NS: i64 = 400_000;
 
@@ -50,7 +70,8 @@ pub(super) fn spawn_capture(
                 thread::sleep(Duration::from_millis(50));
                 continue;
             }
-            if let Err(error) = capture_loop(&transport, &state, &mut timestamp_us) {
+            let process_id = state.lock().ok().and_then(|inner| inner.audio_process_id);
+            if let Err(error) = capture_loop(&transport, &state, &mut timestamp_us, process_id) {
                 set_status(&state, "recovering", Some(&error));
                 eprintln!("[voxa] captura de áudio: {}", brief(&error));
                 thread::sleep(Duration::from_millis(750));
@@ -78,24 +99,42 @@ fn capture_loop(
     transport: &HostTransportHandle,
     state: &Arc<Mutex<Inner>>,
     timestamp_us: &mut u64,
+    process_id: Option<u32>,
 ) -> Result<(), String> {
     let _com = ComApartment::start()?;
-    let (client, capture) = open_capture()?;
+    let (client, capture) = open_capture(process_id)?;
     let mut encoder = OpusEncoder::new(
         SAMPLE_RATE as i32,
         CHANNELS,
         Application::RestrictedLowDelay,
     )
     .map_err(str::to_owned)?;
-    encoder.bitrate_bps = OPUS_BITRATE;
+    let mut audio_bitrate = transport.audio_bitrate_bps();
+    encoder.bitrate_bps = audio_bitrate;
     encoder.complexity = 5;
     encoder.use_inband_fec = true;
     encoder.packet_loss_perc = 10;
-    set_status(state, "wasapi-loopback-opus", None);
+    set_status(
+        state,
+        if process_id.is_some() {
+            "wasapi-game-only-opus"
+        } else {
+            "wasapi-system-opus"
+        },
+        None,
+    );
     let mut pcm = Vec::<f32>::with_capacity(FRAME_SAMPLES * CHANNELS * 2);
     let mut encoded = [0u8; OPUS_MAX_PACKET];
     unsafe { client.Start() }.map_err(|e| format!("Inicia loopback WASAPI: {e}"))?;
     while !transport.stopped() {
+        if state
+            .lock()
+            .map(|inner| inner.audio_process_id != process_id)
+            .unwrap_or(false)
+        {
+            let _ = unsafe { client.Stop() };
+            return Ok(());
+        }
         if !transport.has_peers() {
             let _ = unsafe { client.Stop() };
             return Ok(());
@@ -123,6 +162,14 @@ fn capture_loop(
 
         let packet_samples = FRAME_SAMPLES * CHANNELS;
         while pcm.len() >= packet_samples {
+            let requested_bitrate = transport.audio_bitrate_bps();
+            if requested_bitrate != audio_bitrate {
+                audio_bitrate = requested_bitrate;
+                encoder.bitrate_bps = audio_bitrate;
+                if let Ok(mut inner) = state.lock() {
+                    inner.status.audio_bitrate_kbps = audio_bitrate as u32 / 1000;
+                }
+            }
             let length = encoder
                 .encode(&pcm[..packet_samples], FRAME_SAMPLES, &mut encoded)
                 .map_err(str::to_owned)?;
@@ -229,6 +276,127 @@ fn format() -> WAVEFORMATEX {
     }
 }
 
+pub(super) fn enumerate_processes() -> Result<Vec<AudioProcessInfo>, String> {
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+            .map_err(|e| format!("Lista processos de áudio: {e}"))?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut processes = Vec::new();
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                if entry.th32ProcessID > 4 && entry.th32ProcessID != std::process::id() {
+                    let end = entry
+                        .szExeFile
+                        .iter()
+                        .position(|unit| *unit == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+                    if !name.is_empty() {
+                        processes.push(AudioProcessInfo {
+                            process_id: entry.th32ProcessID,
+                            name,
+                        });
+                    }
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+        processes.sort_by(|left, right| {
+            left.name
+                .to_lowercase()
+                .cmp(&right.name.to_lowercase())
+                .then(left.process_id.cmp(&right.process_id))
+        });
+        Ok(processes)
+    }
+}
+
+#[implement(IActivateAudioInterfaceCompletionHandler)]
+struct ActivationHandler(Arc<(Mutex<bool>, Condvar)>);
+
+impl IActivateAudioInterfaceCompletionHandler_Impl for ActivationHandler_Impl {
+    fn ActivateCompleted(
+        &self,
+        _operation: Ref<'_, IActivateAudioInterfaceAsyncOperation>,
+    ) -> windows::core::Result<()> {
+        let (lock, condition) = &*self.0;
+        let mut completed = lock
+            .lock()
+            .map_err(|_| windows::core::Error::from_hresult(HRESULT(0x80004005u32 as i32)))?;
+        *completed = true;
+        condition.notify_one();
+        Ok(())
+    }
+}
+
+fn process_loopback_client(process_id: u32) -> Result<IAudioClient, String> {
+    unsafe {
+        let mut parameters = AUDIOCLIENT_ACTIVATION_PARAMS {
+            ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+            Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+                ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                    TargetProcessId: process_id,
+                    ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+                },
+            },
+        };
+        let pinned = Pin::new(&mut parameters);
+        let property = ManuallyDrop::new(PROPVARIANT {
+            Anonymous: PROPVARIANT_0 {
+                Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
+                    vt: VT_BLOB,
+                    wReserved1: 0,
+                    wReserved2: 0,
+                    wReserved3: 0,
+                    Anonymous: PROPVARIANT_0_0_0 {
+                        blob: BLOB {
+                            cbSize: size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
+                            pBlobData: std::ptr::from_mut(pinned.get_mut()).cast(),
+                        },
+                    },
+                }),
+            },
+        });
+        let pinned_property = Pin::new(property.deref());
+        let completed = Arc::new((Mutex::new(false), Condvar::new()));
+        let callback: IActivateAudioInterfaceCompletionHandler =
+            ActivationHandler(completed.clone()).into();
+        let operation = ActivateAudioInterfaceAsync(
+            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+            &IAudioClient::IID,
+            Some(std::ptr::from_ref(pinned_property.get_ref())),
+            &callback,
+        )
+        .map_err(|e| format!("Ativa captura somente do jogo: {e}"))?;
+        let (lock, condition) = &*completed;
+        let ready = lock.lock().map_err(|_| "Captura de áudio indisponível")?;
+        let (ready, timeout) = condition
+            .wait_timeout_while(ready, Duration::from_secs(5), |value| !*value)
+            .map_err(|_| "Captura de áudio indisponível")?;
+        if timeout.timed_out() && !*ready {
+            return Err("Windows demorou para ativar o áudio do jogo".into());
+        }
+        let mut result = HRESULT::default();
+        let mut interface: Option<IUnknown> = None;
+        operation
+            .GetActivateResult(&mut result, &mut interface)
+            .map_err(|e| format!("Resultado da captura do jogo: {e}"))?;
+        result
+            .ok()
+            .map_err(|e| format!("O Windows recusou a captura do jogo: {e}"))?;
+        interface
+            .ok_or("Windows não retornou o cliente de áudio do jogo")?
+            .cast()
+            .map_err(|e| format!("Interface de áudio do jogo: {e}"))
+    }
+}
+
 fn default_render_client() -> Result<IAudioClient, String> {
     let enumerator: IMMDeviceEnumerator = unsafe {
         CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
@@ -240,8 +408,11 @@ fn default_render_client() -> Result<IAudioClient, String> {
         .map_err(|e| format!("Ativa dispositivo de áudio: {e}"))
 }
 
-fn open_capture() -> Result<(IAudioClient, IAudioCaptureClient), String> {
-    let client = default_render_client()?;
+fn open_capture(process_id: Option<u32>) -> Result<(IAudioClient, IAudioCaptureClient), String> {
+    let client = match process_id {
+        Some(process_id) => process_loopback_client(process_id)?,
+        None => default_render_client()?,
+    };
     let format = format();
     unsafe {
         client.Initialize(
@@ -311,6 +482,9 @@ fn set_status(state: &Arc<Mutex<Inner>>, audio: &'static str, error: Option<&str
     if let Ok(mut inner) = state.lock() {
         inner.status.audio = audio;
         inner.status.audio_error = error.map(brief);
+        if error.is_none() && audio != "waiting" {
+            inner.status.audio_bitrate_kbps = inner.host_fanout.audio_bitrate_bps() as u32 / 1000;
+        }
     }
 }
 

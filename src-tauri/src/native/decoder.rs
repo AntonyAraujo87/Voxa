@@ -56,6 +56,63 @@ pub struct DecodedSurface {
     pub subresource_index: u32,
 }
 
+fn activate_for_device(
+    device: &ID3D11Device,
+    codec: VideoCodec,
+) -> Result<(IMFActivate, IMFTransform, IMFDXGIDeviceManager, bool), String> {
+    let mut failures = Vec::new();
+    for activation in enumerate(codec)? {
+        let attempt = unsafe {
+            (|| {
+                let transform: IMFTransform = activation
+                    .ActivateObject()
+                    .map_err(|e| format!("ativação: {e}"))?;
+                let attributes = transform.GetAttributes().map_err(|e| e.to_string())?;
+                let asynchronous = attributes
+                    .GetUINT32(&MF_TRANSFORM_ASYNC)
+                    .unwrap_or_default()
+                    != 0;
+                if asynchronous {
+                    attributes
+                        .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
+                        .map_err(|e| format!("decoder assíncrono: {e}"))?;
+                }
+                let mut reset_token = 0;
+                let mut manager = None;
+                MFCreateDXGIDeviceManager(&mut reset_token, &mut manager)
+                    .map_err(|e| format!("DXGI manager: {e}"))?;
+                let manager = manager.ok_or("Decoder não retornou gerenciador DXGI")?;
+                manager
+                    .ResetDevice(device, reset_token)
+                    .map_err(|e| format!("GPU selecionada: {e}"))?;
+                transform
+                    .ProcessMessage(
+                        MFT_MESSAGE_SET_D3D_MANAGER,
+                        Interface::as_raw(&manager) as usize,
+                    )
+                    .map_err(|e| format!("vínculo D3D11: {e}"))?;
+                Ok::<_, String>((transform, manager, asynchronous))
+            })()
+        };
+        match attempt {
+            Ok((transform, manager, asynchronous)) => {
+                return Ok((activation, transform, manager, asynchronous));
+            }
+            Err(error) => {
+                failures.push(error);
+                unsafe {
+                    let _ = activation.ShutdownObject();
+                }
+            }
+        }
+    }
+    Err(format!(
+        "Nenhum decoder {} aceitou a GPU selecionada: {}",
+        codec.name(),
+        failures.join(" | ")
+    ))
+}
+
 impl HardwareVideoDecoder {
     pub fn open(
         device: &ID3D11Device,
@@ -65,38 +122,8 @@ impl HardwareVideoDecoder {
         fps: u32,
     ) -> Result<Self, String> {
         let runtime = MediaFoundation::start()?;
-        let activation = enumerate(codec)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| format!("Nenhum decoder {} por hardware disponível", codec.name()))?;
+        let (activation, transform, manager, asynchronous) = activate_for_device(device, codec)?;
         unsafe {
-            let transform: IMFTransform = activation
-                .ActivateObject()
-                .map_err(|e| format!("Ativação do decoder: {e}"))?;
-            let attributes = transform.GetAttributes().map_err(|e| e.to_string())?;
-            let asynchronous = attributes
-                .GetUINT32(&MF_TRANSFORM_ASYNC)
-                .unwrap_or_default()
-                != 0;
-            if asynchronous {
-                attributes
-                    .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
-                    .map_err(|e| format!("Desbloqueio do decoder assíncrono: {e}"))?;
-            }
-            let mut reset_token = 0;
-            let mut manager = None;
-            MFCreateDXGIDeviceManager(&mut reset_token, &mut manager)
-                .map_err(|e| format!("DXGI Device Manager do decoder: {e}"))?;
-            let manager = manager.ok_or("Decoder não retornou gerenciador DXGI")?;
-            manager
-                .ResetDevice(device, reset_token)
-                .map_err(|e| format!("Registro da GPU no decoder: {e}"))?;
-            transform
-                .ProcessMessage(
-                    MFT_MESSAGE_SET_D3D_MANAGER,
-                    Interface::as_raw(&manager) as usize,
-                )
-                .map_err(|e| format!("Decoder recusou o gerenciador D3D11: {e}"))?;
             let input = media_type(subtype(codec), width, height, fps)?;
             let output = media_type(MFVideoFormat_NV12, width, height, fps)?;
             transform
@@ -242,14 +269,6 @@ impl Drop for HardwareVideoDecoder {
             let _ = self.activation.ShutdownObject();
         }
     }
-}
-
-pub fn hardware_decoder_codecs() -> Result<Vec<VideoCodec>, String> {
-    let _runtime = MediaFoundation::start()?;
-    Ok(VideoCodec::ALL
-        .into_iter()
-        .filter(|codec| enumerate(*codec).is_ok_and(|items| !items.is_empty()))
-        .collect())
 }
 
 fn subtype(codec: VideoCodec) -> GUID {

@@ -1,9 +1,9 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { NativeEngine, type CaptureTargetInfo, type EngineStatus, type StreamRole } from "./lib/nativeEngine";
+import { NativeEngine, type AudioProcessInfo, type CaptureTargetInfo, type EngineStatus, type GraphicsAdapterInfo, type StreamRole } from "./lib/nativeEngine";
 import { Matchmaking, type PeerAnnouncement } from "./lib/signaling";
 
 const DEFAULT_SIGNALING =
@@ -14,7 +14,8 @@ const emptyStatus: EngineStatus = {
   peerEndpoint: null, rttMs: 0, lossPct: 0, bitrateKbps: 0,
   receivedFrames: 0, encodedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
   renderer: "closed", capture: "idle", encoder: "idle",
-  decoder: "idle", audio: "idle", audioError: null, decodedFrames: 0,
+  decoder: "idle", decoderGpu: null, audio: "idle", audioBitrateKbps: 0, audioError: null, rejoinRequired: false, decodedFrames: 0,
+  latencyP50Ms: 0, latencyP95Ms: 0, latencyP99Ms: 0,
   verificationCode: null, connectedPeers: 0, maxPeers: 4, peerVerifications: [], peerMetrics: [], lastError: null,
 };
 
@@ -30,9 +31,17 @@ export default function App() {
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [captureTargets, setCaptureTargets] = useState<CaptureTargetInfo[]>([]);
   const [captureTargetIndex, setCaptureTargetIndex] = useState(0);
+  const [audioProcesses, setAudioProcesses] = useState<AudioProcessInfo[]>([]);
+  const [audioProcessId, setAudioProcessId] = useState(0);
+  const [graphicsAdapters, setGraphicsAdapters] = useState<GraphicsAdapterInfo[]>([]);
+  const [decoderAdapterIndex, setDecoderAdapterIndex] = useState(-1);
+  const captureTargetRef = useRef<CaptureTargetInfo | null>(null);
+  const audioProcessRef = useRef(0);
+  const approvedPeersRef = useRef(new Map<string, string>());
+  const [pendingPeers, setPendingPeers] = useState<Array<{ peer: PeerAnnouncement; code: string }>>([]);
   const [updateMessage, setUpdateMessage] = useState("Verificar atualização");
   const roomValid = /^[a-zA-Z0-9._:-]{1,64}$/.test(room);
-  const passwordValid = roomPassword.length >= 4 && roomPassword.length <= 128;
+  const passwordValid = roomPassword.length >= 12 && roomPassword.length <= 128;
 
   useEffect(() => {
     void engine.captureTargets().then((targets) => {
@@ -43,8 +52,25 @@ export default function App() {
   }, [engine]);
 
   useEffect(() => {
+    void engine.audioProcesses().then(setAudioProcesses).catch(() => setAudioProcesses([]));
+    void engine.graphicsAdapters().then(setGraphicsAdapters).catch(() => setGraphicsAdapters([]));
+  }, [engine]);
+
+  useEffect(() => {
+    captureTargetRef.current = captureTargets[captureTargetIndex] ?? null;
+  }, [captureTargets, captureTargetIndex]);
+
+  useEffect(() => { audioProcessRef.current = audioProcessId; }, [audioProcessId]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
-      void engine.status().then(setStatus).catch(() => undefined);
+      void engine.status().then((next) => {
+        setStatus(next);
+        if (next.rejoinRequired) {
+          setMessage("A rede mudou. Refazendo a rota e as chaves...");
+          void engine.recoverSignaling().catch((error) => setMessage(String(error)));
+        }
+      }).catch(() => undefined);
     }, 500);
     return () => window.clearInterval(timer);
   }, [engine]);
@@ -86,6 +112,7 @@ export default function App() {
   async function installUpdate() {
     if (!availableUpdate || active || busy) return;
     setBusy(true);
+    setPendingPeers([]);
     try {
       let received = 0;
       let total = 0;
@@ -109,23 +136,51 @@ export default function App() {
     let matchmaking: Matchmaking | null = null;
     try {
       const roomId = room.trim();
-      const roomProof = await deriveRoomProof(roomId, roomPassword);
+      const roomProof = await engine.roomProof(roomId, roomPassword);
       localStorage.setItem("voxa-room", roomId);
       const selectedCaptureTarget = role === "host" ? captureTargets[captureTargetIndex]?.id ?? null : null;
-      const endpoint = await engine.prepare(role, selectedCaptureTarget);
+      const selectedAudioProcess = role === "host" && audioProcessId > 0 ? audioProcessId : null;
+      const endpoint = await engine.prepare(
+        role,
+        selectedCaptureTarget,
+        selectedAudioProcess,
+        role === "viewer" && decoderAdapterIndex >= 0 ? decoderAdapterIndex : null,
+      );
       matchmaking = new Matchmaking(serverUrl, {
         onPeer: async (peer: PeerAnnouncement) => {
+          if (role === "host") {
+            if (approvedPeersRef.current.get(peer.peerId) === peer.publicKey) {
+              setMessage("A rede do espectador mudou. Restaurando a rota aprovada...");
+              await engine.connectPeer(peer);
+              setMessage("Rota do espectador restaurada");
+              return;
+            }
+            const code = await engine.previewPeer(peer);
+            setPendingPeers((current) => [
+              ...current.filter((candidate) => candidate.peer.peerId !== peer.peerId),
+              { peer, code },
+            ]);
+            setMessage("Novo espectador aguardando sua aprovação");
+            return;
+          }
           setMessage("Perfurando o NAT e autenticando o par...");
           await engine.connectPeer(peer);
-          setMessage(role === "host" ? "Pipeline nativo iniciado" : "Decoder e janela D3D11 iniciados");
+          setMessage("Decoder e janela D3D11 iniciados");
         },
         onPeerLeft: async (peerId) => {
+          setPendingPeers((current) => current.filter((candidate) => candidate.peer.peerId !== peerId));
           await engine.disconnectPeer(peerId);
           if (role === "host") {
             setMessage("Um espectador desconectou. A sala continua aberta.");
           } else {
             setMessage("O host desconectou. Renovando as chaves...");
-            const refreshed = await engine.prepare(role, selectedCaptureTarget);
+            const refreshed = await engine.prepare(
+              role,
+              selectedCaptureTarget,
+              null,
+              decoderAdapterIndex >= 0 ? decoderAdapterIndex : null,
+              true,
+            );
             if (matchmaking) await matchmaking.join(roomId, role, refreshed, roomProof);
           }
         },
@@ -133,7 +188,10 @@ export default function App() {
         onError: setMessage,
         refreshEndpoint: (reconnectingRole) => engine.prepare(
           reconnectingRole,
-          reconnectingRole === "host" ? selectedCaptureTarget : null,
+          reconnectingRole === "host" ? captureTargetRef.current?.id ?? null : null,
+          reconnectingRole === "host" && audioProcessRef.current > 0 ? audioProcessRef.current : null,
+          reconnectingRole === "viewer" && decoderAdapterIndex >= 0 ? decoderAdapterIndex : null,
+          true,
         ),
       });
       engine.attachMatchmaking(matchmaking);
@@ -151,8 +209,59 @@ export default function App() {
     setBusy(true);
     await engine.stop().catch(() => undefined);
     setStatus(await engine.status().catch(() => emptyStatus));
+    setPendingPeers([]);
+    approvedPeersRef.current.clear();
     setMessage("Transmissão encerrada");
     setBusy(false);
+  }
+
+  async function approvePeer(peerId: string) {
+    const pending = pendingPeers.find((candidate) => candidate.peer.peerId === peerId);
+    if (!pending || busy) return;
+    setBusy(true);
+    try {
+      setMessage("Autenticando e liberando o espectador...");
+      await engine.connectPeer(pending.peer);
+      approvedPeersRef.current.set(pending.peer.peerId, pending.peer.publicKey);
+      setPendingPeers((current) => current.filter((candidate) => candidate.peer.peerId !== peerId));
+      setMessage("Espectador aprovado. Pipeline nativo iniciado.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function selectCaptureTarget(index: number) {
+    setCaptureTargetIndex(index);
+    const target = captureTargets[index];
+    captureTargetRef.current = target ?? null;
+    if (!active || role !== "host" || !target) return;
+    setBusy(true);
+    try {
+      setMessage("Trocando monitor e reiniciando os encoders...");
+      await engine.switchCapture(target.id);
+      setMessage("Monitor alterado sem encerrar a sala");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function selectAudioSource(processId: number) {
+    setAudioProcessId(processId);
+    audioProcessRef.current = processId;
+    if (!active || role !== "host") return;
+    setBusy(true);
+    try {
+      await engine.switchAudio(processId > 0 ? processId : null);
+      setMessage(processId > 0 ? "Áudio isolado no jogo; retorno do Discord bloqueado" : "Capturando todo o som do sistema");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
   }
 
   const active = status.phase !== "idle" && status.phase !== "stopped";
@@ -181,7 +290,7 @@ export default function App() {
             </button>
           </div>
           {role === "host" && <label>Monitor e GPU
-            <select value={captureTargetIndex} onChange={(event) => setCaptureTargetIndex(Number(event.target.value))} disabled={active || busy}>
+            <select value={captureTargetIndex} onChange={(event) => void selectCaptureTarget(Number(event.target.value))} disabled={busy}>
               {captureTargets.length === 0
                 ? <option value={0}>Monitor principal automático</option>
                 : captureTargets.map((target, index) => <option key={`${target.id.adapterIndex}:${target.id.outputIndex}`} value={index}>
@@ -189,8 +298,26 @@ export default function App() {
                   </option>)}
             </select>
           </label>}
+          {role === "host" && <label>Áudio transmitido
+            <select value={audioProcessId} onChange={(event) => void selectAudioSource(Number(event.target.value))} disabled={busy}>
+              <option value={0}>Todo o som do sistema (pode incluir Discord)</option>
+              {audioProcesses.map((process) => <option key={process.processId} value={process.processId}>
+                Somente {process.name} · PID {process.processId}
+              </option>)}
+            </select>
+            <button className="secondary" type="button" onClick={() => void engine.audioProcesses().then(setAudioProcesses).catch(() => setMessage("Não foi possível atualizar os processos"))} disabled={busy}>Atualizar processos</button>
+            <small>{audioProcessId > 0 ? "Proteção contra eco do Discord ativa: somente o processo do jogo e seus filhos entram no stream." : "Escolha o jogo para impedir que Discord e o próprio Voxa retornem ao espectador."}</small>
+          </label>}
+          {role === "viewer" && <label>GPU de reprodução
+            <select value={decoderAdapterIndex} onChange={(event) => setDecoderAdapterIndex(Number(event.target.value))} disabled={active || busy}>
+              <option value={-1}>Automática (melhor GPU compatível)</option>
+              {graphicsAdapters.map((adapter) => <option key={adapter.adapterIndex} value={adapter.adapterIndex}>
+                {adapter.name} · {adapter.dedicatedMemoryMb} MB dedicados
+              </option>)}
+            </select>
+          </label>}
           <label>Código da sala<input value={room} onChange={(event) => setRoom(event.target.value)} maxLength={64} pattern="[a-zA-Z0-9._:-]+" title="Use letras, números, ponto, dois-pontos, hífen ou sublinhado" placeholder="ex.: sala-do-jogo" disabled={active} /></label>
-          <label>Senha da sala<input value={roomPassword} onChange={(event) => setRoomPassword(event.target.value)} type="password" minLength={4} maxLength={128} autoComplete="new-password" placeholder="A mesma senha nos dois computadores" disabled={active} /></label>
+          <label>Senha da sala<input value={roomPassword} onChange={(event) => setRoomPassword(event.target.value)} type="password" minLength={12} maxLength={128} autoComplete="new-password" placeholder="Use 12 ou mais caracteres nos dois computadores" disabled={active} /></label>
           <details>
             <summary>Servidor de matchmaking</summary>
             <label>URL<input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} inputMode="url" disabled={active} /></label>
@@ -200,6 +327,14 @@ export default function App() {
             : <button className="primary" type="submit" disabled={busy || !roomValid || !passwordValid}>{busy ? "Conectando..." : role === "host" ? "Começar transmissão" : "Conectar ao host"}</button>}
         </form>
       </section>
+      {role === "host" && pendingPeers.length > 0 && <section className="card approvals" aria-live="assertive">
+        <h2>Aprovação de espectadores</h2>
+        <p>Compare o código abaixo com o exibido no computador do espectador. A tela e o áudio só serão enviados depois da aprovação.</p>
+        {pendingPeers.map(({ peer, code }, index) => <div className="approval" key={peer.peerId}>
+          <div><strong>Espectador {index + 1}</strong><span>Código E2E: {code}</span></div>
+          <button className="primary" type="button" onClick={() => void approvePeer(peer.peerId)} disabled={busy}>Aprovar</button>
+        </div>)}
+      </section>}
       <section className="telemetry" aria-live="polite">
         <div className={`status ${status.phase}`}><i />{message}</div>
         <div className="metrics">
@@ -210,15 +345,16 @@ export default function App() {
           <Metric label="Bitrate" value={`${status.bitrateKbps} kbps`} />
           <Metric label="Código E2E" value={role === "host" && status.peerVerifications.length > 0 ? status.peerVerifications.map(({ code }, index) => `#${index + 1} ${code}`).join(" · ") : status.verificationCode ?? "—"} />
           <Metric label="Frames" value={role === "host" ? `${status.encodedFrames} codificados · ${status.droppedFrames} descartados` : `${status.receivedFrames} recebidos · ${status.decodedFrames} exibidos · ${status.droppedFrames} descartados`} />
-          <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.decoder} · ${status.renderer}`} />
-          <Metric label="Áudio" value={status.audio} />
+          <Metric label="Latência vídeo" value={status.latencyP50Ms ? `P50 ${status.latencyP50Ms} · P95 ${status.latencyP95Ms} · P99 ${status.latencyP99Ms} ms` : "medindo..."} />
+          <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.decoder}${status.decoderGpu ? ` (${status.decoderGpu})` : ""} · ${status.renderer}`} />
+          <Metric label="Áudio" value={`${status.audio} · ${status.audioBitrateKbps || "—"} kbps`} />
         </div>
         {status.lastError && <small className="native-error">Erro nativo: {status.lastError}</small>}
         {status.audioError && <small className="native-error">Erro de áudio: {status.audioError}</small>}
         {role === "host" && status.peerMetrics.length > 0 && <div className="peer-metrics">
           {status.peerMetrics.map((peer, index) => <div key={peer.peerId}>
             <strong>Espectador {index + 1}</strong>
-            <span>{peer.phase} · {peer.rttMs} ms · {peer.lossPct.toFixed(1)}% · {peer.bitrateKbps} kbps</span>
+            <span>{peer.phase} · {peer.rttMs} ms · {peer.lossPct.toFixed(1)}% · {peer.bitrateKbps} kbps · P95 {peer.latencyP95Ms || "—"} ms</span>
             <small title={peer.endpoint ?? undefined}>{peer.endpoint ?? "Rota em negociação"}</small>
           </div>)}
         </div>}
@@ -242,10 +378,4 @@ function randomRoom() {
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
-}
-
-async function deriveRoomProof(room: string, password: string) {
-  const material = new TextEncoder().encode(`voxa-room-v1\0${room}\0${password}`);
-  const digest = await crypto.subtle.digest("SHA-256", material);
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
 }
