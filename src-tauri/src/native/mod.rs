@@ -93,6 +93,7 @@ impl Default for EngineStatus {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PreparedEndpoint {
     local: String,
     public: Option<String>,
@@ -484,5 +485,17 @@ mod tests {
     #[test]
     fn default_engine_is_idle() {
         assert_eq!(EngineStatus::default().phase, "idle");
+    }
+
+    #[test]
+    fn prepared_endpoint_uses_the_frontend_contract() {
+        let json = serde_json::to_value(PreparedEndpoint {
+            local: "192.168.1.2:40000".into(),
+            public: Some("203.0.113.2:50000".into()),
+            public_key: "A".repeat(43),
+        })
+        .unwrap();
+        assert_eq!(json["publicKey"], "A".repeat(43));
+        assert!(json.get("public_key").is_none());
     }
 }

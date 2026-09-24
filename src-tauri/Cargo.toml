@@ -1,6 +1,6 @@
 [package]
 name = "voxa"
-version = "0.6.0"
+version = "0.6.1"
 description = "Native low-latency P2P game streaming engine"
 authors = ["Voxa"]
 edition = "2021"
