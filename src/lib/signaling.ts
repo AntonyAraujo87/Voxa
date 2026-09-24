@@ -29,6 +29,7 @@ export class Matchmaking {
   constructor(url: string, private readonly options: Options) {
     this.socket = io(url, {
       transports: ["websocket"],
+      timeout: 80_000,
       reconnection: true,
       reconnectionDelay: 500,
       reconnectionDelayMax: 5_000,
@@ -40,7 +41,11 @@ export class Matchmaking {
       if (!payload?.peerId) return options.onError("Identidade do computador desconectado ausente");
       void Promise.resolve(options.onPeerLeft(payload.peerId)).catch((error) => options.onError(messageOf(error)));
     });
-    this.socket.on("connect_error", (error) => options.onError(error.message || "Servidor indisponível"));
+    this.socket.on("connect_error", (error) => options.onError(
+      this.socket.active
+        ? "Acordando o servidor gratuito de matchmaking..."
+        : error.message || "Servidor indisponível",
+    ));
     this.socket.on("connect", () => {
       if (this.rejoinArmed && this.desired) {
         void options.refreshEndpoint(this.desired.role).then((endpoint) => {
@@ -54,6 +59,7 @@ export class Matchmaking {
 
   async join(room: string, role: StreamRole, endpoint: PreparedEndpoint, roomProof: string) {
     this.desired = { room, role, endpoint, roomProof };
+    await this.waitForConnection();
     await this.performJoin(this.desired);
     this.rejoinArmed = true;
   }
@@ -74,9 +80,24 @@ export class Matchmaking {
 
   close() { this.closed = true; this.desired = null; this.socket.disconnect(); }
 
+  private waitForConnection(timeoutMs = 90_000) {
+    if (this.closed) return Promise.reject(new Error("Conexão encerrada"));
+    if (this.socket.connected) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        window.clearTimeout(timer);
+        this.socket.off("connect", connected);
+        if (error) reject(error); else resolve();
+      };
+      const connected = () => finish();
+      const timer = window.setTimeout(() => finish(new Error("O servidor gratuito demorou para iniciar. Tente novamente.")), timeoutMs);
+      this.socket.once("connect", connected);
+    });
+  }
+
   private emit(event: string, payload: unknown): Promise<Ack> {
     return new Promise((resolve, reject) => {
-      this.socket.timeout(10_000).emit(event, payload, (error: Error | null, response?: Ack) => {
+      this.socket.timeout(15_000).emit(event, payload, (error: Error | null, response?: Ack) => {
         if (error) return reject(new Error("O servidor de matchmaking não respondeu"));
         if (!response || response.error) return reject(new Error(response?.error ?? "Resposta inválida do servidor"));
         resolve(response);
