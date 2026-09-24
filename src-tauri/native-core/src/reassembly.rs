@@ -47,6 +47,14 @@ impl Reassembler {
         if count == 0 || count > crate::protocol::MAX_FRAGMENTS || index >= count {
             return Err("Fragmentação inválida".into());
         }
+        let max_fragment = if keyframe {
+            crate::protocol::FEC_DATA_PAYLOAD
+        } else {
+            crate::protocol::MAX_PAYLOAD
+        };
+        if data.is_empty() || data.len() > max_fragment {
+            return Err("Tamanho de fragmento inválido".into());
+        }
         if !self.pending.contains_key(&frame_id) && self.pending.len() >= MAX_PENDING_FRAMES {
             return Err("Muitos frames incompletos".into());
         }
@@ -101,7 +109,7 @@ impl Reassembler {
         if count == 0
             || count > crate::protocol::MAX_FRAGMENTS
             || group_start >= count
-            || group_start % crate::protocol::FEC_GROUP_SIZE != 0
+            || !group_start.is_multiple_of(crate::protocol::FEC_GROUP_SIZE)
             || data.len() < crate::protocol::FEC_HEADER_LEN
             || data.len() > crate::protocol::MAX_PAYLOAD
         {
@@ -111,8 +119,17 @@ impl Reassembler {
             return Err("Muitos frames incompletos".into());
         }
         let last_fragment_len = u16::from_be_bytes([data[0], data[1]]) as usize;
-        if last_fragment_len == 0 || last_fragment_len > crate::protocol::FEC_DATA_PAYLOAD {
-            return Err("Comprimento FEC inválido".into());
+        let group_end = (group_start + crate::protocol::FEC_GROUP_SIZE).min(count);
+        let expected_parity_len = if group_end - group_start == 1 && group_end == count {
+            last_fragment_len
+        } else {
+            crate::protocol::FEC_DATA_PAYLOAD
+        };
+        if last_fragment_len == 0
+            || last_fragment_len > crate::protocol::FEC_DATA_PAYLOAD
+            || data.len() - crate::protocol::FEC_HEADER_LEN != expected_parity_len
+        {
+            return Err("Paridade FEC inválida".into());
         }
         let frame = self
             .pending
@@ -257,5 +274,16 @@ mod tests {
         let frame = r.push_fec(7, 0, 2, 99, &fec).unwrap().unwrap();
         assert_eq!(&frame.bytes[..a.len()], &a);
         assert_eq!(&frame.bytes[a.len()..], &b);
+    }
+
+    #[test]
+    fn rejects_truncated_fec_before_recovery() {
+        let mut r = Reassembler::default();
+        let oversized = vec![1u8; crate::protocol::FEC_DATA_PAYLOAD + 1];
+        assert!(r.push(9, 0, 2, true, 99, &oversized).is_err());
+
+        let mut truncated = 17u16.to_be_bytes().to_vec();
+        truncated.push(0);
+        assert!(r.push_fec(9, 0, 2, 99, &truncated).is_err());
     }
 }

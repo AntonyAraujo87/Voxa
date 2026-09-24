@@ -74,7 +74,7 @@ fn parse(data: &[u8], transaction: [u8; 12]) -> Result<SocketAddr, String> {
         return Err("Resposta STUN inválida".into());
     }
     let declared = u16::from_be_bytes([data[2], data[3]]) as usize;
-    if declared % 4 != 0 || 20 + declared > data.len() {
+    if !declared.is_multiple_of(4) || 20 + declared > data.len() {
         return Err("Tamanho da resposta STUN inválido".into());
     }
     let end = 20 + declared;
