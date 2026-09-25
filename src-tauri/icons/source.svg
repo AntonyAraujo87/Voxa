@@ -1,7 +1,7 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
   <!--
-    Icone mestre do Voxa — "anel de voz".
-    O anel e o mesmo que acende ao redor do avatar quando alguem fala.
+    Icone mestre do Voxa Stream — anel de conexao P2P.
+    O anel representa a rota de video entre o host e os espectadores.
     Todos os tamanhos exigidos pelo Windows sao gerados deste arquivo por
     `npx tauri icon`, entao qualquer ajuste comeca aqui.
   -->

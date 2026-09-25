@@ -28,6 +28,8 @@ export class Matchmaking {
   private rejoinArmed = false;
   private closed = false;
   private recovering = false;
+  private nextRecoveryAt = 0;
+  private readonly connectionWaiters = new Set<(error?: Error) => void>();
   private peerEvents: Promise<void> = Promise.resolve();
   constructor(url: string, private readonly options: Options) {
     this.socket = io(url, {
@@ -68,7 +70,7 @@ export class Matchmaking {
   }
 
   async recover() {
-    if (this.closed || this.recovering || !this.desired) return;
+    if (this.closed || this.recovering || !this.desired || Date.now() < this.nextRecoveryAt) return;
     this.recovering = true;
     try {
       await this.waitForConnection();
@@ -77,9 +79,10 @@ export class Matchmaking {
       if (this.closed || !this.desired) return;
       this.desired = { ...this.desired, endpoint };
       await this.performJoin(this.desired);
+      this.nextRecoveryAt = 0;
     } catch (error) {
       this.options.onError(`Reconexão automática: ${messageOf(error)}`);
-      if (!this.closed) window.setTimeout(() => void this.recover(), 1_500);
+      this.nextRecoveryAt = Date.now() + 1_500;
       throw error;
     } finally {
       this.recovering = false;
@@ -109,19 +112,28 @@ export class Matchmaking {
     return execution;
   }
 
-  close() { this.closed = true; this.desired = null; this.socket.disconnect(); }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.desired = null;
+    for (const finish of [...this.connectionWaiters]) finish(new Error("Conexão encerrada"));
+    this.socket.disconnect();
+  }
 
   private waitForConnection(timeoutMs = 90_000) {
     if (this.closed) return Promise.reject(new Error("Conexão encerrada"));
     if (this.socket.connected) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
+      let timer = 0;
       const finish = (error?: Error) => {
         window.clearTimeout(timer);
+        this.connectionWaiters.delete(finish);
         this.socket.off("connect", connected);
         if (error) reject(error); else resolve();
       };
       const connected = () => finish();
-      const timer = window.setTimeout(() => finish(new Error("O servidor gratuito demorou para iniciar. Tente novamente.")), timeoutMs);
+      this.connectionWaiters.add(finish);
+      timer = window.setTimeout(() => finish(new Error("O servidor gratuito demorou para iniciar. Tente novamente.")), timeoutMs);
       this.socket.once("connect", connected);
     });
   }

@@ -1,4 +1,4 @@
-# Implantação do Voxa Stream 0.6
+# Implantação do Voxa Stream 0.7.1
 
 ## Matchmaking no Render
 
@@ -19,9 +19,10 @@ Variáveis necessárias:
 Execute `node scripts/check-deployment.mjs` depois do deploy. O health não expõe
 salas, IPs, endpoints ou chaves.
 
-A senha escolhida no aplicativo pertence somente à sala. O cliente envia um
-proof SHA-256 vinculado ao ID da sala e o processo do Render o mantém apenas em
-memória enquanto houver participantes. Não configure nem distribua uma senha
+A senha escolhida no aplicativo pertence somente à sala. O cliente deriva uma
+prova Argon2id de 32 bytes vinculada ao ID da sala, fora da thread da interface,
+e o processo do Render a mantém apenas em memória enquanto houver participantes.
+A senha original nunca sai do computador. Não configure nem distribua uma senha
 global do signaling.
 
 ## UDP e NAT
@@ -61,4 +62,4 @@ Secrets do GitHub:
 | `TAURI_SIGNING_PRIVATE_KEY` | Assinatura do atualizador |
 | `VITE_SIGNALING_URL` | Matchmaking WSS |
 
-Supabase, TURN, perfis, voz, chat e anexos não fazem parte do produto 0.6.
+Supabase, TURN, perfis, voz, chat e anexos não fazem parte do produto 0.7.

@@ -75,7 +75,8 @@ npm ci --prefix server
 npm run verify
 npm run build
 npm run test:rust
-cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path src-tauri/native-core/Cargo.toml --all-targets -- -D warnings
 ```
 
 Em Windows GNU, use um `target-dir` sem caracteres Unicode se o `dlltool` antigo

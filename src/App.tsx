@@ -135,6 +135,8 @@ export default function App() {
     if (!roomValid || !passwordValid || busy) return;
     setBusy(true);
     setMessage("Abrindo o socket UDP nativo...");
+    setPendingPeers([]);
+    approvedPeersRef.current.clear();
     let matchmaking: Matchmaking | null = null;
     try {
       const roomId = room.trim();
@@ -148,7 +150,7 @@ export default function App() {
         selectedAudioProcess,
         role === "viewer" && decoderAdapterIndex >= 0 ? decoderAdapterIndex : null,
       );
-      matchmaking = new Matchmaking(serverUrl, {
+      matchmaking = new Matchmaking(validSignalingUrl(serverUrl), {
         onPeer: async (peer: PeerAnnouncement) => {
           if (role === "host") {
             if (approvedPeersRef.current.get(peer.peerId) === peer.publicKey) {
@@ -413,4 +415,13 @@ function randomRoom() {
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function validSignalingUrl(value: string) {
+  const url = new URL(value.trim());
+  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    throw new Error("O matchmaking deve usar HTTPS; HTTP é permitido somente no computador local");
+  }
+  return url.origin;
 }

@@ -69,6 +69,13 @@ jobs:
             echo "::error::VITE_SIGNALING_URL vazio — o painel não encontraria o matchmaking."
             exit 1
           fi
+          case "$VITE_SIGNALING_URL" in
+            https://*) ;;
+            *)
+              echo "::error::VITE_SIGNALING_URL deve usar HTTPS para que o Socket.IO negocie WSS."
+              exit 1
+              ;;
+          esac
           echo "Matchmaking configurado; a mídia usa o túnel UDP nativo."
 
       - name: Build e publicacao

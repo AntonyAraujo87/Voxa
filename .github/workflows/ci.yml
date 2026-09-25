@@ -77,11 +77,15 @@ jobs:
         shell: pwsh
 
       - name: Formatacao
-        run: cargo fmt --check
+        run: |
+          cargo fmt --check
+          cargo fmt --manifest-path native-core/Cargo.toml --check
         working-directory: src-tauri
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --manifest-path native-core/Cargo.toml --all-targets -- -D warnings
         working-directory: src-tauri
 
       - name: Testes Rust e carregador WebView2 fixado

@@ -229,7 +229,12 @@ struct Inner {
     decoder_adapter_index: Option<u32>,
     supported_codecs: u8,
     hardware_encoder_capacity: usize,
+    signaling_max_peers: usize,
     cursor_visible: bool,
+}
+
+fn effective_max_peers(signaling_max: usize, encoder_capacity: usize) -> usize {
+    signaling_max.clamp(1, 16).min(encoder_capacity.max(1))
 }
 
 #[derive(Default)]
@@ -311,7 +316,7 @@ pub fn engine_switch_capture(
         inner.status.capture = "switching-monitor";
         inner.status.encoder = "restarting";
         inner.status.encoder_capacity = encoder_capacity;
-        inner.status.max_peers = inner.status.max_peers.min(encoder_capacity);
+        inner.status.max_peers = effective_max_peers(inner.signaling_max_peers, encoder_capacity);
         inner.status.hdr = capture.hdr;
         inner.host_fanout.request_keyframe();
         Ok(())
@@ -514,6 +519,7 @@ pub async fn engine_prepare(
     inner.decoder_adapter_index = decoder_adapter_index.filter(|_| role == StreamRole::Viewer);
     inner.supported_codecs = codecs;
     inner.hardware_encoder_capacity = encoder_capacity;
+    inner.signaling_max_peers = 4;
     inner.cursor_visible = true;
     inner.host_fanout.set_supported_codecs(codecs);
     inner.status.phase = "waiting";
@@ -522,7 +528,7 @@ pub async fn engine_prepare(
     inner.status.capture = capture_state;
     inner.status.encoder = encoder_state;
     inner.status.encoder_capacity = encoder_capacity;
-    inner.status.max_peers = encoder_capacity.min(4);
+    inner.status.max_peers = effective_max_peers(inner.signaling_max_peers, encoder_capacity);
     inner.status.cursor_visible = true;
     inner.status.hdr = hdr;
     Ok(PreparedEndpoint {
@@ -821,10 +827,11 @@ pub fn engine_set_max_peers(
         return Err("Limite de espectadores invalido".into());
     }
     let mut inner = engine.inner.lock().map_err(|_| "Estado indisponivel")?;
-    let effective = max_peers.min(inner.hardware_encoder_capacity.max(1));
+    let effective = effective_max_peers(max_peers, inner.hardware_encoder_capacity);
     if inner.transports.len() > effective {
         return Err("O novo limite e menor que o numero de espectadores conectados".into());
     }
+    inner.signaling_max_peers = max_peers;
     inner.status.max_peers = effective;
     Ok(())
 }
@@ -948,6 +955,13 @@ mod tests {
     #[test]
     fn default_engine_is_idle() {
         assert_eq!(EngineStatus::default().phase, "idle");
+    }
+
+    #[test]
+    fn peer_limit_recovers_after_switching_to_a_more_capable_gpu() {
+        assert_eq!(effective_max_peers(4, 1), 1);
+        assert_eq!(effective_max_peers(4, 4), 4);
+        assert_eq!(effective_max_peers(2, 4), 2);
     }
 
     #[test]

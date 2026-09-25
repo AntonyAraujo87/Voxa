@@ -12,6 +12,7 @@ async function freePort() {
 }
 function emit(socket,event,payload){return new Promise((resolve,reject)=>socket.timeout(3000).emit(event,payload,(error,response)=>error?reject(error):resolve(response)));}
 async function waitHealth(url){for(let i=0;i<100;i++){try{if((await fetch(`${url}/health`)).ok)return;}catch{} await new Promise(resolve=>setTimeout(resolve,100));}throw new Error("server did not start");}
+const proof = (room, password = "test-room") => createHash("sha256").update(`${room}\0${password}`).digest("hex");
 
 test("real signaling pairs a host with multiple viewers without relaying media", {timeout:15_000}, async () => {
   const port=await freePort(); const url=`http://127.0.0.1:${port}`;
@@ -19,34 +20,36 @@ test("real signaling pairs a host with multiple viewers without relaying media",
   const sockets=[];
   try {
     await waitHealth(url);
-    const connect=(password="test-room")=>new Promise((resolve,reject)=>{const socket=io(url,{transports:["websocket"],auth:{token:password}});sockets.push(socket);socket.once("connect",async()=>{try{assert.equal((await emit(socket,"hello",{})).ok,true);resolve(socket);}catch(error){reject(error);}});socket.once("connect_error",reject);});
+    const connect=()=>new Promise((resolve,reject)=>{const socket=io(url,{transports:["websocket"]});sockets.push(socket);socket.once("connect",async()=>{try{assert.equal((await emit(socket,"hello",{})).ok,true);resolve(socket);}catch(error){reject(error);}});socket.once("connect_error",reject);});
     const attacker=await connect();
-    const reflected=await emit(attacker,"stream:join",{room:"attack",role:"host",endpoint:"203.0.113.55:41000",localEndpoint:"192.168.1.50:41000",publicKey:"a".repeat(43)});
+    const reflected=await emit(attacker,"stream:join",{room:"attack",roomProof:proof("attack"),role:"host",endpoint:"203.0.113.55:41000",localEndpoint:"192.168.1.50:41000",publicKey:"a".repeat(43)});
     assert.match(reflected.error,/corresponde/);
-    const malformed=await emit(attacker,"stream:join",{room:"attack",role:"host",endpoint:"127.0.0.1:41000",localEndpoint:"192.168.1.50:41000",publicKey:"curta"});
+    const malformed=await emit(attacker,"stream:join",{room:"attack",roomProof:proof("attack"),role:"host",endpoint:"127.0.0.1:41000",localEndpoint:"192.168.1.50:41000",publicKey:"curta"});
     assert.match(malformed.error,/X25519/);
+    const legacy=await emit(attacker,"stream:join",{room:"legacy",role:"host",endpoint:"127.0.0.1:41001",localEndpoint:"192.168.1.50:41001",publicKey:"l".repeat(43)});
+    assert.match(legacy.error,/Senha da sala/);
     const host=await connect(); const viewer=await connect(); const viewer2=await connect();
-    assert.equal((await emit(host,"stream:join",{room:"race",role:"host",endpoint:"127.0.0.1:41000",localEndpoint:"192.168.1.10:41000",publicKey:"h".repeat(43)})).ok,true);
-    const intruder=await connect("wrong-password");
-    const rejected=await emit(intruder,"stream:join",{room:"race",role:"viewer",endpoint:"127.0.0.1:44000",localEndpoint:"192.168.1.40:44000",publicKey:"x".repeat(43)});
+    assert.equal((await emit(host,"stream:join",{room:"race",roomProof:proof("race"),role:"host",endpoint:"127.0.0.1:41000",localEndpoint:"192.168.1.10:41000",publicKey:"h".repeat(43)})).ok,true);
+    const intruder=await connect();
+    const rejected=await emit(intruder,"stream:join",{room:"race",roomProof:proof("race","wrong-password"),role:"viewer",endpoint:"127.0.0.1:44000",localEndpoint:"192.168.1.40:44000",publicKey:"x".repeat(43)});
     assert.match(rejected.error,/Senha da sala/);
     const hostAnnouncement=new Promise(resolve=>host.once("stream:peer",resolve));
-    const joined=await emit(viewer,"stream:join",{room:"race",role:"viewer",endpoint:"127.0.0.1:42000",localEndpoint:"192.168.1.20:42000",publicKey:"v".repeat(43)});
+    const joined=await emit(viewer,"stream:join",{room:"race",roomProof:proof("race"),role:"viewer",endpoint:"127.0.0.1:42000",localEndpoint:"192.168.1.20:42000",publicKey:"v".repeat(43)});
     assert.equal(joined.maxViewers,4);
     const announced=await hostAnnouncement;
     assert.equal(joined.peers[0].endpoint,"192.168.1.10:41000"); assert.equal(announced.endpoint,"192.168.1.20:42000");
     assert.equal(joined.peers[0].publicKey,"h".repeat(43)); assert.equal(announced.publicKey,"v".repeat(43));
     const secondAnnouncement=new Promise(resolve=>host.once("stream:peer",resolve));
-    const joined2=await emit(viewer2,"stream:join",{room:"race",role:"viewer",endpoint:"127.0.0.1:43000",localEndpoint:"192.168.1.30:43000",publicKey:"w".repeat(43)});
+    const joined2=await emit(viewer2,"stream:join",{room:"race",roomProof:proof("race"),role:"viewer",endpoint:"127.0.0.1:43000",localEndpoint:"192.168.1.30:43000",publicKey:"w".repeat(43)});
     assert.equal(joined2.peers[0].peerId,host.id); assert.equal((await secondAnnouncement).publicKey,"w".repeat(43));
     assert.equal("sessionKey" in joined.peers[0],false);
     const modernProof=createHash("sha256").update("voxa-room-v1\0modern\0secret-modern").digest("hex");
-    const modernHost=await connect(null); const modernViewer=await connect(null);
+    const modernHost=await connect(); const modernViewer=await connect();
     assert.equal((await emit(modernHost,"stream:join",{room:"modern",roomProof:modernProof,role:"host",endpoint:"127.0.0.1:45000",localEndpoint:"192.168.1.50:45000",publicKey:"m".repeat(43)})).ok,true);
     assert.equal((await emit(modernViewer,"stream:join",{room:"modern",roomProof:modernProof,role:"viewer",endpoint:"127.0.0.1:46000",localEndpoint:"192.168.1.60:46000",publicKey:"n".repeat(43)})).ok,true);
     const wildcardHost=await connect(); const wildcardViewer=await connect();
-    assert.equal((await emit(wildcardHost,"stream:join",{room:"wildcard",role:"host",endpoint:"127.0.0.1:47000",localEndpoint:"0.0.0.0:47000",publicKey:`${"A".repeat(43)}=`})).ok,true);
-    const wildcardJoin=await emit(wildcardViewer,"stream:join",{room:"wildcard",role:"viewer",endpoint:"127.0.0.1:48000",localEndpoint:"192.168.1.80:48000",publicKey:"p".repeat(43)});
+    assert.equal((await emit(wildcardHost,"stream:join",{room:"wildcard",roomProof:proof("wildcard"),role:"host",endpoint:"127.0.0.1:47000",localEndpoint:"0.0.0.0:47000",publicKey:`${"A".repeat(43)}=`})).ok,true);
+    const wildcardJoin=await emit(wildcardViewer,"stream:join",{room:"wildcard",roomProof:proof("wildcard"),role:"viewer",endpoint:"127.0.0.1:48000",localEndpoint:"192.168.1.80:48000",publicKey:"p".repeat(43)});
     assert.equal(wildcardJoin.peers[0].endpoint,"127.0.0.1:47000");
     assert.equal(wildcardJoin.peers[0].publicKey,"A".repeat(43));
     const leavingId=viewer.id; const peerLeft=new Promise(resolve=>host.once("stream:peer-left",resolve));

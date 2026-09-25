@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { EVENT_LIMITS, sanitizeId } from "./security.js";
 
@@ -38,10 +37,6 @@ export function registerHandlers({ io, socket, registry, limiter }) {
   socket.on("hello", (payload = {}, ack) => {
     if (!guard("hello")) return ack?.({ error: "Muitas tentativas" });
     if (identified()) return ack?.({ ok: true });
-    // Instaladores anteriores enviavam a senha da sala no handshake/hello.
-    // Mantemos compatibilidade sem confundi-la com um segredo global do servidor.
-    const legacySecret = payload?.token ?? socket.handshake.auth?.token;
-    socket.data.legacyRoomSecret = validLegacySecret(legacySecret) ? legacySecret : null;
     clearTimeout(timer); registry.identify(socket.id, socket.data.ip); ack?.({ ok: true });
   });
   socket.on("stream:join", (payload = {}, ack) => {
@@ -51,11 +46,11 @@ export function registerHandlers({ io, socket, registry, limiter }) {
     const publicEndpoint = endpoint(payload?.endpoint); const localEndpoint = endpoint(payload?.localEndpoint);
     const publicKey = normalizePublicKey(payload?.publicKey);
     const codecs = normalizeCodecs(payload?.codecs);
-    const roomProof = normalizeRoomProof(payload?.roomProof, roomId, socket.data.legacyRoomSecret);
+    const roomProof = normalizeRoomProof(payload?.roomProof);
     const invalid = invalidJoinField({ roomId, role, publicEndpoint, localEndpoint, publicKey, codecs, roomProof });
     if (invalid) return ack?.({ error: invalid });
-    // Instaladores antigos podiam anunciar o endereço de bind quando o Windows
-    // não conseguia escolher uma interface. 0.0.0.0 nunca é roteável.
+    // Se o Windows não conseguir escolher uma interface, o motor anuncia o
+    // endereço de bind. 0.0.0.0 nunca é roteável.
     const usableLocalEndpoint = localEndpoint.host === "0.0.0.0" ? publicEndpoint : localEndpoint;
     if (isIP(usableLocalEndpoint.host) !== 4 || (!privateV4(usableLocalEndpoint.host) && usableLocalEndpoint !== publicEndpoint)) return ack?.({ error: "Endpoint LAN inválido" });
     if (!sameIp(publicEndpoint.host, socket.data.ip)) return ack?.({ error: "Endpoint público não corresponde à conexão" });
@@ -103,17 +98,7 @@ function normalizePublicKey(value) {
   }
 }
 
-function validLegacySecret(value) {
-  return typeof value === "string" && value.length >= 4 && value.length <= 128;
-}
-
-function normalizeRoomProof(proof, roomId, legacySecret) {
+function normalizeRoomProof(proof) {
   if (typeof proof === "string" && /^[a-f0-9]{64}$/i.test(proof)) return proof.toLowerCase();
-  if (!roomId || !validLegacySecret(legacySecret)) return null;
-  return createHash("sha256")
-    .update("voxa-room-v1\0")
-    .update(roomId)
-    .update("\0")
-    .update(legacySecret)
-    .digest("hex");
+  return null;
 }
