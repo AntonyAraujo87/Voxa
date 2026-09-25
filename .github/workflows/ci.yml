@@ -90,3 +90,8 @@ jobs:
 
       - name: Testes Rust e carregador WebView2 fixado
         run: node scripts/test-rust.mjs
+        env:
+          # Reaproveita os artefatos produzidos pelo Clippy. O script continua
+          # usando um target temporario no Windows local, onde caminhos Unicode
+          # podem quebrar o linker GNU.
+          CARGO_TARGET_DIR: src-tauri/target
