@@ -8,6 +8,6 @@ publish = false
 base64 = "0.22"
 chacha20poly1305 = "0.10"
 getrandom = "0.3"
-sha2 = "0.10"
+sha2 = "0.11"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 tokio = { version = "1.47", features = ["net", "rt-multi-thread", "time", "macros"] }
