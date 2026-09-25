@@ -4332,7 +4332,7 @@ name = "voxa"
 version = "0.7.1"
 dependencies = [
  "argon2",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "rusty-opus",
  "serde",
  "serde_json",
