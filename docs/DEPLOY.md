@@ -2,9 +2,10 @@
 
 ## Matchmaking no Render
 
-O serviço Node recebe apenas autenticação, sala, função e endpoints UDP. O
+O serviço Node recebe apenas sala, função e mensagens opacas de pareamento. O
 `render.yaml` executa `server/index.js`, mantém `/health` e limita conexões antes
-de alocar estado Socket.IO.
+de alocar estado Socket.IO. Endpoints UDP, chave pública e relay só são revelados
+ao par indicado depois que os clientes concluem o SPAKE2 localmente.
 
 Variáveis necessárias:
 
@@ -19,11 +20,16 @@ Variáveis necessárias:
 Execute `node scripts/check-deployment.mjs` depois do deploy. O health não expõe
 salas, IPs, endpoints ou chaves.
 
-A senha escolhida no aplicativo pertence somente à sala. O cliente deriva uma
-prova Argon2id de 32 bytes vinculada ao ID da sala, fora da thread da interface,
-e o processo do Render a mantém apenas em memória enquanto houver participantes.
-A senha original nunca sai do computador. Não configure nem distribua uma senha
-global do signaling.
+A senha escolhida no aplicativo pertence somente à sala. Cada cliente deriva um
+segredo Argon2id de 32 bytes vinculado ao ID da sala, fora da thread da interface,
+e executa SPAKE2 P-256 (RFC 9382) com confirmação mútua. O Render apenas encaminha
+as mensagens públicas do protocolo: senha, segredo derivado e prova reutilizável
+nunca saem do computador. Não configure nem distribua uma senha global do signaling.
+
+Depois da confirmação, o usuário pode optar por confiar naquele computador. A
+identidade X25519 e a lista limitada de pares confiáveis ficam no Gerenciador de
+Credenciais do Windows. Limpar os computadores confiáveis no painel revoga essa
+aprovação persistente sem alterar a senha da sala.
 
 ## UDP e NAT
 

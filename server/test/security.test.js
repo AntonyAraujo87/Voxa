@@ -1,22 +1,13 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { RateLimiter, sanitizeId, safeEqual } from "../lib/security.js";
+import { RateLimiter, sanitizeId } from "../lib/security.js";
 
 describe("sanitizeId", () => {
   test("rejeita travessia, pontuacao e IDs longos em vez de causar colisao", () => {
     assert.equal(sanitizeId("../../etc/passwd; DROP TABLE x"), "");
     assert.equal(sanitizeId("x".repeat(65)), "");
     assert.equal(sanitizeId("sala-1.abc"), "sala-1.abc");
-  });
-});
-
-describe("safeEqual", () => {
-  test("compara corretamente", () => {
-    assert.equal(safeEqual("segredo", "segredo"), true);
-    assert.equal(safeEqual("segredo", "segred0"), false);
-    assert.equal(safeEqual("curto", "bem mais longo"), false);
-    assert.equal(safeEqual(undefined, "x"), false);
   });
 });
 

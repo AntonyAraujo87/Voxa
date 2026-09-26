@@ -4,6 +4,7 @@ import type { Matchmaking } from "./signaling";
 export type StreamRole = "host" | "viewer";
 export type EnginePhase = "idle" | "binding" | "waiting" | "punching" | "connected" | "decoding" | "streaming" | "recovering" | "stopped" | "failed";
 export interface PreparedEndpoint { local: string; public: string | null; publicKey: string; codecs: number; }
+export interface PakeStart { protocol: string; share: string; }
 export interface CaptureTargetId { adapterIndex: number; outputIndex: number; }
 export interface CaptureTargetInfo {
   id: CaptureTargetId; gpu: string; monitor: string;
@@ -38,9 +39,25 @@ export class NativeEngine {
   captureTargets() { return invoke<CaptureTargetInfo[]>("engine_capture_targets"); }
   audioProcesses() { return invoke<AudioProcessInfo[]>("engine_audio_processes"); }
   graphicsAdapters() { return invoke<GraphicsAdapterInfo[]>("engine_graphics_adapters"); }
-  roomProof(room: string, password: string) {
-    return invoke<string>("derive_room_proof", { room, password });
+  roomSecret(room: string, password: string) {
+    return invoke<string>("derive_room_secret", { room, password });
   }
+  pakeBegin(peerId: string, room: string, roomSecret: string) {
+    return invoke<PakeStart>("engine_pake_begin", { peerId, room, roomSecret });
+  }
+  pakeFinish(peerId: string, remoteShare: string) {
+    return invoke<string>("engine_pake_finish", { peerId, remoteShare });
+  }
+  pakeConfirm(peerId: string, remoteConfirmation: string) {
+    return invoke<void>("engine_pake_confirm", { peerId, remoteConfirmation });
+  }
+  isTrusted(peerPublicKey: string) {
+    return invoke<boolean>("engine_is_trusted", { peerPublicKey });
+  }
+  trustPeer(peerId: string, peerPublicKey: string) {
+    return invoke<number>("engine_trust_peer", { peerId, peerPublicKey });
+  }
+  clearTrusted() { return invoke<void>("engine_clear_trusted"); }
   switchCapture(captureTarget: CaptureTargetId) {
     return invoke<void>("engine_switch_capture", { captureTarget });
   }

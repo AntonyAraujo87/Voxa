@@ -140,7 +140,7 @@ export default function App() {
     let matchmaking: Matchmaking | null = null;
     try {
       const roomId = room.trim();
-      const roomProof = await engine.roomProof(roomId, roomPassword);
+      const roomSecret = await engine.roomSecret(roomId, roomPassword);
       localStorage.setItem("voxa-room", roomId);
       const selectedCaptureTarget = role === "host" ? captureTargets[captureTargetIndex]?.id ?? null : null;
       const selectedAudioProcess = role === "host" && audioProcessId > 0 ? audioProcessId : null;
@@ -157,6 +157,13 @@ export default function App() {
               setMessage("A rede do espectador mudou. Restaurando a rota aprovada...");
               await engine.connectPeer(peer);
               setMessage("Rota do espectador restaurada");
+              return;
+            }
+            if (await engine.isTrusted(peer.publicKey).catch(() => false)) {
+              setMessage("Computador confiável reconhecido. Restaurando a transmissão...");
+              await engine.connectPeer(peer);
+              approvedPeersRef.current.set(peer.peerId, peer.publicKey);
+              setMessage("Computador confiável conectado");
               return;
             }
             const code = await engine.previewPeer(peer);
@@ -185,11 +192,14 @@ export default function App() {
               decoderAdapterIndex >= 0 ? decoderAdapterIndex : null,
               true,
             );
-            if (matchmaking) await matchmaking.join(roomId, role, refreshed, roomProof);
+            if (matchmaking) await matchmaking.join(roomId, role, refreshed, roomSecret);
           }
         },
         onCapacity: (maxViewers) => engine.setMaxPeers(maxViewers),
         onError: setMessage,
+        pakeBegin: (peerId, pakeRoom, secret) => engine.pakeBegin(peerId, pakeRoom, secret),
+        pakeFinish: (peerId, remoteShare) => engine.pakeFinish(peerId, remoteShare),
+        pakeConfirm: (peerId, remoteConfirmation) => engine.pakeConfirm(peerId, remoteConfirmation),
         refreshEndpoint: (reconnectingRole) => engine.prepare(
           reconnectingRole,
           reconnectingRole === "host" ? captureTargetRef.current?.id ?? null : null,
@@ -199,7 +209,7 @@ export default function App() {
         ),
       });
       engine.attachMatchmaking(matchmaking);
-      await matchmaking.join(roomId, role, endpoint, roomProof);
+      await matchmaking.join(roomId, role, endpoint, roomSecret);
       const preparedStatus = await engine.status();
       setStatus(preparedStatus);
       setMessage(role === "host"
@@ -224,16 +234,26 @@ export default function App() {
     setBusy(false);
   }
 
-  async function approvePeer(peerId: string) {
+  async function approvePeer(peerId: string, remember = false) {
     const pending = pendingPeers.find((candidate) => candidate.peer.peerId === peerId);
     if (!pending || busy) return;
     setBusy(true);
     try {
       setMessage("Autenticando e liberando o espectador...");
       await engine.connectPeer(pending.peer);
+      let trustSaved = false;
+      if (remember) {
+        trustSaved = await engine.trustPeer(pending.peer.peerId, pending.peer.publicKey)
+          .then(() => true)
+          .catch(() => false);
+      }
       approvedPeersRef.current.set(pending.peer.peerId, pending.peer.publicKey);
       setPendingPeers((current) => current.filter((candidate) => candidate.peer.peerId !== peerId));
-      setMessage("Espectador aprovado. Pipeline nativo iniciado.");
+      setMessage(remember
+        ? trustSaved
+          ? "Espectador aprovado e protegido como computador confiável."
+          : "Espectador conectado; o Windows não permitiu salvar o pareamento."
+        : "Espectador aprovado. Pipeline nativo iniciado.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -285,6 +305,15 @@ export default function App() {
     }
   }
 
+  async function clearTrustedPeers() {
+    try {
+      await engine.clearTrusted();
+      setMessage("Computadores confiáveis removidos. Novas conexões exigirão aprovação.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function exportDiagnostic() {
     try {
       const path = await engine.exportDiagnostic();
@@ -331,6 +360,9 @@ export default function App() {
           {role === "host" && <button className="secondary" type="button" onClick={() => void toggleCursor()} disabled={busy || !active}>
             {cursorVisible ? "Ocultar cursor transmitido" : "Mostrar cursor transmitido"}
           </button>}
+          {role === "host" && <button className="secondary" type="button" onClick={() => void clearTrustedPeers()} disabled={busy || active}>
+            Remover computadores confiáveis
+          </button>}
           {role === "host" && <label>Áudio transmitido
             <select value={audioProcessId} onChange={(event) => void selectAudioSource(Number(event.target.value))} disabled={busy}>
               <option value={0}>Todo o som do sistema (pode incluir Discord)</option>
@@ -365,7 +397,10 @@ export default function App() {
         <p>Compare o código abaixo com o exibido no computador do espectador. A tela e o áudio só serão enviados depois da aprovação.</p>
         {pendingPeers.map(({ peer, code }, index) => <div className="approval" key={peer.peerId}>
           <div><strong>Espectador {index + 1}</strong><span>Código E2E: {code}</span></div>
-          <button className="primary" type="button" onClick={() => void approvePeer(peer.peerId)} disabled={busy}>Aprovar</button>
+          <div className="approval-actions">
+            <button className="secondary" type="button" onClick={() => void approvePeer(peer.peerId)} disabled={busy}>Aprovar uma vez</button>
+            <button className="primary" type="button" onClick={() => void approvePeer(peer.peerId, true)} disabled={busy}>Aprovar e confiar</button>
+          </div>
         </div>)}
       </section>}
       <section className="telemetry" aria-live="polite">

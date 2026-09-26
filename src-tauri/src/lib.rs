@@ -18,7 +18,7 @@ fn open_new_session() -> Result<(), String> {
         .map_err(|e| format!("Não foi possível abrir outra sessão do Voxa: {e}"))
 }
 
-fn derive_room_proof_inner(room: &str, password: &str) -> Result<String, String> {
+fn derive_room_secret_inner(room: &str, password: &str) -> Result<String, String> {
     if room.is_empty() || room.len() > 64 || password.len() < 12 || password.len() > 128 {
         return Err("Sala ou senha inválida".into());
     }
@@ -26,16 +26,16 @@ fn derive_room_proof_inner(room: &str, password: &str) -> Result<String, String>
         .map_err(|e| format!("Parâmetros Argon2id: {e}"))?;
     let argon = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     let salt = format!("voxa-room-v3\0{room}");
-    let mut proof = [0u8; 32];
+    let mut secret = [0u8; 32];
     argon
-        .hash_password_into(password.as_bytes(), salt.as_bytes(), &mut proof)
+        .hash_password_into(password.as_bytes(), salt.as_bytes(), &mut secret)
         .map_err(|e| format!("Derivação segura da sala: {e}"))?;
-    Ok(proof.iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(secret.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 #[tauri::command]
-async fn derive_room_proof(room: String, password: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || derive_room_proof_inner(&room, &password))
+async fn derive_room_secret(room: String, password: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || derive_room_secret_inner(&room, &password))
         .await
         .map_err(|error| format!("Falha ao derivar a credencial da sala: {error}"))?
 }
@@ -49,7 +49,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime_info,
             open_new_session,
-            derive_room_proof,
+            derive_room_secret,
             native::engine_capture_targets,
             native::engine_audio_processes,
             native::engine_graphics_adapters,
@@ -58,6 +58,12 @@ pub fn run() {
             native::engine_set_cursor_visible,
             native::engine_export_diagnostic,
             native::engine_prepare,
+            native::engine_pake_begin,
+            native::engine_pake_finish,
+            native::engine_pake_confirm,
+            native::engine_is_trusted,
+            native::engine_trust_peer,
+            native::engine_clear_trusted,
             native::engine_preview_peer,
             native::engine_connect_peer,
             native::engine_disconnect_peer,
@@ -88,11 +94,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn room_proof_uses_fixed_length_argon2_output() {
-        let proof = derive_room_proof_inner("sala-segura", "senha-com-mais-de-doze")
-            .expect("Argon2id deve derivar a prova");
-        assert_eq!(proof.len(), 64);
-        assert!(proof.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        assert_ne!(proof, "senha-com-mais-de-doze");
+    fn room_secret_uses_fixed_length_argon2_output() {
+        let secret = derive_room_secret_inner("sala-segura", "senha-com-mais-de-doze")
+            .expect("Argon2id deve derivar o segredo");
+        assert_eq!(secret.len(), 64);
+        assert!(secret.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(secret, "senha-com-mais-de-doze");
     }
 }

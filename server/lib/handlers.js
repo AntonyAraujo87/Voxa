@@ -2,14 +2,20 @@ import { BlockList, isIP } from "node:net";
 import { EVENT_LIMITS, sanitizeId } from "./security.js";
 
 const HELLO_TIMEOUT_MS = 15_000;
+const PAKE_PROTOCOL = "spake2-p256-rfc9382-v1";
+
 function endpoint(value) {
   if (typeof value !== "string" || value.length > 80) return null;
   value = value.trim();
   const match = /^\[([^\]]+)]:(\d+)$/.exec(value) ?? /^([^:]+):(\d+)$/.exec(value);
   if (!match || !isIP(match[1])) return null;
-  const port = Number(match[2]); return port >= 1024 && port <= 65535 ? { value, host: match[1] } : null;
+  const port = Number(match[2]);
+  return port >= 1024 && port <= 65535 ? { value, host: match[1] } : null;
 }
+
 const privateV4 = (ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|127\.)/.test(ip);
+const peerStub = (peer) => ({ peerId: peer.socketId, role: peer.role });
+
 function announcement(peer, requesterIp, relay) {
   return {
     peerId: peer.socketId,
@@ -22,6 +28,7 @@ function announcement(peer, requesterIp, relay) {
     relayAuth: relay.auth,
   };
 }
+
 function sameIp(left, right) {
   const version = isIP(left);
   if (!version || version !== isIP(right)) return false;
@@ -30,75 +37,137 @@ function sameIp(left, right) {
   list.addAddress(left, type);
   return list.check(right, type);
 }
+
 export function registerHandlers({ io, socket, registry, limiter }) {
-  const guard = (event) => { const rule = EVENT_LIMITS[event]; return !rule || limiter.allow(`${socket.id}:${event}`, rule.windowMs, rule.max); };
+  const guard = (event) => {
+    const rule = EVENT_LIMITS[event];
+    return !rule || limiter.allow(`${socket.id}:${event}`, rule.windowMs, rule.max);
+  };
   const identified = () => registry.get(socket.id) !== undefined;
-  const timer = setTimeout(() => { if (!identified()) socket.disconnect(true); }, HELLO_TIMEOUT_MS); timer.unref?.();
-  socket.on("hello", (payload = {}, ack) => {
+  const timer = setTimeout(() => { if (!identified()) socket.disconnect(true); }, HELLO_TIMEOUT_MS);
+  timer.unref?.();
+
+  socket.on("hello", (_payload = {}, ack) => {
     if (!guard("hello")) return ack?.({ error: "Muitas tentativas" });
     if (identified()) return ack?.({ ok: true });
-    clearTimeout(timer); registry.identify(socket.id, socket.data.ip); ack?.({ ok: true });
+    clearTimeout(timer);
+    registry.identify(socket.id, socket.data.ip);
+    ack?.({ ok: true });
   });
+
   socket.on("stream:join", (payload = {}, ack) => {
     if (!identified()) return ack?.({ error: "nao-identificado" });
     if (!guard("stream:join")) return ack?.({ error: "Aguarde antes de trocar de sala" });
-    const roomId = sanitizeId(typeof payload?.room === "string" ? payload.room.trim() : payload?.room, 64); const role = payload?.role === "host" || payload?.role === "viewer" ? payload.role : null;
-    const publicEndpoint = endpoint(payload?.endpoint); const localEndpoint = endpoint(payload?.localEndpoint);
+    const roomId = sanitizeId(typeof payload?.room === "string" ? payload.room.trim() : payload?.room, 64);
+    const role = payload?.role === "host" || payload?.role === "viewer" ? payload.role : null;
+    if (!roomId) return ack?.({ error: "Código da sala inválido" });
+    if (!role) return ack?.({ error: "Modo host/espectador inválido" });
+    if (payload?.protocol !== PAKE_PROTOCOL) return ack?.({ error: "Atualize o Voxa para usar SPAKE2" });
+
+    const previous = registry.leave(socket.id);
+    if (previous) {
+      socket.leave(`stream:${previous.roomId}`);
+      for (const otherId of previous.otherIds) io.to(otherId).emit("stream:peer-left", { peerId: previous.peerId });
+    }
+    const joined = registry.join(socket.id, roomId, role);
+    if (joined.error) return ack?.({ error: joined.error });
+    socket.join(`stream:${roomId}`);
+    const peers = joined.peers.map(({ peer }) => peerStub(peer));
+    ack?.({ ok: true, peers, maxViewers: registry.maxViewers });
+    const self = registry.get(socket.id);
+    for (const { peer } of joined.peers) io.to(peer.socketId).emit("stream:peer", peerStub(self));
+  });
+
+  socket.on("stream:pake", (payload = {}, ack) => {
+    if (!guard("stream:pake")) return ack?.({ error: "Muitas mensagens SPAKE2" });
+    const target = sanitizePeer(payload?.peerId);
+    if (!target || payload?.protocol !== PAKE_PROTOCOL || !validB64(payload?.share, 44, 46)) {
+      return ack?.({ error: "Mensagem SPAKE2 inválida" });
+    }
+    if (!registry.paired(socket.id, target)) return ack?.({ error: "Par SPAKE2 inválido" });
+    io.to(target).emit("stream:pake", {
+      peerId: socket.id,
+      protocol: PAKE_PROTOCOL,
+      share: payload.share,
+    });
+    ack?.({ ok: true });
+  });
+
+  socket.on("stream:pake-confirm", (payload = {}, ack) => {
+    if (!guard("stream:pake-confirm")) return ack?.({ error: "Muitas confirmações SPAKE2" });
+    const target = sanitizePeer(payload?.peerId);
+    if (!target || !validB64(payload?.confirmation, 20, 48)) {
+      return ack?.({ error: "Confirmação SPAKE2 inválida" });
+    }
+    if (!registry.paired(socket.id, target)) return ack?.({ error: "Par SPAKE2 inválido" });
+    io.to(target).emit("stream:pake-confirm", {
+      peerId: socket.id,
+      confirmation: payload.confirmation,
+    });
+    ack?.({ ok: true });
+  });
+
+  socket.on("stream:ready", (payload = {}, ack) => {
+    if (!guard("stream:ready")) return ack?.({ error: "Muitas tentativas de rota" });
+    const targetId = sanitizePeer(payload?.peerId);
+    if (!targetId || !registry.paired(socket.id, targetId)) return ack?.({ error: "Par inválido" });
+    const publicEndpoint = endpoint(payload?.endpoint);
+    const localEndpoint = endpoint(payload?.localEndpoint);
     const publicKey = normalizePublicKey(payload?.publicKey);
     const codecs = normalizeCodecs(payload?.codecs);
-    const roomProof = normalizeRoomProof(payload?.roomProof);
-    const invalid = invalidJoinField({ roomId, role, publicEndpoint, localEndpoint, publicKey, codecs, roomProof });
+    const invalid = invalidReadyField({ publicEndpoint, localEndpoint, publicKey, codecs });
     if (invalid) return ack?.({ error: invalid });
-    // Se o Windows não conseguir escolher uma interface, o motor anuncia o
-    // endereço de bind. 0.0.0.0 nunca é roteável.
     const usableLocalEndpoint = localEndpoint.host === "0.0.0.0" ? publicEndpoint : localEndpoint;
-    if (isIP(usableLocalEndpoint.host) !== 4 || (!privateV4(usableLocalEndpoint.host) && usableLocalEndpoint !== publicEndpoint)) return ack?.({ error: "Endpoint LAN inválido" });
-    if (!sameIp(publicEndpoint.host, socket.data.ip)) return ack?.({ error: "Endpoint público não corresponde à conexão" });
-    if (!registry.authorize(roomId, roomProof)) return ack?.({ error: "Senha da sala incorreta" });
-    const previous=registry.leave(socket.id); if(previous){socket.leave(`stream:${previous.roomId}`);for(const otherId of previous.otherIds)io.to(otherId).emit("stream:peer-left",{peerId:previous.peerId});}
-    const joined = registry.join(socket.id, roomId, role, publicEndpoint.value, usableLocalEndpoint.value, publicKey, roomProof, codecs); if (joined.error) return ack?.({ error: joined.error });
-    socket.join(`stream:${roomId}`); const self = registry.get(socket.id);
-    const peers = joined.peers.map(({peer,viewer})=>announcement(peer,self.ip,registry.relay(viewer,self.role)));
-    ack?.({ ok: true, peers, peer: peers[0], maxViewers: registry.maxViewers });
-    for(const {peer,viewer} of joined.peers)io.to(peer.socketId).emit("stream:peer",announcement(self,peer.ip,registry.relay(viewer,peer.role)));
+    if (isIP(usableLocalEndpoint.host) !== 4 || (!privateV4(usableLocalEndpoint.host) && usableLocalEndpoint.value !== publicEndpoint.value)) {
+      return ack?.({ error: "Endpoint LAN inválido" });
+    }
+    if (!sameIp(publicEndpoint.host, socket.data.ip)) {
+      return ack?.({ error: "Endpoint público não corresponde à conexão" });
+    }
+    registry.setEndpoint(socket.id, publicEndpoint.value, usableLocalEndpoint.value, publicKey, codecs);
+    const self = registry.get(socket.id), target = registry.get(targetId);
+    const viewer = self.role === "viewer" ? self : target;
+    io.to(targetId).emit("stream:ready", announcement(self, target.ip, registry.relay(viewer, target.role)));
+    ack?.({ ok: true });
   });
+
   socket.on("disconnect", () => {
-    clearTimeout(timer); const left = registry.remove(socket.id); limiter.forget(`${socket.id}:`);
-    if(left)for(const otherId of left.otherIds)io.to(otherId).emit("stream:peer-left",{peerId:left.peerId});
+    clearTimeout(timer);
+    const left = registry.remove(socket.id);
+    limiter.forget(`${socket.id}:`);
+    if (left) for (const otherId of left.otherIds) io.to(otherId).emit("stream:peer-left", { peerId: left.peerId });
   });
 }
 
-function invalidJoinField({ roomId, role, publicEndpoint, localEndpoint, publicKey, codecs, roomProof }) {
-  if (!roomId) return "Código da sala inválido";
-  if (!role) return "Modo host/espectador inválido";
+function invalidReadyField({ publicEndpoint, localEndpoint, publicKey, codecs }) {
   if (!publicEndpoint) return "Endpoint UDP público inválido";
   if (!localEndpoint) return "Endpoint UDP local inválido";
   if (!publicKey) return "Chave X25519 inválida; atualize o Voxa";
   if (!codecs) return "Lista de codecs inválida; atualize o Voxa";
-  if (!roomProof) return "Senha da sala ausente ou inválida";
   return null;
 }
 
 function normalizeCodecs(value) {
-  // H.264 era implícito nas versões anteriores.
-  if (value === undefined) return 1;
   return Number.isInteger(value) && value > 0 && value <= 0b111 ? value : null;
 }
 
 function normalizePublicKey(value) {
   if (typeof value !== "string") return null;
   const candidate = value.trim();
-  if (/^[A-Za-z0-9_-]{43}$/.test(candidate)) return candidate;
-  if (!/^[A-Za-z0-9_+/=-]{43,44}$/.test(candidate)) return null;
+  if (!/^[A-Za-z0-9_-]{43}$/.test(candidate)) return null;
   try {
-    const raw = Buffer.from(candidate, "base64url");
-    return raw.length === 32 ? raw.toString("base64url") : null;
+    return Buffer.from(candidate, "base64url").length === 32 ? candidate : null;
   } catch {
     return null;
   }
 }
 
-function normalizeRoomProof(proof) {
-  if (typeof proof === "string" && /^[a-f0-9]{64}$/i.test(proof)) return proof.toLowerCase();
-  return null;
+function sanitizePeer(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 128
+    && /^[A-Za-z0-9_-]+$/.test(value) ? value : null;
+}
+
+function validB64(value, min, max) {
+  if (typeof value !== "string" || value.length < min || value.length > max || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
+  try { return Buffer.from(value, "base64url").length > 0; } catch { return false; }
 }

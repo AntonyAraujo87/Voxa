@@ -200,7 +200,34 @@ impl EphemeralKey {
         URL_SAFE_NO_PAD.encode(self.public)
     }
 
+    pub fn from_secret_base64(value: &str) -> Result<Self, String> {
+        let raw = URL_SAFE_NO_PAD
+            .decode(value.trim())
+            .map_err(|_| "Identidade X25519 protegida inválida")?;
+        let secret: [u8; 32] = raw
+            .try_into()
+            .map_err(|_| "A identidade X25519 deve ter 256 bits")?;
+        if secret == [0; 32] {
+            return Err("Identidade X25519 vazia recusada".into());
+        }
+        let private = StaticSecret::from(secret);
+        let public = PublicKey::from(&private).to_bytes();
+        Ok(Self { private, public })
+    }
+
+    pub fn secret_base64(&self) -> String {
+        URL_SAFE_NO_PAD.encode(self.private.to_bytes())
+    }
+
     pub fn agree(&self, peer_public: &str) -> Result<([u8; 32], String), String> {
+        self.agree_bound(peer_public, None)
+    }
+
+    pub fn agree_bound(
+        &self,
+        peer_public: &str,
+        password_binding: Option<&[u8; 32]>,
+    ) -> Result<([u8; 32], String), String> {
         let raw = URL_SAFE_NO_PAD
             .decode(peer_public.trim())
             .map_err(|_| "Chave pública X25519 inválida")?;
@@ -220,7 +247,16 @@ impl EphemeralKey {
         let mut digest = Sha256::new();
         digest.update(b"voxa-x25519-media-v1\0");
         digest.update(shared);
-        let key: [u8; 32] = digest.finalize().into();
+        let x25519_key: [u8; 32] = digest.finalize().into();
+        let key = if let Some(binding) = password_binding {
+            let mut digest = Sha256::new();
+            digest.update(b"voxa-x25519-spake2-bound-v1\0");
+            digest.update(x25519_key);
+            digest.update(binding);
+            digest.finalize().into()
+        } else {
+            x25519_key
+        };
         let verification = verification_code(&self.public, &peer, &key);
         Ok((key, verification))
     }
@@ -393,6 +429,20 @@ mod tests {
         assert_ne!(first_key, second_key);
         assert_eq!(first_key, first.agree(&host.public_base64()).unwrap().0);
         assert_eq!(second_key, second.agree(&host.public_base64()).unwrap().0);
+    }
+    #[test]
+    fn pake_binding_changes_the_media_key_and_verification_code() {
+        let host = EphemeralKey::generate().unwrap();
+        let viewer = EphemeralKey::generate().unwrap();
+        let plain = host.agree(&viewer.public_base64()).unwrap();
+        let bound_host = host
+            .agree_bound(&viewer.public_base64(), Some(&[9; 32]))
+            .unwrap();
+        let bound_viewer = viewer
+            .agree_bound(&host.public_base64(), Some(&[9; 32]))
+            .unwrap();
+        assert_ne!(plain, bound_host);
+        assert_eq!(bound_host, bound_viewer);
     }
     #[test]
     fn encrypted_packet_round_trip() {

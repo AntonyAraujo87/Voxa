@@ -9,12 +9,14 @@
 
 /** Limites por evento: { janela em ms, maximo de eventos na janela }. */
 import { isIP } from "node:net";
-import { timingSafeEqual } from "node:crypto";
 import { ipKeyGenerator } from "express-rate-limit";
 
 export const EVENT_LIMITS = {
   hello: { windowMs: 10_000, max: 5 },
   "stream:join": { windowMs: 30_000, max: 10 },
+  "stream:pake": { windowMs: 30_000, max: 32 },
+  "stream:pake-confirm": { windowMs: 30_000, max: 32 },
+  "stream:ready": { windowMs: 30_000, max: 32 },
 };
 
 /** Conexoes simultaneas do mesmo IP. Amigos na mesma casa compartilham IP. */
@@ -115,16 +117,4 @@ export function sanitizeId(value, maxLength = 64) {
   return value.length > 0 && value.length <= maxLength && /^[a-zA-Z0-9._:-]+$/.test(value)
     ? value
     : "";
-}
-
-/**
- * Comparacao de segredo em tempo constante.
- * `===` sai no primeiro byte diferente, o que teoricamente vaza o prefixo
- * correto por tempo de resposta. O custo de fazer certo aqui e irrelevante.
- */
-export function safeEqual(a, b) {
-  if (typeof a !== "string" || typeof b !== "string") return false;
-  if (a.length > 4096 || b.length > 4096) return false;
-  const left = Buffer.from(a), right = Buffer.from(b);
-  return left.length === right.length && timingSafeEqual(left, right);
 }

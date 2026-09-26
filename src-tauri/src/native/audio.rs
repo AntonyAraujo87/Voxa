@@ -242,7 +242,7 @@ fn playback_loop(transport: &TransportHandle, state: &Arc<Mutex<Inner>>) -> Resu
         }
 
         if !started && samples.len() < FRAME_SAMPLES * CHANNELS * 2 {
-            thread::sleep(Duration::from_millis(2));
+            transport.wait_for_audio(Duration::from_millis(5));
             continue;
         }
         started = true;

@@ -122,7 +122,7 @@ fn run_session(
             renderer::set_title(app, "Voxa Stream — aguardando dados UDP");
             reported_waiting = true;
         }
-        thread::sleep(Duration::from_millis(2));
+        transport.wait_for_video(Duration::from_millis(100));
     };
     renderer::set_title(app, "Voxa Stream — iniciando decoder");
     let (device, context, mut decoder, decoder_gpu) = create_device(
@@ -177,7 +177,7 @@ fn run_session(
             }
         }
         let Some(frame) = transport.take_video() else {
-            thread::sleep(Duration::from_millis(1));
+            transport.wait_for_video(Duration::from_millis(250));
             continue;
         };
         let texture = match decoder.decode(&frame.bytes, frame.timestamp_us as i64 * 10, duration) {

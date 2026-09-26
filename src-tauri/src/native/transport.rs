@@ -1,19 +1,31 @@
 use super::{Inner, StreamRole};
+mod fanout;
+mod route;
+#[cfg(test)]
+use fanout::{negotiated_codec, opus_bitrate_for_video};
+pub use fanout::{AudioPacket, CursorPacket, EncodedFrame, HostTransportHandle};
+use route::Route;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::async_runtime::JoinHandle;
-use tokio::{net::UdpSocket, sync::broadcast, time};
+use tokio::{
+    net::UdpSocket,
+    sync::{broadcast, Notify},
+    time,
+};
+#[cfg(test)]
+use voxa_native_core::protocol::VideoCodec;
 use voxa_native_core::{
     congestion::CongestionController,
     loss::LossEstimator,
-    protocol::{self, Kind, Meta, ReplayGuard, StreamConfig, VideoCodec},
+    protocol::{self, Kind, Meta, ReplayGuard, StreamConfig},
     reassembly::Reassembler,
 };
 
@@ -32,6 +44,11 @@ pub struct TransportControl {
     bitrate_bps: Arc<AtomicU32>,
     peer_codecs: Arc<AtomicU32>,
     clock_offset_us: Arc<AtomicI64>,
+    outgoing_wake: Arc<WakeSignal>,
+    incoming_video_wake: Arc<WakeSignal>,
+    outgoing_audio_wake: Arc<WakeSignal>,
+    incoming_audio_wake: Arc<WakeSignal>,
+    outgoing_cursor_wake: Arc<WakeSignal>,
     tasks: Vec<JoinHandle<()>>,
     native_thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -59,6 +76,48 @@ pub struct TransportHandle {
     bitrate_bps: Arc<AtomicU32>,
     peer_codecs: Arc<AtomicU32>,
     clock_offset_us: Arc<AtomicI64>,
+    outgoing_wake: Arc<WakeSignal>,
+    incoming_video_wake: Arc<WakeSignal>,
+    outgoing_audio_wake: Arc<WakeSignal>,
+    incoming_audio_wake: Arc<WakeSignal>,
+    outgoing_cursor_wake: Arc<WakeSignal>,
+}
+
+#[derive(Default)]
+struct WakeSignal {
+    pending: Mutex<bool>,
+    blocking: Condvar,
+    asynchronous: Notify,
+}
+
+impl WakeSignal {
+    fn notify(&self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            *pending = true;
+            self.blocking.notify_all();
+        }
+        self.asynchronous.notify_one();
+    }
+
+    fn wait_blocking(&self, timeout: Duration) {
+        let Ok(pending) = self.pending.lock() else {
+            return;
+        };
+        let Ok((mut pending, _)) = self
+            .blocking
+            .wait_timeout_while(pending, timeout, |pending| !*pending)
+        else {
+            return;
+        };
+        *pending = false;
+    }
+
+    async fn wait_async(&self) {
+        self.asynchronous.notified().await;
+        if let Ok(mut pending) = self.pending.lock() {
+            *pending = false;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -113,304 +172,14 @@ impl DatagramHub {
     }
 }
 
-#[derive(Clone, Default)]
-pub struct HostTransportHandle {
-    peers: Arc<Mutex<HashMap<String, TransportHandle>>>,
-    configs: Arc<Mutex<HashMap<(String, VideoCodec), StreamConfig>>>,
-    supported_codecs: Arc<AtomicU32>,
-    force_keyframe: Arc<AtomicBool>,
-    stop: Arc<AtomicBool>,
-}
-
-fn negotiated_codec(local: u8, remote: u8) -> Option<VideoCodec> {
-    VideoCodec::best_common(local, remote)
-}
-
-fn opus_bitrate_for_video(video_bitrate: u32) -> i32 {
-    match video_bitrate {
-        0..=1_499_999 => 64_000,
-        1_500_000..=3_999_999 => 80_000,
-        4_000_000..=7_999_999 => 96_000,
-        _ => 128_000,
-    }
-}
-
-impl HostTransportHandle {
-    pub fn add(&self, peer_id: String, handle: TransportHandle) {
-        if let Some(codec) = self.codec_for(&handle) {
-            if let Some(config) = self
-                .configs
-                .lock()
-                .ok()
-                .and_then(|configs| configs.get(&(peer_id.clone(), codec)).copied())
-            {
-                handle.queue_config(config);
-            }
-        }
-        if let Ok(mut peers) = self.peers.lock() {
-            peers.insert(peer_id, handle);
-        }
-        self.force_keyframe.store(true, Ordering::Release);
-    }
-    pub fn remove(&self, peer_id: &str) {
-        if let Ok(mut peers) = self.peers.lock() {
-            peers.remove(peer_id);
-        }
-        if let Ok(mut configs) = self.configs.lock() {
-            configs.retain(|(configured_peer, _), _| configured_peer != peer_id);
-        }
-    }
-    pub fn clear(&self) {
-        if let Ok(mut peers) = self.peers.lock() {
-            peers.clear();
-        }
-        if let Ok(mut configs) = self.configs.lock() {
-            configs.clear();
-        }
-    }
-    pub fn stopped(&self) -> bool {
-        self.stop.load(Ordering::Acquire)
-    }
-    pub fn has_peers(&self) -> bool {
-        self.peers
-            .lock()
-            .map(|peers| !peers.is_empty())
-            .unwrap_or(false)
-    }
-    pub fn audio_bitrate_bps(&self) -> i32 {
-        let video = self
-            .peers
-            .lock()
-            .ok()
-            .and_then(|peers| peers.values().map(TransportHandle::target_bitrate).min())
-            .unwrap_or(12_000_000);
-        opus_bitrate_for_video(video)
-    }
-    pub fn stop(&self) {
-        self.stop.store(true, Ordering::Release);
-        self.clear();
-    }
-    pub fn set_supported_codecs(&self, codecs: u8) {
-        self.supported_codecs
-            .store(u32::from(codecs), Ordering::Release);
-    }
-    fn codec_for(&self, handle: &TransportHandle) -> Option<VideoCodec> {
-        negotiated_codec(
-            self.supported_codecs.load(Ordering::Acquire) as u8,
-            handle.peer_codecs.load(Ordering::Acquire) as u8,
-        )
-    }
-    pub fn peers_support_any(&self, local_codecs: u8) -> bool {
-        self.peers
-            .lock()
-            .map(|peers| {
-                peers.values().all(|handle| {
-                    negotiated_codec(
-                        local_codecs,
-                        handle.peer_codecs.load(Ordering::Acquire) as u8,
-                    )
-                    .is_some()
-                })
-            })
-            .unwrap_or(false)
-    }
-    pub fn queue_video(&self, peer_id: &str, codec: VideoCodec, frame: EncodedFrame) -> bool {
-        let handle = self
-            .peers
-            .lock()
-            .ok()
-            .and_then(|peers| peers.get(peer_id).cloned());
-        handle
-            .filter(|handle| self.codec_for(handle) == Some(codec))
-            .map(|handle| handle.queue_video(frame))
-            .unwrap_or(false)
-    }
-    pub fn queue_config(&self, peer_id: &str, config: StreamConfig) {
-        if let Ok(mut current) = self.configs.lock() {
-            current.insert((peer_id.to_owned(), config.codec), config);
-        }
-        if let Ok(peers) = self.peers.lock() {
-            if let Some(handle) = peers.get(peer_id) {
-                if self.codec_for(handle) == Some(config.codec) {
-                    handle.queue_config(config);
-                }
-            }
-        }
-    }
-    pub fn take_keyframe_request(&self) -> bool {
-        self.force_keyframe.swap(false, Ordering::AcqRel)
-            || self
-                .peers
-                .lock()
-                .map(|peers| peers.values().any(TransportHandle::take_keyframe_request))
-                .unwrap_or(false)
-    }
-    pub fn request_keyframe(&self) {
-        self.force_keyframe.store(true, Ordering::Release);
-    }
-    pub fn active_lanes(&self) -> Vec<(String, VideoCodec, u32)> {
-        let Ok(peers) = self.peers.lock() else {
-            return Vec::new();
-        };
-        peers
-            .iter()
-            .filter_map(|(peer_id, handle)| {
-                self.codec_for(handle)
-                    .map(|codec| (peer_id.clone(), codec, handle.target_bitrate()))
-            })
-            .collect()
-    }
-    pub fn queue_audio(&self, packet: AudioPacket) {
-        if let Ok(peers) = self.peers.lock() {
-            for handle in peers.values() {
-                handle.queue_audio(packet.clone());
-            }
-        }
-    }
-    pub fn queue_cursor(&self, cursor: CursorPacket) {
-        if let Ok(peers) = self.peers.lock() {
-            for handle in peers.values() {
-                handle.queue_cursor(cursor.clone());
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct EncodedFrame {
-    pub id: u64,
-    pub timestamp_us: u64,
-    pub keyframe: bool,
-    // O bitstream e imutavel. Arc evita copiar um frame H.264 inteiro para
-    // cada espectador no fanout do host.
-    pub bytes: Arc<Vec<u8>>,
-}
-
-#[derive(Clone)]
-pub struct AudioPacket {
-    pub timestamp_us: u64,
-    pub bytes: Arc<Vec<u8>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CursorPacket {
-    pub timestamp_us: u64,
-    pub visible: bool,
-    pub x: i32,
-    pub y: i32,
-    pub source_width: u32,
-    pub source_height: u32,
-}
-
-impl CursorPacket {
-    const WIRE_LEN: usize = 17;
-
-    fn encode(&self) -> [u8; Self::WIRE_LEN] {
-        let mut bytes = [0u8; Self::WIRE_LEN];
-        bytes[0] = u8::from(self.visible);
-        bytes[1..5].copy_from_slice(&self.x.to_be_bytes());
-        bytes[5..9].copy_from_slice(&self.y.to_be_bytes());
-        bytes[9..13].copy_from_slice(&self.source_width.to_be_bytes());
-        bytes[13..17].copy_from_slice(&self.source_height.to_be_bytes());
-        bytes
-    }
-
-    fn decode(timestamp_us: u64, bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != Self::WIRE_LEN || bytes[0] > 1 {
-            return None;
-        }
-        let cursor = Self {
-            timestamp_us,
-            visible: bytes[0] == 1,
-            x: i32::from_be_bytes(bytes[1..5].try_into().ok()?),
-            y: i32::from_be_bytes(bytes[5..9].try_into().ok()?),
-            source_width: u32::from_be_bytes(bytes[9..13].try_into().ok()?),
-            source_height: u32::from_be_bytes(bytes[13..17].try_into().ok()?),
-        };
-        (cursor.source_width > 0 && cursor.source_height > 0).then_some(cursor)
-    }
-}
-
-const RELAY_MAGIC: &[u8; 4] = b"VRLY";
-const RELAY_HEADER: usize = 22;
-
-struct Route {
-    socket: Arc<UdpSocket>,
-    direct: SocketAddr,
-    relay: Option<(SocketAddr, u64, u64, u8)>,
-    selected: AtomicU32,
-}
-
-impl Route {
-    async fn send(&self, bytes: &[u8]) -> Result<(), String> {
-        match self.selected.load(Ordering::Acquire) {
-            1 => self
-                .socket
-                .send_to(bytes, self.direct)
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-            2 => self.send_relay(bytes).await,
-            _ => {
-                let direct = self
-                    .socket
-                    .send_to(bytes, self.direct)
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| e.to_string());
-                let relayed = if self.relay.is_some() {
-                    self.send_relay(bytes).await
-                } else {
-                    Ok(())
-                };
-                direct.or(relayed)
-            }
-        }
-    }
-
-    async fn send_relay(&self, bytes: &[u8]) -> Result<(), String> {
-        let (endpoint, session, auth, role) = self.relay.ok_or("Relay UDP indisponível")?;
-        let mut packet = Vec::with_capacity(RELAY_HEADER + bytes.len());
-        packet.extend_from_slice(RELAY_MAGIC);
-        packet.extend_from_slice(&[1, role]);
-        packet.extend_from_slice(&session.to_be_bytes());
-        packet.extend_from_slice(&auth.to_be_bytes());
-        packet.extend_from_slice(bytes);
-        self.socket
-            .send_to(&packet, endpoint)
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-
-    fn select(&self, source: SocketAddr) -> u32 {
-        let current = self.selected.load(Ordering::Acquire);
-        if current != 0 {
-            return current;
-        }
-        let route = if self.relay.is_some_and(|relay| relay.0 == source) {
-            2
-        } else if source == self.direct {
-            1
-        } else {
-            0
-        };
-        if route != 0 {
-            let _ = self
-                .selected
-                .compare_exchange(0, route, Ordering::AcqRel, Ordering::Acquire);
-        }
-        self.selected.load(Ordering::Acquire)
-    }
-
-    fn reset(&self) {
-        self.selected.store(0, Ordering::Release);
-    }
-}
-
 impl TransportControl {
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::Release);
+        self.outgoing_wake.notify();
+        self.incoming_video_wake.notify();
+        self.outgoing_audio_wake.notify();
+        self.incoming_audio_wake.notify();
+        self.outgoing_cursor_wake.notify();
         for task in self.tasks {
             task.abort();
         }
@@ -434,6 +203,11 @@ impl TransportControl {
             bitrate_bps: self.bitrate_bps.clone(),
             peer_codecs: self.peer_codecs.clone(),
             clock_offset_us: self.clock_offset_us.clone(),
+            outgoing_wake: self.outgoing_wake.clone(),
+            incoming_video_wake: self.incoming_video_wake.clone(),
+            outgoing_audio_wake: self.outgoing_audio_wake.clone(),
+            incoming_audio_wake: self.incoming_audio_wake.clone(),
+            outgoing_cursor_wake: self.outgoing_cursor_wake.clone(),
         }
     }
     pub fn attach_native_thread(&mut self, thread: std::thread::JoinHandle<()>) {
@@ -446,21 +220,28 @@ impl TransportHandle {
         self.stop.load(Ordering::Acquire)
     }
     pub fn queue_video(&self, frame: EncodedFrame) -> bool {
-        self.outgoing
+        let replaced = self
+            .outgoing
             .lock()
             .map(|mut slot| slot.replace(frame).is_some())
-            .unwrap_or(true)
+            .unwrap_or(true);
+        self.outgoing_wake.notify();
+        replaced
     }
     pub fn queue_config(&self, config: StreamConfig) {
         if let Ok(mut slot) = self.outgoing_config.lock() {
             *slot = Some(config);
         }
+        self.outgoing_wake.notify();
     }
     pub fn current_config(&self) -> Option<StreamConfig> {
         self.incoming_config.lock().ok().and_then(|slot| *slot)
     }
     pub fn take_video(&self) -> Option<EncodedFrame> {
         self.incoming.lock().ok().and_then(|mut slot| slot.take())
+    }
+    pub fn wait_for_video(&self, timeout: Duration) {
+        self.incoming_video_wake.wait_blocking(timeout);
     }
     pub fn queue_audio(&self, packet: AudioPacket) {
         if let Ok(mut queue) = self.outgoing_audio.lock() {
@@ -469,6 +250,7 @@ impl TransportHandle {
             }
             queue.push_back(packet);
         }
+        self.outgoing_audio_wake.notify();
     }
     pub fn take_audio(&self) -> Option<AudioPacket> {
         self.incoming_audio
@@ -476,10 +258,14 @@ impl TransportHandle {
             .ok()
             .and_then(|mut queue| queue.pop_front())
     }
+    pub fn wait_for_audio(&self, timeout: Duration) {
+        self.incoming_audio_wake.wait_blocking(timeout);
+    }
     pub fn queue_cursor(&self, cursor: CursorPacket) {
         if let Ok(mut slot) = self.outgoing_cursor.lock() {
             *slot = Some(cursor);
         }
+        self.outgoing_cursor_wake.notify();
     }
     pub fn current_cursor(&self) -> Option<CursorPacket> {
         self.incoming_cursor
@@ -494,6 +280,7 @@ impl TransportHandle {
 
     pub fn request_keyframe(&self) {
         self.request_remote_keyframe.store(true, Ordering::Release);
+        self.outgoing_wake.notify();
     }
 
     pub fn target_bitrate(&self) -> u32 {
@@ -562,6 +349,11 @@ pub async fn spawn_receiver(
     let bitrate_bps = Arc::new(AtomicU32::new(12_000_000));
     let peer_codecs = Arc::new(AtomicU32::new(u32::from(peer_codecs)));
     let clock_offset_us = Arc::new(AtomicI64::new(i64::MIN));
+    let outgoing_wake = Arc::new(WakeSignal::default());
+    let incoming_video_wake = Arc::new(WakeSignal::default());
+    let outgoing_audio_wake = Arc::new(WakeSignal::default());
+    let incoming_audio_wake = Arc::new(WakeSignal::default());
+    let outgoing_cursor_wake = Arc::new(WakeSignal::default());
     // Feedback pertence a este par. Guardar RTT/perda apenas no status global
     // fazia um espectador lento reduzir (ou acelerar) os demais transportes.
     let feedback_rtt_ms = Arc::new(AtomicU32::new(0));
@@ -586,7 +378,9 @@ pub async fn spawn_receiver(
     let recv_state = state.clone();
     let recv_force_keyframe = force_keyframe.clone();
     let recv_incoming = incoming.clone();
+    let recv_video_wake = incoming_video_wake.clone();
     let recv_audio = incoming_audio.clone();
+    let recv_audio_wake = incoming_audio_wake.clone();
     let recv_cursor = incoming_cursor.clone();
     let recv_config = incoming_config.clone();
     let recv_feedback_rtt = feedback_rtt_ms.clone();
@@ -746,6 +540,7 @@ pub async fn spawn_receiver(
                                         metric.dropped_frames += u64::from(replaced);
                                         metric.phase = "streaming";
                                     });
+                                    recv_video_wake.notify();
                                 }
                                 Ok(None) => {}
                                 Err(_) => {
@@ -789,6 +584,7 @@ pub async fn spawn_receiver(
                                         metric.dropped_frames += u64::from(replaced);
                                         metric.phase = "streaming";
                                     });
+                                    recv_video_wake.notify();
                                 }
                                 Ok(None) => {}
                                 Err(_) => mark_dropped(&recv_state),
@@ -812,6 +608,7 @@ pub async fn spawn_receiver(
                                     if let Ok(mut slot) = recv_config.lock() {
                                         *slot = Some(config);
                                     }
+                                    recv_video_wake.notify();
                                 }
                             }
                             Kind::Audio => {
@@ -825,6 +622,7 @@ pub async fn spawn_receiver(
                                             bytes: Arc::new(packet.payload),
                                         });
                                     }
+                                    recv_audio_wake.notify();
                                 }
                             }
                             Kind::Cursor => {
@@ -885,6 +683,7 @@ pub async fn spawn_receiver(
     let video_config = outgoing_config.clone();
     let video_bitrate = bitrate_bps.clone();
     let video_keyframe_request = request_remote_keyframe.clone();
+    let video_wake = outgoing_wake.clone();
     let video_state = state.clone();
     let video_sender = tauri::async_runtime::spawn(async move {
         let mut last_config = None::<StreamConfig>;
@@ -935,7 +734,7 @@ pub async fn spawn_receiver(
             }
             let frame = video_outgoing.lock().ok().and_then(|mut slot| slot.take());
             let Some(frame) = frame else {
-                time::sleep(Duration::from_millis(1)).await;
+                let _ = time::timeout(Duration::from_millis(250), video_wake.wait_async()).await;
                 continue;
             };
             let chunk_size = if frame.keyframe {
@@ -1027,6 +826,7 @@ pub async fn spawn_receiver(
     let audio_stop = stop.clone();
     let audio_sequence = sequence.clone();
     let audio_outgoing = outgoing_audio.clone();
+    let audio_wake = outgoing_audio_wake.clone();
     let audio_state = state.clone();
     let audio_sender = tauri::async_runtime::spawn(async move {
         while !audio_stop.load(Ordering::Acquire) {
@@ -1035,7 +835,7 @@ pub async fn spawn_receiver(
                 .ok()
                 .and_then(|mut queue| queue.pop_front());
             let Some(packet) = packet else {
-                time::sleep(Duration::from_millis(1)).await;
+                audio_wake.wait_async().await;
                 continue;
             };
             if send(
@@ -1063,11 +863,12 @@ pub async fn spawn_receiver(
     let cursor_stop = stop.clone();
     let cursor_sequence = sequence.clone();
     let cursor_outgoing = outgoing_cursor.clone();
+    let cursor_wake = outgoing_cursor_wake.clone();
     let cursor_sender = tauri::async_runtime::spawn(async move {
         while !cursor_stop.load(Ordering::Acquire) {
             let cursor = cursor_outgoing.lock().ok().and_then(|mut slot| slot.take());
             let Some(cursor) = cursor else {
-                time::sleep(Duration::from_millis(4)).await;
+                cursor_wake.wait_async().await;
                 continue;
             };
             let payload = cursor.encode();
@@ -1158,6 +959,11 @@ pub async fn spawn_receiver(
         bitrate_bps,
         peer_codecs,
         clock_offset_us,
+        outgoing_wake,
+        incoming_video_wake,
+        outgoing_audio_wake,
+        incoming_audio_wake,
+        outgoing_cursor_wake,
         tasks: vec![
             receiver,
             video_sender,

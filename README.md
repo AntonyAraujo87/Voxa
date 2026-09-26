@@ -47,7 +47,8 @@ mapeamento descoberto por STUN e perfuração UDP.
 - FEC XOR protege keyframes e recupera um fragmento perdido por grupo sem retransmissão.
 - Métricas de rota, RTT, perda e bitrate são mantidas separadamente para cada espectador.
 - O host aprova cada espectador depois de comparar o código E2E; tela e áudio não saem antes dessa aprovação.
-- A senha da sala exige 12 caracteres e vira uma prova Argon2id de 64 MiB/3 iterações fora da thread da interface.
+- A senha da sala exige 12 caracteres, passa por Argon2id de 64 MiB/3 iterações e alimenta um SPAKE2 P-256 com confirmação mútua. Senha, hash e prova reutilizável nunca chegam ao signaling.
+- O pareamento pode ser lembrado opcionalmente no Gerenciador de Credenciais do Windows; a identidade X25519 privada também fica protegida ali e nunca é exportada.
 - Monitor e origem de áudio podem ser trocados durante a sessão; o espectador pode escolher a GPU de decodificação.
 - A rota direta é refeita automaticamente quando a interface de rede ou o endereço público muda.
 - Latência captura→tela é estimada com compensação de relógio e exibida em P50/P95/P99.
@@ -62,7 +63,7 @@ mapeamento descoberto por STUN e perfuração UDP.
 - O limite de encoders é sondado na GPU escolhida. O host reduz o teto de espectadores e mantém a recuperação individual se uma sessão de encode parar.
 - Posição e visibilidade do cursor seguem o timestamp do frame; o host pode ocultar o cursor durante a sessão.
 - Mudanças de resolução e HDR recriam a captura. Cada encoder possui watchdog de dois segundos e solicita nova configuração/keyframe ao voltar.
-- `Exportar diagnóstico` salva em Documentos/Voxa um JSON sem senha ou chaves, contendo GPU/driver, codecs, rotas, relay, perda, latências, estado dos espectadores e erros.
+- Um gravador circular mantém localmente somente os últimos 60 segundos de estados e falhas. `Exportar diagnóstico` salva em Documentos/Voxa um JSON sem senha ou chaves, contendo GPU/driver, codecs, rotas, relay, perda, latências, estado dos espectadores e erros.
 
 O host não usa fallback de captura web nem encode por CPU. A cadeia nativa compila,
 mas ainda precisa ser validada em dois PCs físicos e GPUs NVENC, AMF e QuickSync.
@@ -83,6 +84,8 @@ Em Windows GNU, use um `target-dir` sem caracteres Unicode se o `dlltool` antigo
 estiver instalado. O teste local executa o núcleo nativo; os testes que ligam o
 runtime Tauri rodam no CI com MSVC porque o linker GNU mistura manifests do PE.
 O CI usa a imagem fixa `windows-2025` e também valida Rust com Clippy.
+O workflow semanal `fuzz` usa libFuzzer por dois minutos em cada alvo para atacar
+o parser UDP cifrado e a remontagem de frames/FEC com entradas arbitrárias.
 
 Copie `.env.example` para `.env`. A senha da sala é digitada no painel e nunca
 deve entrar em uma variável `VITE_*`.

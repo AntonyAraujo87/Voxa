@@ -1,12 +1,13 @@
 /**
  * VOXA — Signaling Server
  * ---------------------------------------------------------------------------
- * Responsabilidade unica: autenticar a sala e trocar endpoints UDP.
+ * Responsabilidade unica: apresentar pares e encaminhar mensagens opacas de
+ * SPAKE2 antes de trocar endpoints UDP autenticados pelos clientes.
  * Nenhum frame ou comando de input passa por este processo.
  *
  * Express limita HTTP; Engine.IO limita transportes antes da autenticacao.
  * O que este arquivo faz e apenas montar as pecas:
- *   lib/security.js  limites de taxa, sanitizacao, comparacao de segredo
+ *   lib/security.js  limites de taxa e sanitizacao
  *   lib/state.js     quem esta conectado e em qual canal
  *   lib/handlers.js  o que cada evento faz
  */
@@ -47,7 +48,8 @@ if ((RELAY_PUBLIC_ENDPOINT || RELAY_PORT > 0) && RELAY_SECRET.length < 32) {
 /**
  * Logs deliberadamente pobres.
  *
- * O servidor ve endpoints UDP, ids de sala e ids efemeros de dispositivos.
+ * O servidor ve endpoints UDP somente depois do PAKE, ids de sala e ids
+ * efemeros de dispositivos.
  * Nada disso precisa ir para disco, e em plataforma gratuita
  * os logs costumam ser legiveis por terceiros. Registramos contagens e falhas,
  * nunca conteudo, nunca IP, nunca stack trace de excecao vinda da rede.
@@ -92,7 +94,7 @@ const io = new Server(httpServer, {
 
 /**
  * Porta de entrada. Roda ANTES de qualquer handler existir, entao flood e
- * senha errada morrem sem custar processamento nem alocar estado.
+ * conexoes abusivas morrem sem custar processamento nem alocar estado.
  */
 io.engine.on("connection", (client) => {
   const reservation = reservations.get(client.request);
@@ -129,7 +131,7 @@ sweeper.unref?.();
 
 httpServer.listen(PORT, () => {
   log.info(`ws://localhost:${PORT} (health: /health)`);
-  log.info("salas protegidas por credencial efemera: sim");
+  log.info("salas protegidas por SPAKE2 P-256 com confirmação mútua: sim");
 });
 
 for (const sig of ["SIGINT", "SIGTERM"]) {

@@ -73,7 +73,7 @@ test('manifest versionado preserva controles nativos e satisfaz politica do PE',
 });
 
 test('endpoint nativo preserva o contrato camelCase consumido pelo React', () => {
-  const source = readFileSync(new URL('../src-tauri/src/native/mod.rs', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../src-tauri/src/native/model.rs', import.meta.url), 'utf8');
   assert.match(
     source,
     /#\[derive\(Serialize\)\]\s*#\[serde\(rename_all = "camelCase"\)\]\s*pub struct PreparedEndpoint/,

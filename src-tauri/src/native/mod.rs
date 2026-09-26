@@ -1,3 +1,7 @@
+mod diagnostics;
+mod identity;
+mod model;
+mod pake;
 mod transport;
 
 #[cfg(target_os = "windows")]
@@ -18,228 +22,24 @@ pub mod renderer;
 #[cfg(target_os = "windows")]
 pub mod viewer;
 
-use serde::{Deserialize, Serialize};
+use model::Inner;
+pub use model::{
+    AudioProcessInfo, CaptureTargetId, CaptureTargetInfo, EngineStatus, GraphicsAdapterInfo,
+    NativeEngine, PeerMetric, PeerVerification, PreparedEndpoint, StreamRole,
+};
+use serde::Deserialize;
 use std::{
-    collections::HashMap,
     fs,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager, State};
 use tokio::net::UdpSocket;
-use transport::{
-    spawn_receiver, DatagramHub, HostTransportHandle, PeerTransport, TransportControl,
-};
+use transport::{spawn_receiver, DatagramHub, PeerTransport};
 use voxa_native_core::{protocol, stun};
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum StreamRole {
-    Host,
-    Viewer,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct CaptureTargetId {
-    pub adapter_index: u32,
-    pub output_index: u32,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CaptureTargetInfo {
-    pub id: CaptureTargetId,
-    pub gpu: String,
-    pub monitor: String,
-    pub width: u32,
-    pub height: u32,
-    pub primary: bool,
-    pub hdr: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AudioProcessInfo {
-    pub process_id: u32,
-    pub name: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GraphicsAdapterInfo {
-    pub adapter_index: u32,
-    pub name: String,
-    pub dedicated_memory_mb: u64,
-    pub vendor_id: u32,
-    pub device_id: u32,
-    pub revision: u32,
-    pub driver_version: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PeerVerification {
-    peer_id: String,
-    code: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PeerMetric {
-    peer_id: String,
-    endpoint: Option<String>,
-    phase: &'static str,
-    rtt_ms: u32,
-    loss_pct: f32,
-    bitrate_kbps: u32,
-    received_frames: u64,
-    dropped_frames: u64,
-    latency_p50_ms: u32,
-    latency_p95_ms: u32,
-    latency_p99_ms: u32,
-}
-
-impl PeerMetric {
-    fn waiting(peer_id: String) -> Self {
-        Self {
-            peer_id,
-            endpoint: None,
-            phase: "punching",
-            rtt_ms: 0,
-            loss_pct: 0.0,
-            bitrate_kbps: 12_000,
-            received_frames: 0,
-            dropped_frames: 0,
-            latency_p50_ms: 0,
-            latency_p95_ms: 0,
-            latency_p99_ms: 0,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EngineStatus {
-    phase: &'static str,
-    role: Option<StreamRole>,
-    local_endpoint: Option<String>,
-    public_endpoint: Option<String>,
-    peer_endpoint: Option<String>,
-    rtt_ms: u32,
-    loss_pct: f32,
-    bitrate_kbps: u32,
-    received_frames: u64,
-    encoded_frames: u64,
-    dropped_frames: u64,
-    keyframe_requests: u64,
-    renderer: &'static str,
-    capture: &'static str,
-    encoder: &'static str,
-    decoder: &'static str,
-    decoder_gpu: Option<String>,
-    audio: &'static str,
-    audio_bitrate_kbps: u32,
-    audio_error: Option<String>,
-    av_sync_ms: i32,
-    encoder_capacity: usize,
-    cursor_visible: bool,
-    hdr: bool,
-    capture_restarts: u32,
-    rejoin_required: bool,
-    decoded_frames: u64,
-    latency_p50_ms: u32,
-    latency_p95_ms: u32,
-    latency_p99_ms: u32,
-    verification_code: Option<String>,
-    connected_peers: usize,
-    max_peers: usize,
-    peer_verifications: Vec<PeerVerification>,
-    peer_metrics: Vec<PeerMetric>,
-    last_error: Option<String>,
-}
-
-impl Default for EngineStatus {
-    fn default() -> Self {
-        Self {
-            phase: "idle",
-            role: None,
-            local_endpoint: None,
-            public_endpoint: None,
-            peer_endpoint: None,
-            rtt_ms: 0,
-            loss_pct: 0.0,
-            bitrate_kbps: 12_000,
-            received_frames: 0,
-            encoded_frames: 0,
-            dropped_frames: 0,
-            keyframe_requests: 0,
-            renderer: "closed",
-            capture: "idle",
-            encoder: "idle",
-            decoder: "idle",
-            decoder_gpu: None,
-            audio: "idle",
-            audio_bitrate_kbps: 0,
-            audio_error: None,
-            av_sync_ms: 0,
-            encoder_capacity: 1,
-            cursor_visible: true,
-            hdr: false,
-            capture_restarts: 0,
-            rejoin_required: false,
-            decoded_frames: 0,
-            latency_p50_ms: 0,
-            latency_p95_ms: 0,
-            latency_p99_ms: 0,
-            verification_code: None,
-            connected_peers: 0,
-            max_peers: 4,
-            peer_verifications: Vec::new(),
-            peer_metrics: Vec::new(),
-            last_error: None,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PreparedEndpoint {
-    local: String,
-    public: Option<String>,
-    public_key: String,
-    codecs: u8,
-}
-
-#[derive(Default)]
-struct Inner {
-    generation: u64,
-    status: EngineStatus,
-    socket: Option<Arc<UdpSocket>>,
-    datagrams: Option<DatagramHub>,
-    transports: HashMap<String, TransportControl>,
-    host_fanout: HostTransportHandle,
-    host_pipeline: Option<std::thread::JoinHandle<()>>,
-    host_audio: Option<std::thread::JoinHandle<()>>,
-    verification_codes: HashMap<String, String>,
-    peer_metrics: HashMap<String, PeerMetric>,
-    key_exchange: Option<protocol::EphemeralKey>,
-    capture_target: Option<CaptureTargetId>,
-    audio_process_id: Option<u32>,
-    decoder_adapter_index: Option<u32>,
-    supported_codecs: u8,
-    hardware_encoder_capacity: usize,
-    signaling_max_peers: usize,
-    cursor_visible: bool,
-}
 
 fn effective_max_peers(signaling_max: usize, encoder_capacity: usize) -> usize {
     signaling_max.clamp(1, 16).min(encoder_capacity.max(1))
-}
-
-#[derive(Default)]
-pub struct NativeEngine {
-    inner: Arc<Mutex<Inner>>,
 }
 
 #[tauri::command]
@@ -359,7 +159,7 @@ pub fn engine_export_diagnostic(
     app: AppHandle,
     engine: State<'_, NativeEngine>,
 ) -> Result<String, String> {
-    let (status, capture_target, audio_process_id, supported_codecs, capacity) = {
+    let (status, capture_target, audio_process_id, supported_codecs, capacity, recent_events) = {
         let inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
         (
             inner.status.clone(),
@@ -367,6 +167,7 @@ pub fn engine_export_diagnostic(
             inner.audio_process_id,
             inner.supported_codecs,
             inner.hardware_encoder_capacity,
+            inner.diagnostics.snapshot(),
         )
     };
     let codec_names = protocol::VideoCodec::ALL
@@ -398,6 +199,7 @@ pub fn engine_export_diagnostic(
         "encoderCapacity": capacity,
         "captureTargets": targets,
         "graphicsAdapters": adapters,
+        "recentEvents": recent_events,
         "panicLog": crate::diagnostico::read_panic_log(app.clone()),
         "privacy": "Sem senha da sala, chaves de mídia ou conteúdo transmitido"
     });
@@ -442,6 +244,9 @@ pub async fn engine_prepare(
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
         inner.status.phase = "binding";
         inner.status.role = Some(role);
+        inner
+            .diagnostics
+            .record("session", "binding", serde_json::json!({ "role": role }));
     }
     let socket = Arc::new(
         UdpSocket::bind("0.0.0.0:0")
@@ -465,7 +270,7 @@ pub async fn engine_prepare(
     .map(|endpoint| endpoint.to_string());
     let key_exchange = match preserved_identity {
         Some(identity) => identity,
-        None => protocol::EphemeralKey::generate()?,
+        None => identity::load_or_create()?,
     };
     let public_key = key_exchange.public_base64();
     #[cfg(target_os = "windows")]
@@ -531,6 +336,16 @@ pub async fn engine_prepare(
     inner.status.max_peers = effective_max_peers(inner.signaling_max_peers, encoder_capacity);
     inner.status.cursor_visible = true;
     inner.status.hdr = hdr;
+    inner.diagnostics.record(
+        "session",
+        "prepared",
+        serde_json::json!({
+            "role": role,
+            "publicRouteAvailable": public.is_some(),
+            "codecs": codecs,
+            "encoderCapacity": encoder_capacity,
+        }),
+    );
     Ok(PreparedEndpoint {
         local,
         public,
@@ -552,6 +367,76 @@ pub struct ConnectRequest {
 }
 
 #[tauri::command]
+pub fn engine_pake_begin(
+    peer_id: String,
+    room: String,
+    room_secret: String,
+    engine: State<'_, NativeEngine>,
+) -> Result<pake::PakeStart, String> {
+    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+    let role = inner.status.role.ok_or("Modo de conexão ausente")?;
+    if inner.socket.is_none() {
+        return Err("Prepare a conexão antes de autenticar o computador".into());
+    }
+    inner.pake.begin(&peer_id, role, &room, &room_secret)
+}
+
+#[tauri::command]
+pub fn engine_pake_finish(
+    peer_id: String,
+    remote_share: String,
+    engine: State<'_, NativeEngine>,
+) -> Result<String, String> {
+    engine
+        .inner
+        .lock()
+        .map_err(|_| "Estado indisponível")?
+        .pake
+        .finish(&peer_id, &remote_share)
+}
+
+#[tauri::command]
+pub fn engine_pake_confirm(
+    peer_id: String,
+    remote_confirmation: String,
+    engine: State<'_, NativeEngine>,
+) -> Result<(), String> {
+    engine
+        .inner
+        .lock()
+        .map_err(|_| "Estado indisponível")?
+        .pake
+        .confirm(&peer_id, &remote_confirmation)
+}
+
+#[tauri::command]
+pub fn engine_is_trusted(peer_public_key: String) -> Result<bool, String> {
+    identity::is_trusted(&peer_public_key)
+}
+
+#[tauri::command]
+pub fn engine_trust_peer(
+    peer_id: String,
+    peer_public_key: String,
+    engine: State<'_, NativeEngine>,
+) -> Result<usize, String> {
+    let inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+    if inner.status.role != Some(StreamRole::Host) || inner.pake.binding_key(&peer_id).is_none() {
+        return Err("Autentique o espectador antes de confiar neste computador".into());
+    }
+    if inner.peer_public_keys.get(&peer_id) != Some(&peer_public_key) {
+        return Err("A chave do computador não corresponde ao par autenticado".into());
+    }
+    drop(inner);
+    identity::trust(&peer_public_key)
+}
+
+#[tauri::command]
+pub fn engine_clear_trusted() -> Result<(), String> {
+    identity::clear_trusted()
+}
+
+#[tauri::command]
 pub fn engine_preview_peer(
     peer_id: String,
     peer_public_key: String,
@@ -560,15 +445,20 @@ pub fn engine_preview_peer(
     if peer_id.is_empty() || peer_id.len() > 128 {
         return Err("Identidade do computador inválida".into());
     }
-    let inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
     if inner.status.role != Some(StreamRole::Host) || inner.socket.is_none() {
         return Err("Aprovação disponível somente para o host ativo".into());
     }
+    let binding = inner
+        .pake
+        .binding_key(&peer_id)
+        .ok_or("A senha da sala ainda não foi autenticada por SPAKE2")?;
     let (_, verification) = inner
         .key_exchange
         .as_ref()
         .ok_or("Troca X25519 ausente; prepare a conexão novamente")?
-        .agree(&peer_public_key)?;
+        .agree_bound(&peer_public_key, Some(&binding))?;
+    inner.peer_public_keys.insert(peer_id, peer_public_key);
     Ok(verification)
 }
 
@@ -608,6 +498,7 @@ pub async fn engine_connect_peer(
         (None, None, None) => None,
         _ => return Err("Configuração do relay incompleta".into()),
     };
+    let relay_configured = relay.is_some();
     let (datagrams, role, generation, previous, key, verification_code) = {
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
         let role = inner.status.role.ok_or("Modo ausente")?;
@@ -628,11 +519,15 @@ pub async fn engine_connect_peer(
         }
         inner.status.phase = "punching";
         inner.status.peer_endpoint = Some(endpoint.clone());
+        let binding = inner
+            .pake
+            .binding_key(&peer_id)
+            .ok_or("A senha da sala ainda não foi autenticada por SPAKE2")?;
         let agreement = inner
             .key_exchange
             .as_ref()
             .ok_or("Troca X25519 ausente; prepare a conexão novamente")?
-            .agree(&peer_public_key);
+            .agree_bound(&peer_public_key, Some(&binding));
         let (key, verification) = match agreement {
             Ok(result) => result,
             Err(error) => {
@@ -763,6 +658,9 @@ pub async fn engine_connect_peer(
         .verification_codes
         .insert(peer_id.clone(), verification_code.clone());
     inner
+        .peer_public_keys
+        .insert(peer_id.clone(), peer_public_key);
+    inner
         .peer_metrics
         .entry(peer_id.clone())
         .or_insert_with(|| PeerMetric::waiting(peer_id.clone()));
@@ -774,6 +672,16 @@ pub async fn engine_connect_peer(
         None
     };
     inner.status.phase = "connected";
+    inner.diagnostics.record(
+        "peer",
+        "connected",
+        serde_json::json!({
+            "role": role,
+            "codecMask": peer_codecs,
+            "relayConfigured": relay_configured,
+            "connectedPeers": inner.transports.len(),
+        }),
+    );
     Ok(())
 }
 
@@ -789,7 +697,9 @@ pub async fn engine_disconnect_peer(
         let control = inner.transports.remove(&peer_id);
         inner.host_fanout.remove(&peer_id);
         inner.verification_codes.remove(&peer_id);
+        inner.peer_public_keys.remove(&peer_id);
         inner.peer_metrics.remove(&peer_id);
+        inner.pake.remove(&peer_id);
         let remaining = inner.transports.len();
         refresh_peer_list(&mut inner);
         inner.status.peer_endpoint = None;
@@ -805,6 +715,13 @@ pub async fn engine_disconnect_peer(
         } else {
             "idle"
         };
+        inner.diagnostics.record(
+            "peer",
+            "disconnected",
+            serde_json::json!({
+                "remainingPeers": remaining,
+            }),
+        );
         (control, role, remaining)
     };
     if let Some(control) = control {
@@ -882,9 +799,14 @@ pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Res
         let pipeline = inner.host_pipeline.take();
         let audio = inner.host_audio.take();
         let next_generation = inner.generation.wrapping_add(1);
+        let diagnostics = inner.diagnostics.clone();
         *inner = Inner::default();
+        inner.diagnostics = diagnostics;
         inner.generation = next_generation;
         inner.status.phase = "stopped";
+        inner
+            .diagnostics
+            .record("session", "stopped", serde_json::json!({}));
         (
             controls,
             datagrams,
@@ -921,12 +843,10 @@ pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Res
 
 #[tauri::command]
 pub fn engine_status(engine: State<'_, NativeEngine>) -> Result<EngineStatus, String> {
-    Ok(engine
-        .inner
-        .lock()
-        .map_err(|_| "Estado indisponível")?
-        .status
-        .clone())
+    let inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+    let status = inner.status.clone();
+    inner.diagnostics.record_status(&status);
+    Ok(status)
 }
 
 #[tauri::command]

@@ -48,8 +48,9 @@
 1. **Feedback:** atraso interframe, fila do
    socket e tempo encode/decode para dirigir bitrate, resolução e FPS.
 2. **Rede hostil:** medir disponibilidade/custo do relay e adicionar relay regional.
-3. **Autenticação formal:** migrar a prova Argon2id para um PAKE auditado se o
-   matchmaking passar a autenticar contas ou armazenar credenciais persistentes.
+3. **Autenticação formal (concluída):** Argon2id alimenta SPAKE2 P-256 RFC 9382
+   com confirmação mútua; o signaling não recebe segredo nem prova reutilizável.
+   O pareamento persistente opcional usa o Gerenciador de Credenciais do Windows.
 4. **Validação de hardware:** medir limites de sessões simultâneas de NVENC, AMF
    e QuickSync e reduzir o limite de espectadores quando o driver exigir.
 
