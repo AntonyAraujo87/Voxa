@@ -31,7 +31,7 @@ voxa-native-core = { path = "native-core" }
 
 [target.'cfg(windows)'.dependencies]
 rusty-opus = "0.9.1"
-windows-core = "0.61"
+windows-core = "0.62"
 keyring = { version = "4.2", default-features = false, features = ["v1", "windows-native-keyring-store"] }
 windows = { version = "0.61", features = [
   "Win32_Foundation",
