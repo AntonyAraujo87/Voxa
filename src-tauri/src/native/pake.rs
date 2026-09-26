@@ -17,6 +17,8 @@ use super::StreamRole;
 const HOST_ID: &[u8] = b"voxa-host-v1";
 const VIEWER_ID: &[u8] = b"voxa-viewer-v1";
 const PROTOCOL: &str = "spake2-p256-rfc9382-v1";
+const P256_SHARE_BYTES: usize = 65;
+const CONFIRMATION_BYTES: usize = 32;
 
 enum PendingState {
     Host(PartyAState<Spake2P256>),
@@ -74,7 +76,7 @@ impl PakeManager {
     }
 
     pub fn finish(&mut self, peer_id: &str, remote_share: &str) -> Result<String, String> {
-        let remote = decode(remote_share, 33, "Parâmetro SPAKE2 inválido")?;
+        let remote = decode(remote_share, P256_SHARE_BYTES, "Parâmetro SPAKE2 inválido")?;
         let state = self
             .pending
             .remove(peer_id)
@@ -90,7 +92,11 @@ impl PakeManager {
     }
 
     pub fn confirm(&mut self, peer_id: &str, remote_mac: &str) -> Result<(), String> {
-        let remote = decode(remote_mac, 16, "Confirmação SPAKE2 inválida")?;
+        let remote = decode(
+            remote_mac,
+            CONFIRMATION_BYTES,
+            "Confirmação SPAKE2 inválida",
+        )?;
         let output = self
             .confirmations
             .remove(peer_id)
@@ -145,7 +151,7 @@ fn decode(value: &str, expected_len: usize, message: &str) -> Result<Vec<u8>, St
     let bytes = URL_SAFE_NO_PAD
         .decode(value)
         .map_err(|_| message.to_owned())?;
-    (bytes.len() == expected_len)
+    (bytes.len() == expected_len && URL_SAFE_NO_PAD.encode(&bytes) == value)
         .then_some(bytes)
         .ok_or_else(|| message.to_owned())
 }
@@ -179,6 +185,28 @@ mod tests {
         let (host, viewer) = exchange(&secret, &secret);
         assert!(host.is_ok());
         assert!(viewer.is_ok());
+    }
+
+    #[test]
+    fn wire_values_use_the_expected_p256_and_sha256_sizes() {
+        let mut manager = PakeManager::default();
+        let start = manager
+            .begin("viewer", StreamRole::Host, "room", &"a".repeat(64))
+            .unwrap();
+        assert_eq!(
+            URL_SAFE_NO_PAD.decode(start.share).unwrap().len(),
+            P256_SHARE_BYTES
+        );
+
+        let mut viewer = PakeManager::default();
+        let viewer_start = viewer
+            .begin("host", StreamRole::Viewer, "room", &"a".repeat(64))
+            .unwrap();
+        let confirmation = manager.finish("viewer", &viewer_start.share).unwrap();
+        assert_eq!(
+            URL_SAFE_NO_PAD.decode(confirmation).unwrap().len(),
+            CONFIRMATION_BYTES
+        );
     }
 
     #[test]

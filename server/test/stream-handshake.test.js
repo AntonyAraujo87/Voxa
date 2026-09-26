@@ -5,8 +5,8 @@ import { createServer } from "node:net";
 import { io } from "socket.io-client";
 
 const protocol = "spake2-p256-rfc9382-v1";
-const share = "A".repeat(44);
-const confirmation = "B".repeat(32);
+const share = Buffer.alloc(65, 1).toString("base64url");
+const confirmation = Buffer.alloc(32, 2).toString("base64url");
 
 async function freePort() {
   return new Promise((resolve, reject) => {
@@ -34,9 +34,13 @@ test("real signaling relays PAKE and hides routes until peers confirm locally", 
     assert.deepEqual(Object.keys(joined.peers[0]).sort(), ["peerId", "role"]);
     assert.deepEqual(Object.keys(await hostStub).sort(), ["peerId", "role"]);
 
+    const shortShare = Buffer.alloc(33, 1).toString("base64url");
+    assert.match((await emit(viewer, "stream:pake", { peerId: host.id, protocol, share: shortShare })).error, /SPAKE2/);
     const hostShare = new Promise(resolve => host.once("stream:pake", resolve));
     assert.equal((await emit(viewer, "stream:pake", { peerId: host.id, protocol, share })).ok, true);
     assert.equal((await hostShare).peerId, viewer.id);
+    const shortConfirmation = Buffer.alloc(16, 2).toString("base64url");
+    assert.match((await emit(host, "stream:pake-confirm", { peerId: viewer.id, confirmation: shortConfirmation })).error, /Confirmação/);
     const viewerConfirm = new Promise(resolve => viewer.once("stream:pake-confirm", resolve));
     assert.equal((await emit(host, "stream:pake-confirm", { peerId: viewer.id, confirmation })).ok, true);
     assert.equal((await viewerConfirm).peerId, host.id);

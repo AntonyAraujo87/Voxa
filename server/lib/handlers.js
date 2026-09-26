@@ -81,7 +81,7 @@ export function registerHandlers({ io, socket, registry, limiter }) {
   socket.on("stream:pake", (payload = {}, ack) => {
     if (!guard("stream:pake")) return ack?.({ error: "Muitas mensagens SPAKE2" });
     const target = sanitizePeer(payload?.peerId);
-    if (!target || payload?.protocol !== PAKE_PROTOCOL || !validB64(payload?.share, 44, 46)) {
+    if (!target || payload?.protocol !== PAKE_PROTOCOL || !validB64Bytes(payload?.share, 65)) {
       return ack?.({ error: "Mensagem SPAKE2 inválida" });
     }
     if (!registry.paired(socket.id, target)) return ack?.({ error: "Par SPAKE2 inválido" });
@@ -96,7 +96,7 @@ export function registerHandlers({ io, socket, registry, limiter }) {
   socket.on("stream:pake-confirm", (payload = {}, ack) => {
     if (!guard("stream:pake-confirm")) return ack?.({ error: "Muitas confirmações SPAKE2" });
     const target = sanitizePeer(payload?.peerId);
-    if (!target || !validB64(payload?.confirmation, 20, 48)) {
+    if (!target || !validB64Bytes(payload?.confirmation, 32)) {
       return ack?.({ error: "Confirmação SPAKE2 inválida" });
     }
     if (!registry.paired(socket.id, target)) return ack?.({ error: "Par SPAKE2 inválido" });
@@ -167,7 +167,12 @@ function sanitizePeer(value) {
     && /^[A-Za-z0-9_-]+$/.test(value) ? value : null;
 }
 
-function validB64(value, min, max) {
-  if (typeof value !== "string" || value.length < min || value.length > max || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
-  try { return Buffer.from(value, "base64url").length > 0; } catch { return false; }
+function validB64Bytes(value, expectedBytes) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
+  try {
+    const decoded = Buffer.from(value, "base64url");
+    return decoded.length === expectedBytes && decoded.toString("base64url") === value;
+  } catch {
+    return false;
+  }
 }
