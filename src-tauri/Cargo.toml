@@ -21,7 +21,7 @@ tauri-plugin-process = "2.3.1"
 getrandom = { version = "0.4", features = ["sys_rng"] }
 argon2 = "0.5"
 base64 = "0.22"
-sha2 = "0.10"
+sha2 = "0.11"
 pakery-core = "0.6"
 pakery-spake2 = "0.6"
 pakery-crypto = { version = "0.6", default-features = false, features = ["std", "p256", "spake2"] }
