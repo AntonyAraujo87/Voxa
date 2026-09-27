@@ -34,6 +34,7 @@ export default function App() {
   const [captureTargetIndex, setCaptureTargetIndex] = useState(0);
   const [audioProcesses, setAudioProcesses] = useState<AudioProcessInfo[]>([]);
   const [audioProcessId, setAudioProcessId] = useState(0);
+  const [audioDiscoveryError, setAudioDiscoveryError] = useState<string | null>(null);
   const [cursorVisible, setCursorVisible] = useState(true);
   const [graphicsAdapters, setGraphicsAdapters] = useState<GraphicsAdapterInfo[]>([]);
   const [decoderAdapterIndex, setDecoderAdapterIndex] = useState(-1);
@@ -44,6 +45,7 @@ export default function App() {
   const [updateMessage, setUpdateMessage] = useState("Verificar atualização");
   const roomValid = /^[a-zA-Z0-9._:-]{1,64}$/.test(room);
   const passwordValid = roomPassword.length >= 12 && roomPassword.length <= 128;
+  const active = status.phase !== "idle" && status.phase !== "stopped";
 
   useEffect(() => {
     void engine.captureTargets().then((targets) => {
@@ -54,9 +56,35 @@ export default function App() {
   }, [engine]);
 
   useEffect(() => {
-    void engine.audioProcesses().then(setAudioProcesses).catch(() => setAudioProcesses([]));
     void engine.graphicsAdapters().then(setGraphicsAdapters).catch(() => setGraphicsAdapters([]));
   }, [engine]);
+
+  useEffect(() => {
+    if (role !== "host" || active) return;
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const processes = await engine.audioProcesses();
+        if (disposed) return;
+        setAudioProcesses(processes);
+        setAudioDiscoveryError(null);
+        if (audioProcessRef.current > 0 && !processes.some((process) => process.processId === audioProcessRef.current)) {
+          setAudioProcessId(0);
+          audioProcessRef.current = 0;
+        }
+      } catch (error) {
+        if (!disposed) {
+          setAudioDiscoveryError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [active, engine, role]);
 
   useEffect(() => {
     captureTargetRef.current = captureTargets[captureTargetIndex] ?? null;
@@ -132,7 +160,15 @@ export default function App() {
 
   async function connect(event: FormEvent) {
     event.preventDefault();
-    if (!roomValid || !passwordValid || busy) return;
+    if (busy) return;
+    if (!roomValid) {
+      setMessage("O código da sala contém caracteres inválidos");
+      return;
+    }
+    if (!passwordValid) {
+      setMessage("A senha da sala precisa ter entre 12 e 128 caracteres");
+      return;
+    }
     setBusy(true);
     setMessage("Abrindo o socket UDP nativo...");
     setPendingPeers([]);
@@ -323,7 +359,6 @@ export default function App() {
     }
   }
 
-  const active = status.phase !== "idle" && status.phase !== "stopped";
   return (
     <main className="shell">
       <header className="titlebar" data-tauri-drag-region>
@@ -367,11 +402,17 @@ export default function App() {
             <select value={audioProcessId} onChange={(event) => void selectAudioSource(Number(event.target.value))} disabled={busy}>
               <option value={0}>Todo o som do sistema (pode incluir Discord)</option>
               {audioProcesses.map((process) => <option key={process.processId} value={process.processId}>
-                Somente {process.name} · PID {process.processId}
+                Somente {process.name}{process.active ? " · reproduzindo" : " · pausado"} · PID {process.processId}
               </option>)}
             </select>
-            <button className="secondary" type="button" onClick={() => void engine.audioProcesses().then(setAudioProcesses).catch(() => setMessage("Não foi possível atualizar os processos"))} disabled={busy}>Atualizar processos</button>
-            <small>{audioProcessId > 0 ? "Proteção contra eco do Discord ativa: somente o processo do jogo e seus filhos entram no stream." : "Escolha o jogo para impedir que Discord e o próprio Voxa retornem ao espectador."}</small>
+            <button className="secondary" type="button" onClick={() => void engine.audioProcesses().then((processes) => { setAudioProcesses(processes); setAudioDiscoveryError(null); }).catch((error) => setAudioDiscoveryError(String(error)))} disabled={busy}>Atualizar processos</button>
+            <small>{audioDiscoveryError
+              ? `Falha ao consultar o áudio do Windows: ${audioDiscoveryError}`
+              : audioProcessId > 0
+                ? "Proteção contra eco do Discord ativa: somente o processo do jogo e seus filhos entram no stream."
+                : audioProcesses.length > 0
+                  ? "Escolha o jogo para impedir que Discord e o próprio Voxa retornem ao espectador."
+                  : "Abra o jogo e reproduza algum som. A lista é atualizada automaticamente a cada 2 segundos."}</small>
           </label>}
           {role === "viewer" && <label>GPU de reprodução
             <select value={decoderAdapterIndex} onChange={(event) => setDecoderAdapterIndex(Number(event.target.value))} disabled={active || busy}>
@@ -382,14 +423,14 @@ export default function App() {
             </select>
           </label>}
           <label>Código da sala<input value={room} onChange={(event) => setRoom(event.target.value)} maxLength={64} pattern="[a-zA-Z0-9._:-]+" title="Use letras, números, ponto, dois-pontos, hífen ou sublinhado" placeholder="ex.: sala-do-jogo" disabled={active} /></label>
-          <label>Senha da sala<input value={roomPassword} onChange={(event) => setRoomPassword(event.target.value)} type="password" minLength={12} maxLength={128} autoComplete="new-password" placeholder="Use 12 ou mais caracteres nos dois computadores" disabled={active} /></label>
+          <label>Senha da sala<input value={roomPassword} onChange={(event) => setRoomPassword(event.target.value)} type="password" minLength={12} maxLength={128} autoComplete="new-password" placeholder="Use 12 ou mais caracteres nos dois computadores" disabled={active} aria-invalid={roomPassword.length > 0 && !passwordValid} /><small>{roomPassword.length === 0 ? "Mínimo de 12 caracteres." : passwordValid ? "Senha válida." : `Faltam ${12 - roomPassword.length} caractere(s).`}</small></label>
           <details>
             <summary>Servidor de matchmaking</summary>
             <label>URL<input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} inputMode="url" disabled={active} /></label>
           </details>
           {active
             ? <><button className="primary" type="button" onClick={() => void engine.toggleFullscreen().catch((error) => setMessage(String(error)))} disabled={busy || role !== "viewer"}>Tela cheia</button><button className="primary" type="button" onClick={() => void engine.openNewSession().catch((error) => setMessage(String(error)))} disabled={busy}>Abrir outra sessão</button><button className="primary danger" type="button" onClick={stop} disabled={busy}>Encerrar</button></>
-            : <button className="primary" type="submit" disabled={busy || !roomValid || !passwordValid}>{busy ? "Conectando..." : role === "host" ? "Começar transmissão" : "Conectar ao host"}</button>}
+            : <button className="primary" type="submit" disabled={busy}>{busy ? "Conectando..." : role === "host" ? "Começar transmissão" : "Conectar ao host"}</button>}
         </form>
       </section>
       {role === "host" && pendingPeers.length > 0 && <section className="card approvals" aria-live="assertive">

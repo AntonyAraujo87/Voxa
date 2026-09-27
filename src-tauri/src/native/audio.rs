@@ -22,7 +22,8 @@ use windows::{
         Media::{
             Audio::{
                 eConsole, eRender, ActivateAudioInterfaceAsync, AudioSessionStateActive,
-                IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
+                AudioSessionStateExpired, IActivateAudioInterfaceAsyncOperation,
+                IActivateAudioInterfaceCompletionHandler,
                 IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient,
                 IAudioRenderClient, IAudioSessionControl2, IAudioSessionManager2,
                 IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
@@ -30,7 +31,7 @@ use windows::{
                 AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
                 AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
                 AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
-                PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+                DEVICE_STATE_ACTIVE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
                 VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
             },
             Multimedia::WAVE_FORMAT_IEEE_FLOAT,
@@ -298,24 +299,41 @@ fn format() -> WAVEFORMATEX {
 pub(super) fn enumerate_processes() -> Result<Vec<AudioProcessInfo>, String> {
     unsafe {
         let _com = ComApartment::start()?;
-        let audio_client = default_render_device()?;
-        let manager: IAudioSessionManager2 = audio_client
-            .Activate(CLSCTX_ALL, None)
-            .map_err(|e| format!("Sessões de áudio do Windows: {e}"))?;
-        let sessions = manager
-            .GetSessionEnumerator()
-            .map_err(|e| format!("Enumera sessões de áudio: {e}"))?;
-        let mut active = std::collections::HashSet::new();
-        for index in 0..sessions.GetCount().unwrap_or_default() {
-            let Ok(control) = sessions.GetSession(index) else {
+        let enumerator = device_enumerator()?;
+        let devices = enumerator
+            .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+            .map_err(|e| format!("Enumera saídas de áudio: {e}"))?;
+        let mut audio_processes = std::collections::HashMap::<u32, bool>::new();
+        for device_index in 0..devices.GetCount().unwrap_or_default() {
+            let Ok(device) = devices.Item(device_index) else {
                 continue;
             };
-            if control.GetState().ok() != Some(AudioSessionStateActive) {
+            let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
                 continue;
-            }
-            if let Ok(control) = control.cast::<IAudioSessionControl2>() {
-                if let Ok(process_id) = control.GetProcessId() {
-                    active.insert(process_id);
+            };
+            let Ok(sessions) = manager.GetSessionEnumerator() else {
+                continue;
+            };
+            for session_index in 0..sessions.GetCount().unwrap_or_default() {
+                let Ok(control) = sessions.GetSession(session_index) else {
+                    continue;
+                };
+                let Some(session_state) = control.GetState().ok() else {
+                    continue;
+                };
+                if session_state == AudioSessionStateExpired {
+                    continue;
+                }
+                if let Ok(control) = control.cast::<IAudioSessionControl2>() {
+                    if let Ok(process_id) = control.GetProcessId() {
+                        if process_id != 0 && process_id != std::process::id() {
+                            let is_active = session_state == AudioSessionStateActive;
+                            audio_processes
+                                .entry(process_id)
+                                .and_modify(|active| *active |= is_active)
+                                .or_insert(is_active);
+                        }
+                    }
                 }
             }
         }
@@ -328,9 +346,7 @@ pub(super) fn enumerate_processes() -> Result<Vec<AudioProcessInfo>, String> {
         let mut processes = Vec::new();
         if Process32FirstW(snapshot, &mut entry).is_ok() {
             loop {
-                if active.contains(&entry.th32ProcessID)
-                    && entry.th32ProcessID != std::process::id()
-                {
+                if let Some(active) = audio_processes.get(&entry.th32ProcessID) {
                     let end = entry
                         .szExeFile
                         .iter()
@@ -341,6 +357,7 @@ pub(super) fn enumerate_processes() -> Result<Vec<AudioProcessInfo>, String> {
                         processes.push(AudioProcessInfo {
                             process_id: entry.th32ProcessID,
                             name,
+                            active: *active,
                         });
                     }
                 }
@@ -447,12 +464,16 @@ fn default_render_client() -> Result<IAudioClient, String> {
 }
 
 fn default_render_device() -> Result<windows::Win32::Media::Audio::IMMDevice, String> {
-    let enumerator: IMMDeviceEnumerator = unsafe {
-        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-            .map_err(|e| format!("Abre dispositivos de áudio: {e}"))?
-    };
+    let enumerator = device_enumerator()?;
     unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
         .map_err(|e| format!("Saída de áudio padrão indisponível: {e}"))
+}
+
+fn device_enumerator() -> Result<IMMDeviceEnumerator, String> {
+    unsafe {
+        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+            .map_err(|e| format!("Abre dispositivos de áudio: {e}"))
+    }
 }
 
 fn open_capture(process_id: Option<u32>) -> Result<(IAudioClient, IAudioCaptureClient), String> {

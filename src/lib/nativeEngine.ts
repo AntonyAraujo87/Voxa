@@ -10,7 +10,7 @@ export interface CaptureTargetInfo {
   id: CaptureTargetId; gpu: string; monitor: string;
   width: number; height: number; primary: boolean; hdr: boolean;
 }
-export interface AudioProcessInfo { processId: number; name: string; }
+export interface AudioProcessInfo { processId: number; name: string; active: boolean; }
 export interface GraphicsAdapterInfo {
   adapterIndex: number; name: string; dedicatedMemoryMb: number;
   vendorId: number; deviceId: number; revision: number; driverVersion: string | null;

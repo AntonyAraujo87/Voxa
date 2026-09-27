@@ -39,6 +39,7 @@ pub struct CaptureTargetInfo {
 pub struct AudioProcessInfo {
     pub process_id: u32,
     pub name: String,
+    pub active: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

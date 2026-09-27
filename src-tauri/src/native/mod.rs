@@ -176,13 +176,17 @@ pub fn engine_export_diagnostic(
         .map(protocol::VideoCodec::name)
         .collect::<Vec<_>>();
     #[cfg(target_os = "windows")]
-    let (targets, adapters) = (
+    let (targets, adapters, audio_processes) = (
         capture::enumerate_targets().unwrap_or_default(),
         capture::enumerate_adapters().unwrap_or_default(),
+        audio::enumerate_processes().unwrap_or_default(),
     );
     #[cfg(not(target_os = "windows"))]
-    let (targets, adapters): (Vec<CaptureTargetInfo>, Vec<GraphicsAdapterInfo>) =
-        (Vec::new(), Vec::new());
+    let (targets, adapters, audio_processes): (
+        Vec<CaptureTargetInfo>,
+        Vec<GraphicsAdapterInfo>,
+        Vec<AudioProcessInfo>,
+    ) = (Vec::new(), Vec::new(), Vec::new());
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -199,6 +203,7 @@ pub fn engine_export_diagnostic(
         "encoderCapacity": capacity,
         "captureTargets": targets,
         "graphicsAdapters": adapters,
+        "detectedAudioProcesses": audio_processes,
         "recentEvents": recent_events,
         "panicLog": crate::diagnostico::read_panic_log(app.clone()),
         "privacy": "Sem senha da sala, chaves de mídia ou conteúdo transmitido"
