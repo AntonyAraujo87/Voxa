@@ -879,7 +879,9 @@ mod tests {
     use super::*;
     #[test]
     fn default_engine_is_idle() {
-        assert_eq!(EngineStatus::default().phase, "idle");
+        let status = EngineStatus::default();
+        assert_eq!(status.phase, "idle");
+        assert_eq!(status.encoder_capacity, 0);
     }
 
     #[test]

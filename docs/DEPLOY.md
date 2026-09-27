@@ -1,4 +1,4 @@
-# Implantação do Voxa Stream 0.7.2
+# Implantação do Voxa Stream 0.7.3
 
 ## Matchmaking no Render
 

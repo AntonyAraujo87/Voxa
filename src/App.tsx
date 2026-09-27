@@ -15,7 +15,7 @@ const emptyStatus: EngineStatus = {
   receivedFrames: 0, encodedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
   renderer: "closed", capture: "idle", encoder: "idle",
   decoder: "idle", decoderGpu: null, audio: "idle", audioBitrateKbps: 0, audioError: null, rejoinRequired: false, decodedFrames: 0,
-  avSyncMs: 0, encoderCapacity: 1, cursorVisible: true, hdr: false, captureRestarts: 0,
+  avSyncMs: 0, encoderCapacity: 0, cursorVisible: true, hdr: false, captureRestarts: 0,
   latencyP50Ms: 0, latencyP95Ms: 0, latencyP99Ms: 0,
   verificationCode: null, connectedPeers: 0, maxPeers: 4, peerVerifications: [], peerMetrics: [], lastError: null,
 };

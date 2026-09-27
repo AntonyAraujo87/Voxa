@@ -85,11 +85,10 @@ export class Matchmaking {
     ));
     this.socket.on("connect", () => {
       if (this.rejoinArmed && this.desired) {
-        void this.options.refreshEndpoint(this.desired.role).then((endpoint) => {
-          if (this.closed || !this.desired) return;
-          this.desired = { ...this.desired, endpoint };
-          return this.performJoin(this.desired);
-        }).catch((error) => this.options.onError(messageOf(error)));
+        // O monitor nativo tambem chama recover() quando percebe troca de IP.
+        // Centralizar aqui evita duas engine_prepare concorrentes consumirem a
+        // mesma identidade efemera e anunciarem endpoints/chaves diferentes.
+        void this.recover().catch(() => undefined);
       }
     });
   }

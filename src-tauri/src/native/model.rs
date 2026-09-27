@@ -160,7 +160,7 @@ impl Default for EngineStatus {
             audio_bitrate_kbps: 0,
             audio_error: None,
             av_sync_ms: 0,
-            encoder_capacity: 1,
+            encoder_capacity: 0,
             cursor_visible: true,
             hdr: false,
             capture_restarts: 0,
