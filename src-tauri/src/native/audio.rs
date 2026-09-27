@@ -1,6 +1,7 @@
 //! Low-latency Windows system-audio loopback and playback.
 
 use super::{
+    com::ComApartment,
     transport::{AudioPacket, HostTransportHandle, TransportHandle},
     AudioProcessInfo, Inner,
 };
@@ -37,9 +38,9 @@ use windows::{
             Multimedia::WAVE_FORMAT_IEEE_FLOAT,
         },
         System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize,
+            CoCreateInstance,
             StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0},
-            BLOB, CLSCTX_ALL, COINIT_MULTITHREADED,
+            BLOB, CLSCTX_ALL,
         },
         System::Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -102,7 +103,8 @@ fn capture_loop(
     timestamp_us: &mut u64,
     process_id: Option<u32>,
 ) -> Result<(), String> {
-    let _com = ComApartment::start()?;
+    let _com = ComApartment::multithreaded()
+        .map_err(|error| format!("Inicializa COM para áudio: {error}"))?;
     let (client, capture) = open_capture(process_id)?;
     // A device can disappear for seconds during sleep, hot-plug or an output
     // switch. Resume on the shared wall clock instead of emitting stale audio.
@@ -190,7 +192,8 @@ fn capture_loop(
 }
 
 fn playback_loop(transport: &TransportHandle, state: &Arc<Mutex<Inner>>) -> Result<(), String> {
-    let _com = ComApartment::start()?;
+    let _com = ComApartment::multithreaded()
+        .map_err(|error| format!("Inicializa COM para áudio: {error}"))?;
     let (client, render, capacity) = open_render()?;
     let mut decoder = OpusDecoder::new(SAMPLE_RATE as i32, CHANNELS).map_err(str::to_owned)?;
     let mut decoded = vec![0.0f32; FRAME_SAMPLES * CHANNELS];
@@ -298,7 +301,8 @@ fn format() -> WAVEFORMATEX {
 
 pub(super) fn enumerate_processes() -> Result<Vec<AudioProcessInfo>, String> {
     unsafe {
-        let _com = ComApartment::start()?;
+        let _com = ComApartment::multithreaded()
+            .map_err(|error| format!("Inicializa COM para áudio: {error}"))?;
         let enumerator = device_enumerator()?;
         let devices = enumerator
             .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
@@ -519,21 +523,6 @@ fn open_render() -> Result<(IAudioClient, IAudioRenderClient, u32), String> {
     let render = unsafe { client.GetService::<IAudioRenderClient>() }
         .map_err(|e| format!("Abre reprodução do stream: {e}"))?;
     Ok((client, render, capacity))
-}
-
-struct ComApartment;
-impl ComApartment {
-    fn start() -> Result<Self, String> {
-        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
-            .ok()
-            .map_err(|e| format!("Inicializa COM para áudio: {e}"))?;
-        Ok(Self)
-    }
-}
-impl Drop for ComApartment {
-    fn drop(&mut self) {
-        unsafe { CoUninitialize() }
-    }
 }
 
 fn brief(message: &str) -> String {

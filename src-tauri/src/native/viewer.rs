@@ -1,5 +1,5 @@
 use super::{
-    audio, decoder::HardwareVideoDecoder, presenter::NativePresenter, renderer,
+    audio, com::ComApartment, decoder::HardwareVideoDecoder, presenter::NativePresenter, renderer,
     transport::TransportHandle, Inner,
 };
 use std::{
@@ -21,13 +21,14 @@ use windows::{
             },
             Dxgi::{CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory1},
         },
-        System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED},
     },
 };
 
 pub fn hardware_decoder_codecs(
     selected: Option<u32>,
 ) -> Result<Vec<voxa_native_core::protocol::VideoCodec>, String> {
+    let _apartment = ComApartment::multithreaded()
+        .map_err(|error| format!("Inicializa COM para detectar decoders: {error}"))?;
     unsafe {
         let factory: IDXGIFactory1 =
             CreateDXGIFactory1().map_err(|e| format!("DXGI do espectador: {e}"))?;
@@ -73,12 +74,14 @@ fn run(
     decoder_adapter_index: Option<u32>,
 ) {
     renderer::set_title(&app, "Voxa Stream — aguardando vídeo");
-    if let Err(error) = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok() {
-        fail(&state, "com-unavailable", &error.to_string());
-        renderer::set_title(&app, "Voxa Stream — falha nativa; veja o painel");
-        return;
-    }
-    let _apartment = ComApartment;
+    let _apartment = match ComApartment::multithreaded() {
+        Ok(apartment) => apartment,
+        Err(error) => {
+            fail(&state, "com-unavailable", &error);
+            renderer::set_title(&app, "Voxa Stream — falha nativa; veja o painel");
+            return;
+        }
+    };
     let audio = audio::spawn_playback(transport.clone(), state.clone());
     while !transport.stopped() {
         match run_session(&transport, &state, &app, hwnd, decoder_adapter_index) {
@@ -356,13 +359,6 @@ fn fail(state: &Arc<Mutex<Inner>>, decoder: &'static str, error: &str) {
         "[voxa] decoder nativo: {}",
         error.chars().take(160).collect::<String>()
     );
-}
-
-struct ComApartment;
-impl Drop for ComApartment {
-    fn drop(&mut self) {
-        unsafe { CoUninitialize() }
-    }
 }
 
 #[cfg(test)]

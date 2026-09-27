@@ -9,6 +9,8 @@ mod audio;
 #[cfg(target_os = "windows")]
 pub mod capture;
 #[cfg(target_os = "windows")]
+mod com;
+#[cfg(target_os = "windows")]
 pub mod converter;
 #[cfg(target_os = "windows")]
 pub mod decoder;
@@ -87,8 +89,8 @@ pub fn engine_switch_capture(
     {
         let capture = capture::DxgiCapture::open(Some(capture_target))
             .map_err(|error| format!("O novo monitor não pode ser capturado: {error}"))?;
-        let available =
-            encoder::hardware_encoder_codecs_for_device(&capture.device).unwrap_or_default();
+        let available = encoder::hardware_encoder_codecs_for_device(&capture.device)
+            .map_err(|error| format!("Falha ao detectar codecs da GPU do host: {error}"))?;
         let codecs = protocol::VideoCodec::mask(available.iter().copied());
         let encoder_capacity =
             encoder::hardware_encoder_capacity_for_device(&capture.device, &available, 4).max(1);
@@ -284,8 +286,8 @@ pub async fn engine_prepare(
         let capture = capture::DxgiCapture::open(capture_target)
             .map_err(|error| format!("O monitor selecionado não pode ser capturado: {error}"))?;
         let capture_state = "dxgi-ready";
-        let available =
-            encoder::hardware_encoder_codecs_for_device(&capture.device).unwrap_or_default();
+        let available = encoder::hardware_encoder_codecs_for_device(&capture.device)
+            .map_err(|error| format!("Falha ao detectar codecs da GPU do host: {error}"))?;
         let encoder_capacity =
             encoder::hardware_encoder_capacity_for_device(&capture.device, &available, 4).max(1);
         let encoder_state = if available.is_empty() {
@@ -301,7 +303,8 @@ pub async fn engine_prepare(
             capture.hdr,
         )
     } else {
-        let available = viewer::hardware_decoder_codecs(decoder_adapter_index).unwrap_or_default();
+        let available = viewer::hardware_decoder_codecs(decoder_adapter_index)
+            .map_err(|error| format!("Falha ao detectar codecs da GPU do espectador: {error}"))?;
         (
             "disabled",
             "decoder-pending",

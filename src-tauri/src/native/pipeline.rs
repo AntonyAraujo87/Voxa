@@ -1,5 +1,6 @@
 use super::{
     capture::DxgiCapture,
+    com::ComApartment,
     converter::GpuColorConverter,
     encoder::HardwareVideoEncoder,
     transport::{CursorPacket, EncodedFrame, HostTransportHandle},
@@ -15,7 +16,6 @@ use voxa_native_core::protocol::{StreamConfig, VideoCodec};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_TEXTURE2D_DESC,
 };
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
 const FPS: u32 = 60;
 
@@ -158,16 +158,17 @@ pub(super) fn spawn(
 }
 
 fn run(transport: HostTransportHandle, state: Arc<Mutex<Inner>>) {
-    let apartment = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-    if let Err(error) = apartment.ok() {
-        if let Ok(mut inner) = state.lock() {
-            inner.status.phase = "failed";
-            inner.status.encoder = "com-unavailable";
+    let _apartment = match ComApartment::multithreaded() {
+        Ok(apartment) => apartment,
+        Err(error) => {
+            if let Ok(mut inner) = state.lock() {
+                inner.status.phase = "failed";
+                inner.status.encoder = "com-unavailable";
+            }
+            eprintln!("[voxa] inicialização COM: {error}");
+            return;
         }
-        eprintln!("[voxa] inicialização COM: {error}");
-        return;
-    }
-    let _apartment = ComApartment;
+    };
     while !transport.stopped() {
         let capture_target = state.lock().ok().and_then(|inner| inner.capture_target);
         match run_device_session(&transport, &state, capture_target) {
@@ -186,13 +187,6 @@ fn run(transport: HostTransportHandle, state: Arc<Mutex<Inner>>) {
                 thread::sleep(Duration::from_millis(750));
             }
         }
-    }
-}
-
-struct ComApartment;
-impl Drop for ComApartment {
-    fn drop(&mut self) {
-        unsafe { CoUninitialize() }
     }
 }
 
