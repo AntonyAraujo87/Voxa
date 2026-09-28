@@ -447,7 +447,7 @@ pub async fn spawn_receiver(
             if last_authenticated.elapsed() >= Duration::from_secs(2) {
                 recv_route.reset();
                 if let Ok(mut inner) = recv_state.lock() {
-                    inner.status.phase = SessionPhase::Recovering;
+                    inner.status.set_phase(SessionPhase::Recovering);
                     if recv_route.relays.is_empty()
                         && last_authenticated.elapsed() >= Duration::from_secs(8)
                     {
@@ -579,7 +579,7 @@ pub async fn spawn_receiver(
                                     if let Ok(mut inner) = recv_state.lock() {
                                         inner.status.received_frames += 1;
                                         inner.status.dropped_frames += u64::from(replaced);
-                                        inner.status.phase = SessionPhase::Streaming;
+                                        inner.status.set_phase(SessionPhase::Streaming);
                                     }
                                     update_peer(&recv_state, &recv_peer_id, |metric| {
                                         metric.received_frames += 1;
@@ -1002,7 +1002,7 @@ pub async fn spawn_receiver(
             {
                 ping_route.reset();
                 if let Ok(mut inner) = ping_state.lock() {
-                    inner.status.phase = SessionPhase::Recovering;
+                    inner.status.set_phase(SessionPhase::Recovering);
                 }
                 update_peer(&ping_state, &ping_peer_id, |metric| {
                     metric.phase = "recovering"
@@ -1089,21 +1089,23 @@ fn mark_failed(state: &Arc<Mutex<Inner>>) {
     if let Ok(mut inner) = state.lock() {
         // Um erro de envio e recuperavel: a rota e reavaliada pelo heartbeat.
         // No host, ele tambem nao pode derrubar os demais espectadores.
-        inner.status.phase = if inner.status.role == Some(StreamRole::Host) {
+        let next_phase = if inner.status.role == Some(StreamRole::Host) {
             SessionPhase::Recovering
         } else {
             SessionPhase::Failed
         };
+        inner.status.set_phase(next_phase);
     }
 }
 
 fn mark_connected(state: &Arc<Mutex<Inner>>, role: StreamRole, peer_id: &str) {
     if let Ok(mut inner) = state.lock() {
-        inner.status.phase = if role == StreamRole::Host {
+        let next_phase = if role == StreamRole::Host {
             SessionPhase::Streaming
         } else {
             SessionPhase::Connecting
         };
+        inner.status.set_phase(next_phase);
     }
     update_peer(state, peer_id, |metric| metric.phase = "connected");
 }

@@ -47,28 +47,51 @@ impl SessionPhase {
             || matches!(
                 (self, next),
                 (Idle | Closed | Failed, Authenticating)
+                    | (Idle | Failed, Closed)
                     | (
                         Authenticating,
                         AwaitingApproval | Connecting | Failed | Closed
                     )
-                    | (AwaitingApproval, Connecting | Closed | Failed)
-                    | (Connecting, Streaming | Recovering | Closed | Failed)
-                    | (Streaming, Recovering | Closed | Failed)
-                    | (Recovering, Connecting | Streaming | Closed | Failed)
+                    | (AwaitingApproval, Connecting | Recovering | Closed | Failed)
+                    | (
+                        Connecting,
+                        AwaitingApproval | Streaming | Recovering | Closed | Failed
+                    )
+                    | (
+                        Streaming,
+                        AwaitingApproval | Connecting | Recovering | Closed | Failed
+                    )
+                    | (
+                        Recovering,
+                        AwaitingApproval | Connecting | Streaming | Closed | Failed
+                    )
             )
     }
 }
 
 #[cfg(test)]
 mod phase_tests {
-    use super::SessionPhase::*;
+    use super::{EngineStatus, SessionPhase::*};
     #[test]
     fn session_state_machine_rejects_unsafe_shortcuts() {
         assert!(Idle.can_transition_to(Authenticating));
         assert!(AwaitingApproval.can_transition_to(Connecting));
         assert!(Recovering.can_transition_to(Streaming));
+        assert!(Streaming.can_transition_to(AwaitingApproval));
+        assert!(Connecting.can_transition_to(AwaitingApproval));
         assert!(!Idle.can_transition_to(Streaming));
         assert!(!Closed.can_transition_to(Streaming));
+    }
+
+    #[test]
+    fn invalid_runtime_transition_fails_closed_with_a_diagnostic() {
+        let mut status = EngineStatus::default();
+        status.set_phase(Streaming);
+        assert_eq!(status.phase, Failed);
+        assert!(status
+            .last_error
+            .as_deref()
+            .is_some_and(|message| message.contains("idle -> streaming")));
     }
 }
 
@@ -217,6 +240,18 @@ impl EngineStatus {
             true
         } else {
             false
+        }
+    }
+
+    pub(super) fn set_phase(&mut self, next: SessionPhase) {
+        if !self.transition(next) {
+            let previous = self.phase;
+            self.phase = SessionPhase::Failed;
+            self.last_error = Some(format!(
+                "Transição interna inválida: {} -> {}",
+                previous.as_str(),
+                next.as_str()
+            ));
         }
     }
 }

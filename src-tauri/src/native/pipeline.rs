@@ -162,7 +162,7 @@ fn run(transport: HostTransportHandle, state: Arc<Mutex<Inner>>) {
         Ok(apartment) => apartment,
         Err(error) => {
             if let Ok(mut inner) = state.lock() {
-                inner.status.phase = SessionPhase::Failed;
+                inner.status.set_phase(SessionPhase::Failed);
                 inner.status.encoder = "com-unavailable";
             }
             eprintln!("[voxa] inicialização COM: {error}");
@@ -176,7 +176,7 @@ fn run(transport: HostTransportHandle, state: Arc<Mutex<Inner>>) {
             Ok(()) => continue,
             Err(error) => {
                 if let Ok(mut inner) = state.lock() {
-                    inner.status.phase = SessionPhase::Recovering;
+                    inner.status.set_phase(SessionPhase::Recovering);
                     inner.status.capture = "recovering";
                     inner.status.encoder = "recovering";
                     inner.status.last_error = Some(error.chars().take(240).collect());
@@ -218,7 +218,7 @@ fn run_device_session(
     if let Ok(mut inner) = state.lock() {
         inner.status.capture = "dxgi-active";
         inner.status.encoder = "media-foundation-hardware";
-        inner.status.phase = SessionPhase::Streaming;
+        inner.status.set_phase(SessionPhase::Streaming);
         inner.status.hdr = capture.hdr;
         inner.status.last_error = None;
     }

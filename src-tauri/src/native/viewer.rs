@@ -152,7 +152,7 @@ fn run_session(
             voxa_native_core::protocol::VideoCodec::Av1 => "media-foundation-av1",
         };
         inner.status.decoder_gpu = Some(decoder_gpu);
-        inner.status.phase = SessionPhase::Connecting;
+        inner.status.set_phase(SessionPhase::Connecting);
         inner.status.last_error = None;
     }
     let mut duration = 10_000_000i64 / i64::from(config.fps);
@@ -235,7 +235,7 @@ fn run_session(
                 inner.status.stages = inner.telemetry.snapshot(transport.queued_bytes());
                 inner.status.decoded_frames += 1;
                 inner.status.renderer = "d3d11-swapchain";
-                inner.status.phase = SessionPhase::Streaming;
+                inner.status.set_phase(SessionPhase::Streaming);
                 inner.status.last_error = None;
                 if frames_since_latency_update >= 30 {
                     let (p50, p95, p99) = latency_percentiles(&latency_samples);
@@ -368,11 +368,12 @@ fn latency_percentiles(samples: &VecDeque<u32>) -> (u32, u32, u32) {
 
 fn fail(state: &Arc<Mutex<Inner>>, decoder: &'static str, error: &str) {
     if let Ok(mut inner) = state.lock() {
-        inner.status.phase = if decoder == "recovering" {
+        let next_phase = if decoder == "recovering" {
             SessionPhase::Recovering
         } else {
             SessionPhase::Failed
         };
+        inner.status.set_phase(next_phase);
         inner.status.decoder = decoder;
         inner.status.last_error = Some(error.chars().take(240).collect());
     }

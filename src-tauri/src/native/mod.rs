@@ -453,7 +453,7 @@ pub async fn engine_prepare(
     engine_stop(app, engine.clone()).await?;
     {
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
-        let _ = inner.status.transition(SessionPhase::Authenticating);
+        inner.status.set_phase(SessionPhase::Authenticating);
         inner.status.role = Some(role);
         inner
             .diagnostics
@@ -535,7 +535,7 @@ pub async fn engine_prepare(
     inner.signaling_max_peers = 4;
     inner.cursor_visible = true;
     inner.host_fanout.set_supported_codecs(codecs);
-    inner.status.phase = SessionPhase::AwaitingApproval;
+    inner.status.set_phase(SessionPhase::AwaitingApproval);
     inner.status.local_endpoint = Some(local.clone());
     inner.status.public_endpoint = public.clone();
     inner.status.capture = capture_state;
@@ -607,7 +607,7 @@ pub async fn engine_refresh_endpoint(
     inner.status.local_endpoint = Some(local.clone());
     inner.status.public_endpoint = public.clone();
     inner.status.rejoin_required = false;
-    inner.status.phase = SessionPhase::Recovering;
+    inner.status.set_phase(SessionPhase::Recovering);
     inner.diagnostics.record(
         "network",
         "endpoint-refreshed-without-restarting-media",
@@ -810,7 +810,12 @@ pub async fn engine_connect_peer(
         {
             return Err("O espectador já está conectado a um host".into());
         }
-        inner.status.phase = SessionPhase::Connecting;
+        let next_phase = if role == StreamRole::Host && !inner.transports.is_empty() {
+            SessionPhase::Streaming
+        } else {
+            SessionPhase::Connecting
+        };
+        inner.status.set_phase(next_phase);
         inner.status.peer_endpoint = Some(endpoint.clone());
         let binding = inner
             .pake
@@ -824,7 +829,8 @@ pub async fn engine_connect_peer(
         let (key, verification) = match agreement {
             Ok(result) => result,
             Err(error) => {
-                inner.status.phase = connection_failure_phase(role, inner.transports.len());
+                let next_phase = connection_failure_phase(role, inner.transports.len());
+                inner.status.set_phase(next_phase);
                 return Err(error);
             }
         };
@@ -868,7 +874,8 @@ pub async fn engine_connect_peer(
         Err(error) => {
             if let Ok(mut inner) = engine.inner.lock() {
                 if session_is_current(&inner, generation, role) {
-                    inner.status.phase = connection_failure_phase(role, inner.transports.len());
+                    let next_phase = connection_failure_phase(role, inner.transports.len());
+                    inner.status.set_phase(next_phase);
                 }
             }
             return Err(error);
@@ -912,7 +919,7 @@ pub async fn engine_connect_peer(
                 control.stop();
                 if let Ok(mut inner) = engine.inner.lock() {
                     if session_is_current(&inner, generation, role) {
-                        inner.status.phase = SessionPhase::Failed;
+                        inner.status.set_phase(SessionPhase::Failed);
                     }
                 }
                 return Err(error);
@@ -964,7 +971,12 @@ pub async fn engine_connect_peer(
     } else {
         None
     };
-    inner.status.phase = SessionPhase::Connecting;
+    let next_phase = if role == StreamRole::Host && inner.transports.len() > 1 {
+        SessionPhase::Streaming
+    } else {
+        SessionPhase::Connecting
+    };
+    inner.status.set_phase(next_phase);
     inner.diagnostics.record(
         "peer",
         "connected",
@@ -1001,13 +1013,14 @@ pub async fn engine_disconnect_peer(
         } else {
             None
         };
-        inner.status.phase = if remaining > 0 {
+        let next_phase = if remaining > 0 {
             SessionPhase::Streaming
         } else if inner.socket.is_some() {
             SessionPhase::AwaitingApproval
         } else {
             SessionPhase::Idle
         };
+        inner.status.set_phase(next_phase);
         inner.diagnostics.record(
             "peer",
             "disconnected",
@@ -1100,7 +1113,7 @@ pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Res
         *inner = Inner::default();
         inner.diagnostics = diagnostics;
         inner.generation = next_generation;
-        inner.status.phase = SessionPhase::Closed;
+        inner.status.set_phase(SessionPhase::Closed);
         inner
             .diagnostics
             .record("session", "stopped", serde_json::json!({}));
@@ -1132,7 +1145,7 @@ pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Res
     if let Ok(mut inner) = engine.inner.lock() {
         if inner.generation == generation && inner.socket.is_none() {
             inner.status = EngineStatus::default();
-            inner.status.phase = SessionPhase::Closed;
+            inner.status.set_phase(SessionPhase::Closed);
         }
     }
     Ok(())
