@@ -1,10 +1,12 @@
 import { startUdpRelay } from "./lib/relay.js";
 
 const port = Number(process.env.VOXA_RELAY_PORT || 3479);
+const host = process.env.VOXA_RELAY_BIND || "0.0.0.0";
 const secret = process.env.VOXA_RELAY_SECRET || "";
 if (secret.length < 32) throw new Error("VOXA_RELAY_SECRET deve ter pelo menos 32 caracteres");
 const relay = startUdpRelay({
   port,
+  host,
   secret,
   log: {
     info: (...message) => console.log("[voxa]", ...message),

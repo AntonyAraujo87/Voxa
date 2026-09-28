@@ -66,3 +66,52 @@ test("blind UDP relay pairs roles and forwards only encrypted payload bytes", as
     relay.close();
   }
 });
+
+test("blind relay accepts native IPv6 peers when bound to an IPv6 address", async (t) => {
+  const relay = startUdpRelay({ port: 0, secret: SECRET, host: "::1", log: { info() {}, warn() {} } });
+  assert.ok(relay);
+  const host = dgram.createSocket("udp6");
+  const viewer = dgram.createSocket("udp6");
+  try {
+    await Promise.all([
+      new Promise((resolve, reject) => {
+        relay.socket.once("listening", resolve);
+        relay.socket.once("error", reject);
+      }),
+      new Promise((resolve, reject) => {
+        host.once("error", reject);
+        host.bind(0, "::1", resolve);
+      }),
+      new Promise((resolve, reject) => {
+        viewer.once("error", reject);
+        viewer.bind(0, "::1", resolve);
+      }),
+    ]);
+  } catch (error) {
+    relay.close();
+    host.close();
+    viewer.close();
+    if (["EAFNOSUPPORT", "EADDRNOTAVAIL"].includes(error?.code)) {
+      t.skip("IPv6 indisponível neste executor");
+      return;
+    }
+    throw error;
+  }
+  try {
+    const target = relay.socket.address();
+    const session = 0x9080706050403020n;
+    host.send(packet(0, session, "host-v6"), target.port, "::1");
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const received = receive(host);
+    viewer.send(packet(1, session, "ciphertext-v6"), target.port, "::1");
+    assert.equal((await received).toString(), "ciphertext-v6");
+  } finally {
+    host.close();
+    viewer.close();
+    relay.close();
+  }
+});
+
+test("relay refuses invalid bind addresses before allocating a socket", () => {
+  assert.equal(startUdpRelay({ port: 3479, secret: SECRET, host: "not-an-ip" }), null);
+});

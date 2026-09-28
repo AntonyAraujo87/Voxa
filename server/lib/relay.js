@@ -1,5 +1,6 @@
 import dgram from "node:dgram";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 
 const MAGIC = Buffer.from("VRLY");
 const HEADER = 22;
@@ -12,8 +13,12 @@ const MAX_PACKETS_PER_IP_SECOND = 20_000;
 const MAX_SEND_QUEUE_BYTES = 4 * 1024 * 1024;
 
 export function startUdpRelay({ port, secret, host = "0.0.0.0", log = console }) {
-  if (!Number.isInteger(port) || port < 0 || port > 65535 || typeof secret !== "string" || secret.length < 32) return null;
-  const socket = dgram.createSocket("udp4");
+  const family = isIP(host);
+  if (!Number.isInteger(port) || port < 0 || port > 65535 || !family || typeof secret !== "string" || secret.length < 32) return null;
+  // Binding udp6 to :: with ipv6Only=false accepts IPv6 and IPv4-mapped
+  // datagrams on supported hosts. Leave the default to retain IPv4-only mode.
+  const dualStack = family === 6 && host === "::";
+  const socket = dgram.createSocket(family === 6 ? "udp6" : "udp4");
   const sessions = new Map();
   const rates = new Map();
   socket.on("message", (packet, remote) => {
@@ -52,6 +57,9 @@ export function startUdpRelay({ port, secret, host = "0.0.0.0", log = console })
     for (const [ip, rate] of rates) if (rate.second < Math.floor(Date.now() / 1_000) - 2) rates.delete(ip);
   }, 30_000);
   sweep.unref?.();
-  socket.bind(port, host, () => log.info?.(`relay UDP em ${host}:${port}`));
+  socket.bind({ port, address: host, ipv6Only: family === 6 && !dualStack }, () => {
+    const mode = dualStack ? "dual-stack" : family === 6 ? "IPv6" : "IPv4";
+    log.info?.(`relay UDP ${mode} em ${host}:${port}`);
+  });
   return { close: () => { clearInterval(sweep); socket.close(); }, sessions, socket };
 }

@@ -15,6 +15,8 @@ Variáveis necessárias:
 | `ORIGIN` | Origem permitida para o Socket.IO |
 | `VITE_SIGNALING_URL` | URL WSS gravada no painel durante o build |
 | `VOXA_RELAY_PUBLIC_ENDPOINT` | `IP:3479` da VM UDP; vazio desativa o fallback |
+| `VOXA_RELAY_PUBLIC_ENDPOINTS` | Lista separada por vírgulas (`IP:3479,[IPv6]:3479`) para anunciar vários relays; substitui a variável singular |
+| `VOXA_RELAY_BIND` | `0.0.0.0` para IPv4 ou `::` para dual stack IPv4/IPv6 quando a VM possuir IPv6 público |
 | `VOXA_RELAY_SECRET` | Segredo aleatório de 32+ caracteres, idêntico no Render e na VM |
 
 Execute `node scripts/check-deployment.mjs` depois do deploy. O health não expõe
@@ -45,7 +47,7 @@ limites da conta) ou qualquer Linux com IP público:
 git clone https://github.com/AntonyAraujo87/Voxa.git
 cd Voxa
 npm ci --prefix server
-VOXA_RELAY_PORT=3479 VOXA_RELAY_SECRET='gere-um-segredo-aleatorio-longo' npm run relay --prefix server
+VOXA_RELAY_PORT=3479 VOXA_RELAY_BIND='0.0.0.0' VOXA_RELAY_SECRET='gere-um-segredo-aleatorio-longo' npm run relay --prefix server
 ```
 
 Abra somente UDP/3479 no firewall da VCN e no firewall do sistema. No Render,
@@ -53,6 +55,10 @@ configure `VOXA_RELAY_PUBLIC_ENDPOINT=IP_PUBLICO:3479`, sem configurar
 `VOXA_RELAY_PORT`, e use o mesmo `VOXA_RELAY_SECRET`. O relay encaminha apenas
 datagramas ChaCha20-Poly1305, entrega credenciais diferentes ao host e ao
 espectador, expira sessões inativas, limita tráfego e não conhece a chave X25519.
+
+Em uma VM com IPv6 público, use `VOXA_RELAY_BIND=::` e anuncie os dois endereços
+em `VOXA_RELAY_PUBLIC_ENDPOINTS=IPV4:3479,[IPV6]:3479`. O mesmo socket aceita as
+duas famílias; confirme que o firewall libera UDP/3479 para IPv4 e IPv6.
 
 ## Release
 
