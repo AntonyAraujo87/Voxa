@@ -4,13 +4,13 @@ use super::{
     converter::GpuColorConverter,
     encoder::HardwareVideoEncoder,
     transport::{CursorPacket, EncodedFrame, HostTransportHandle},
-    CaptureTargetId, Inner,
+    CaptureTargetId, Inner, SessionPhase,
 };
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 use voxa_native_core::protocol::{StreamConfig, VideoCodec};
 use windows::Win32::Graphics::Direct3D11::{
@@ -162,7 +162,7 @@ fn run(transport: HostTransportHandle, state: Arc<Mutex<Inner>>) {
         Ok(apartment) => apartment,
         Err(error) => {
             if let Ok(mut inner) = state.lock() {
-                inner.status.phase = "failed";
+                inner.status.phase = SessionPhase::Failed;
                 inner.status.encoder = "com-unavailable";
             }
             eprintln!("[voxa] inicialização COM: {error}");
@@ -176,7 +176,7 @@ fn run(transport: HostTransportHandle, state: Arc<Mutex<Inner>>) {
             Ok(()) => continue,
             Err(error) => {
                 if let Ok(mut inner) = state.lock() {
-                    inner.status.phase = "failed";
+                    inner.status.phase = SessionPhase::Recovering;
                     inner.status.capture = "recovering";
                     inner.status.encoder = "recovering";
                     inner.status.last_error = Some(error.chars().take(240).collect());
@@ -218,7 +218,7 @@ fn run_device_session(
     if let Ok(mut inner) = state.lock() {
         inner.status.capture = "dxgi-active";
         inner.status.encoder = "media-foundation-hardware";
-        inner.status.phase = "streaming";
+        inner.status.phase = SessionPhase::Streaming;
         inner.status.hdr = capture.hdr;
         inner.status.last_error = None;
     }
@@ -226,6 +226,7 @@ fn run_device_session(
 
     let mut frame_id = 1u64;
     let mut next_frame_at = Instant::now();
+    let mut previous_capture_at = None::<Instant>;
     while !transport.stopped() {
         if state
             .lock()
@@ -260,6 +261,15 @@ fn run_device_session(
             return Err("Resolução ou modo HDR mudou; recriando captura e encoders".into());
         }
         let captured_at = Instant::now();
+        if let Ok(mut inner) = state.lock() {
+            if let Some(previous) = previous_capture_at {
+                inner
+                    .telemetry
+                    .capture_interval(duration_ms(captured_at - previous));
+            }
+            previous_capture_at = Some(captured_at);
+            inner.status.stages = inner.telemetry.snapshot(transport.queued_bytes());
+        }
         next_frame_at += frame_interval;
         if next_frame_at <= captured_at {
             next_frame_at = captured_at + frame_interval;
@@ -272,12 +282,9 @@ fn run_device_session(
         if let Ok(mut inner) = state.lock() {
             inner.status.bitrate_kbps = requested / 1000;
         }
-        let timestamp_100ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            .saturating_div(100)
-            .min(i64::MAX as u128) as i64;
+        let timestamp_100ns = voxa_native_core::clock::monotonic_us()
+            .saturating_mul(10)
+            .min(i64::MAX as u64) as i64;
         let show_cursor = state
             .lock()
             .map(|inner| inner.cursor_visible)
@@ -377,6 +384,7 @@ fn run_device_session(
                 continue;
             }
             lane.frames_since_output = lane.frames_since_output.saturating_add(1);
+            let encode_started = Instant::now();
             let encoded = match lane.encode(&frame.texture, frame_id, timestamp_100ns) {
                 Ok(encoded) => encoded,
                 Err(error) => {
@@ -386,6 +394,12 @@ fn run_device_session(
                     continue;
                 }
             };
+            if let Ok(mut inner) = state.lock() {
+                inner
+                    .telemetry
+                    .encode(duration_ms(encode_started.elapsed()));
+                inner.status.stages = inner.telemetry.snapshot(transport.queued_bytes());
+            }
             let stalled = if let Some(encoded) = encoded {
                 let dropped = transport.queue_video(&peer_id, codec, encoded);
                 if let Ok(mut inner) = state.lock() {
@@ -413,6 +427,10 @@ fn run_device_session(
         frame_id = frame_id.wrapping_add(1).max(1);
     }
     Ok(())
+}
+
+fn duration_ms(duration: Duration) -> u32 {
+    duration.as_millis().min(u128::from(u32::MAX)) as u32
 }
 
 fn mark_lane_error(state: &Arc<Mutex<Inner>>, peer_id: &str, error: &str) {

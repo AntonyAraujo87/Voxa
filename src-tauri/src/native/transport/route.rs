@@ -13,7 +13,7 @@ const RELAY_HEADER: usize = 22;
 pub(super) struct Route {
     pub(super) socket: Arc<UdpSocket>,
     pub(super) direct: SocketAddr,
-    pub(super) relay: Option<(SocketAddr, u64, u64, u8)>,
+    pub(super) relays: Vec<(SocketAddr, u64, u64, u8)>,
     pub(super) selected: AtomicU32,
 }
 
@@ -26,29 +26,31 @@ impl Route {
                 .await
                 .map(|_| ())
                 .map_err(|e| e.to_string()),
-            2 => self.send_relay(bytes).await,
+            selected if selected >= 2 => self.send_relay(bytes, selected as usize - 2).await,
             _ => {
-                let direct_send = async {
-                    self.socket
-                        .send_to(bytes, self.direct)
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
-                };
-                let relay_send = async {
-                    if self.relay.is_some() {
-                        self.send_relay(bytes).await
-                    } else {
-                        Ok(())
+                let direct = self
+                    .socket
+                    .send_to(bytes, self.direct)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                let mut relayed = Ok(());
+                for index in 0..self.relays.len() {
+                    if let Err(error) = self.send_relay(bytes, index).await {
+                        relayed = Err(error);
                     }
-                };
-                let (direct, relayed) = tokio::join!(direct_send, relay_send);
+                }
                 direct.or(relayed)
             }
         }
     }
-    async fn send_relay(&self, bytes: &[u8]) -> Result<(), String> {
-        let (endpoint, session, auth, role) = self.relay.ok_or("Relay UDP indisponível")?;
+
+    async fn send_relay(&self, bytes: &[u8], index: usize) -> Result<(), String> {
+        let (endpoint, session, auth, role) = self
+            .relays
+            .get(index)
+            .copied()
+            .ok_or("Relay UDP indisponível")?;
         let mut packet = Vec::with_capacity(RELAY_HEADER + bytes.len());
         packet.extend_from_slice(RELAY_MAGIC);
         packet.extend_from_slice(&[1, role]);
@@ -61,17 +63,20 @@ impl Route {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+
     pub(super) fn select(&self, source: SocketAddr) -> u32 {
         let current = self.selected.load(Ordering::Acquire);
         if current != 0 {
             return current;
         }
-        let route = if self.relay.is_some_and(|relay| relay.0 == source) {
-            2
-        } else if source == self.direct {
+        let source = canonical(source);
+        let route = if source == canonical(self.direct) {
             1
         } else {
-            0
+            self.relays
+                .iter()
+                .position(|relay| canonical(relay.0) == source)
+                .map_or(0, |index| index as u32 + 2)
         };
         if route != 0 {
             let _ = self
@@ -80,7 +85,30 @@ impl Route {
         }
         self.selected.load(Ordering::Acquire)
     }
+
     pub(super) fn reset(&self) {
         self.selected.store(0, Ordering::Release);
+    }
+}
+
+fn canonical(address: SocketAddr) -> SocketAddr {
+    match address {
+        SocketAddr::V6(value) => value
+            .ip()
+            .to_ipv4_mapped()
+            .map(|ip| SocketAddr::new(ip.into(), value.port()))
+            .unwrap_or(SocketAddr::V6(value)),
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn ipv4_mapped_sources_match_ipv4_candidates() {
+        let mapped: SocketAddr = "[::ffff:203.0.113.7]:3479".parse().unwrap();
+        let plain: SocketAddr = "203.0.113.7:3479".parse().unwrap();
+        assert_eq!(canonical(mapped), plain);
     }
 }

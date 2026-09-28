@@ -14,6 +14,10 @@ function endpoint(value) {
 }
 
 const privateV4 = (ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|127\.)/.test(ip);
+const privateV6 = (ip) => /^f[cd][0-9a-f]{0,2}:/i.test(ip)
+  || /^fe[89ab][0-9a-f]?:/i.test(ip)
+  || ip === "::1";
+const privateIp = (ip) => isIP(ip) === 4 ? privateV4(ip) : isIP(ip) === 6 && privateV6(ip);
 const peerStub = (peer) => ({ peerId: peer.socketId, role: peer.role });
 
 function announcement(peer, requesterIp, relay) {
@@ -24,6 +28,7 @@ function announcement(peer, requesterIp, relay) {
     publicKey: peer.publicKey,
     codecs: peer.codecs ?? 1,
     relayEndpoint: relay.endpoint,
+    relayCandidates: relay.candidates,
     relaySession: relay.session,
     relayAuth: relay.auth,
   };
@@ -118,7 +123,7 @@ export function registerHandlers({ io, socket, registry, limiter }) {
     const invalid = invalidReadyField({ publicEndpoint, localEndpoint, publicKey, codecs });
     if (invalid) return ack?.({ error: invalid });
     const usableLocalEndpoint = localEndpoint.host === "0.0.0.0" ? publicEndpoint : localEndpoint;
-    if (isIP(usableLocalEndpoint.host) !== 4 || (!privateV4(usableLocalEndpoint.host) && usableLocalEndpoint.value !== publicEndpoint.value)) {
+    if (!isIP(usableLocalEndpoint.host) || (!privateIp(usableLocalEndpoint.host) && usableLocalEndpoint.value !== publicEndpoint.value)) {
       return ack?.({ error: "Endpoint LAN inválido" });
     }
     if (!sameIp(publicEndpoint.host, socket.data.ip)) {

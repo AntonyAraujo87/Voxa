@@ -16,6 +16,7 @@ struct PendingFrame {
 }
 
 struct FecGroup {
+    group_size: usize,
     last_fragment_len: usize,
     parity: Vec<u8>,
 }
@@ -109,7 +110,6 @@ impl Reassembler {
         if count == 0
             || count > crate::protocol::MAX_FRAGMENTS
             || group_start >= count
-            || !group_start.is_multiple_of(crate::protocol::FEC_GROUP_SIZE)
             || data.len() < crate::protocol::FEC_HEADER_LEN
             || data.len() > crate::protocol::MAX_PAYLOAD
         {
@@ -118,8 +118,15 @@ impl Reassembler {
         if !self.pending.contains_key(&frame_id) && self.pending.len() >= MAX_PENDING_FRAMES {
             return Err("Muitos frames incompletos".into());
         }
-        let last_fragment_len = u16::from_be_bytes([data[0], data[1]]) as usize;
-        let group_end = (group_start + crate::protocol::FEC_GROUP_SIZE).min(count);
+        let group_size = data[0] as usize;
+        if !(crate::protocol::MIN_FEC_GROUP_SIZE..=crate::protocol::MAX_FEC_GROUP_SIZE)
+            .contains(&group_size)
+            || !group_start.is_multiple_of(group_size)
+        {
+            return Err("Grupo FEC inválido".into());
+        }
+        let last_fragment_len = u16::from_be_bytes([data[1], data[2]]) as usize;
+        let group_end = (group_start + group_size).min(count);
         let expected_parity_len = if group_end - group_start == 1 && group_end == count {
             last_fragment_len
         } else {
@@ -147,6 +154,7 @@ impl Reassembler {
             return Err("Metadados FEC divergentes".into());
         }
         frame.fec.entry(group_start).or_insert_with(|| FecGroup {
+            group_size,
             last_fragment_len,
             parity: data[crate::protocol::FEC_HEADER_LEN..].to_vec(),
         });
@@ -185,7 +193,7 @@ impl Reassembler {
 
 fn recover_fec(frame: &mut PendingFrame) {
     for (&start, fec) in &frame.fec {
-        let end = (start + crate::protocol::FEC_GROUP_SIZE).min(frame.parts.len());
+        let end = (start + fec.group_size).min(frame.parts.len());
         let missing = (start..end)
             .filter(|index| frame.parts[*index].is_none())
             .collect::<Vec<_>>();
@@ -268,7 +276,8 @@ mod tests {
         for (index, byte) in b.iter().enumerate() {
             parity[index] ^= byte;
         }
-        let mut fec = (b.len() as u16).to_be_bytes().to_vec();
+        let mut fec = vec![crate::protocol::FEC_GROUP_SIZE as u8];
+        fec.extend_from_slice(&(b.len() as u16).to_be_bytes());
         fec.extend_from_slice(&parity);
         assert!(r.push(7, 0, 2, true, 99, &a).unwrap().is_none());
         let frame = r.push_fec(7, 0, 2, 99, &fec).unwrap().unwrap();
@@ -285,5 +294,26 @@ mod tests {
         let mut truncated = 17u16.to_be_bytes().to_vec();
         truncated.push(0);
         assert!(r.push_fec(9, 0, 2, 99, &truncated).is_err());
+    }
+
+    #[test]
+    fn generated_fragment_orders_preserve_exact_frame_bytes() {
+        for count in 1u16..=32 {
+            let mut receiver = Reassembler::default();
+            let mut completed = None;
+            for index in (0..count).rev() {
+                let payload = vec![index as u8; 1 + index as usize % 31];
+                completed = receiver
+                    .push(u64::from(count), index, count, false, 123, &payload)
+                    .unwrap()
+                    .or(completed);
+            }
+            let frame = completed.expect("todos os fragmentos devem remontar");
+            let expected = (0..count)
+                .flat_map(|index| vec![index as u8; 1 + index as usize % 31])
+                .collect::<Vec<_>>();
+            assert_eq!(frame.bytes, expected);
+            assert_eq!(frame.timestamp_us, 123);
+        }
     }
 }

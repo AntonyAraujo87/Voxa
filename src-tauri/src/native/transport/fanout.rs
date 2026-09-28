@@ -81,6 +81,12 @@ impl HostTransportHandle {
             .unwrap_or(12_000_000);
         opus_bitrate_for_video(video)
     }
+    pub fn queued_bytes(&self) -> u64 {
+        self.peers
+            .lock()
+            .map(|peers| peers.values().map(TransportHandle::queued_bytes).sum())
+            .unwrap_or(0)
+    }
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Release);
         self.clear();

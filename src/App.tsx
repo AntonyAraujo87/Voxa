@@ -15,8 +15,16 @@ const emptyStatus: EngineStatus = {
   receivedFrames: 0, encodedFrames: 0, droppedFrames: 0, keyframeRequests: 0,
   renderer: "closed", capture: "idle", encoder: "idle",
   decoder: "idle", decoderGpu: null, audio: "idle", audioBitrateKbps: 0, audioError: null, rejoinRequired: false, decodedFrames: 0,
-  avSyncMs: 0, encoderCapacity: 0, cursorVisible: true, hdr: false, captureRestarts: 0,
+  avSyncMs: 0, encoderCapacity: 0, cursorVisible: true, remoteControlEnabled: false, hdr: false, captureRestarts: 0,
   latencyP50Ms: 0, latencyP95Ms: 0, latencyP99Ms: 0,
+  stages: {
+    captureInterval: { p50Ms: 0, p95Ms: 0, p99Ms: 0, samples: 0 },
+    encode: { p50Ms: 0, p95Ms: 0, p99Ms: 0, samples: 0 },
+    network: { p50Ms: 0, p95Ms: 0, p99Ms: 0, samples: 0 },
+    decode: { p50Ms: 0, p95Ms: 0, p99Ms: 0, samples: 0 },
+    present: { p50Ms: 0, p95Ms: 0, p99Ms: 0, samples: 0 },
+    applicationQueueBytes: 0,
+  },
   verificationCode: null, connectedPeers: 0, maxPeers: 4, peerVerifications: [], peerMetrics: [], lastError: null,
 };
 
@@ -45,7 +53,7 @@ export default function App() {
   const [updateMessage, setUpdateMessage] = useState("Verificar atualização");
   const roomValid = /^[a-zA-Z0-9._:-]{1,64}$/.test(room);
   const passwordValid = roomPassword.length >= 12 && roomPassword.length <= 128;
-  const active = status.phase !== "idle" && status.phase !== "stopped";
+  const active = status.phase !== "idle" && status.phase !== "closed" && status.phase !== "failed";
 
   useEffect(() => {
     void engine.captureTargets().then((targets) => {
@@ -180,6 +188,18 @@ export default function App() {
       localStorage.setItem("voxa-room", roomId);
       const selectedCaptureTarget = role === "host" ? captureTargets[captureTargetIndex]?.id ?? null : null;
       const selectedAudioProcess = role === "host" && audioProcessId > 0 ? audioProcessId : null;
+      setMessage("Executando teste preventivo de hardware e rede...");
+      const preflight = await engine.preflight(
+        role,
+        selectedCaptureTarget,
+        selectedAudioProcess,
+        role === "viewer" && decoderAdapterIndex >= 0 ? decoderAdapterIndex : null,
+      );
+      const signalingResponse = await fetch(`${validSignalingUrl(serverUrl).replace(/\/$/, "")}/health`, { signal: AbortSignal.timeout(5_000) });
+      if (!signalingResponse.ok) throw new Error(`Servidor de matchmaking indisponível (HTTP ${signalingResponse.status})`);
+      if (!preflight.ready) {
+        throw new Error(`Teste preventivo falhou: ${preflight.checks.filter((check) => !check.passed).map((check) => `${check.name}: ${check.detail}`).join("; ")}`);
+      }
       const endpoint = await engine.prepare(
         role,
         selectedCaptureTarget,
@@ -236,13 +256,7 @@ export default function App() {
         pakeBegin: (peerId, pakeRoom, secret) => engine.pakeBegin(peerId, pakeRoom, secret),
         pakeFinish: (peerId, remoteShare) => engine.pakeFinish(peerId, remoteShare),
         pakeConfirm: (peerId, remoteConfirmation) => engine.pakeConfirm(peerId, remoteConfirmation),
-        refreshEndpoint: (reconnectingRole) => engine.prepare(
-          reconnectingRole,
-          reconnectingRole === "host" ? captureTargetRef.current?.id ?? null : null,
-          reconnectingRole === "host" && audioProcessRef.current > 0 ? audioProcessRef.current : null,
-          reconnectingRole === "viewer" && decoderAdapterIndex >= 0 ? decoderAdapterIndex : null,
-          true,
-        ),
+        refreshEndpoint: () => engine.refreshEndpoint(),
       });
       engine.attachMatchmaking(matchmaking);
       await matchmaking.join(roomId, role, endpoint, roomSecret);
@@ -341,6 +355,18 @@ export default function App() {
     }
   }
 
+  async function toggleRemoteControl() {
+    const next = !status.remoteControlEnabled;
+    if (next && !window.confirm("Permitir que o espectador controle teclado e mouse deste computador? Você pode revogar a qualquer momento.")) return;
+    try {
+      await engine.setRemoteControl(next);
+      setStatus(await engine.status());
+      setMessage(next ? "Controle remoto autorizado pelo host" : "Controle remoto revogado imediatamente");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function clearTrustedPeers() {
     try {
       await engine.clearTrusted();
@@ -397,6 +423,9 @@ export default function App() {
           </button>}
           {role === "host" && <button className="secondary" type="button" onClick={() => void clearTrustedPeers()} disabled={busy || active}>
             Remover computadores confiáveis
+          </button>}
+          {role === "host" && active && <button className={status.remoteControlEnabled ? "primary danger" : "secondary"} type="button" onClick={() => void toggleRemoteControl()} disabled={busy}>
+            {status.remoteControlEnabled ? "Revogar controle remoto" : "Permitir teclado e mouse remotos"}
           </button>}
           {role === "host" && <label>Áudio transmitido
             <select value={audioProcessId} onChange={(event) => void selectAudioSource(Number(event.target.value))} disabled={busy}>
@@ -455,6 +484,8 @@ export default function App() {
           <Metric label="Código E2E" value={role === "host" && status.peerVerifications.length > 0 ? status.peerVerifications.map(({ code }, index) => `#${index + 1} ${code}`).join(" · ") : status.verificationCode ?? "—"} />
           <Metric label="Frames" value={role === "host" ? `${status.encodedFrames} codificados · ${status.droppedFrames} descartados` : `${status.receivedFrames} recebidos · ${status.decodedFrames} exibidos · ${status.droppedFrames} descartados`} />
           <Metric label="Latência vídeo" value={status.latencyP50Ms ? `P50 ${status.latencyP50Ms} · P95 ${status.latencyP95Ms} · P99 ${status.latencyP99Ms} ms` : "medindo..."} />
+          <Metric label="Estágios P95" value={`captura ${status.stages.captureInterval.p95Ms || "—"} · encode ${status.stages.encode.p95Ms || "—"} · rede ${status.stages.network.p95Ms || "—"} · decode ${status.stages.decode.p95Ms || "—"} · present ${status.stages.present.p95Ms || "—"} ms`} />
+          <Metric label="Fila nativa" value={`${status.stages.applicationQueueBytes} bytes`} />
           <Metric label="Sincronia A/V" value={`${status.avSyncMs > 0 ? "+" : ""}${status.avSyncMs} ms`} />
           <Metric label="GPU host" value={`${status.encoderCapacity} encoder(es)${status.hdr ? " · HDR→SDR" : " · SDR"}`} />
           <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.decoder}${status.decoderGpu ? ` (${status.decoderGpu})` : ""} · ${status.renderer}`} />

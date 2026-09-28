@@ -35,8 +35,8 @@ pub struct DxgiCapture {
     pub hdr: bool,
     origin_x: i32,
     origin_y: i32,
-    width: u32,
-    height: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
 }
 
 #[cfg(target_os = "windows")]

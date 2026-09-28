@@ -73,3 +73,18 @@ test("issues a distinct authenticated relay allocation for each viewer", () => {
   assert.notEqual(first.auth, firstHost.auth);
   assert.equal("sessionKey" in first, false);
 });
+
+test("announces multiple relay regions with the same opaque allocation", () => {
+  const registry = new StreamRegistry(
+    ["203.0.113.90:3479", "198.51.100.45:3479"],
+    "relay-secret-that-is-longer-than-32-bytes",
+  );
+  registry.identify("host", "203.0.113.10");
+  registry.identify("viewer", "203.0.113.11");
+  join(registry, "host", "host");
+  const pair = join(registry, "viewer", "viewer").peers[0];
+  const allocation = registry.relay(pair.viewer, "viewer");
+  assert.deepEqual(allocation.candidates, ["203.0.113.90:3479", "198.51.100.45:3479"]);
+  assert.equal(allocation.endpoint, allocation.candidates[0]);
+  assert.match(allocation.auth, /^[a-f0-9]{16}$/);
+});

@@ -65,7 +65,7 @@ pub(super) fn spawn_capture(
         // O relogio pertence a sessao, nao ao dispositivo WASAPI. Se o driver
         // reiniciar, voltar o timestamp a zero faria o espectador descartar
         // todos os pacotes novos como atrasados ate reconectar a sala.
-        let mut timestamp_us = unix_now_us();
+        let mut timestamp_us = voxa_native_core::clock::monotonic_us();
         while !transport.stopped() {
             if !transport.has_peers() {
                 set_status(&state, "waiting", None);
@@ -106,9 +106,9 @@ fn capture_loop(
     let _com = ComApartment::multithreaded()
         .map_err(|error| format!("Inicializa COM para áudio: {error}"))?;
     let (client, capture) = open_capture(process_id)?;
-    // A device can disappear for seconds during sleep, hot-plug or an output
-    // switch. Resume on the shared wall clock instead of emitting stale audio.
-    *timestamp_us = (*timestamp_us).max(unix_now_us());
+    // Retomar no relogio monotonic compartilhado evita regressao após
+    // suspensao, hot-plug ou correcao do relogio civil do Windows.
+    *timestamp_us = (*timestamp_us).max(voxa_native_core::clock::monotonic_us());
     let mut encoder = OpusEncoder::new(
         SAMPLE_RATE as i32,
         CHANNELS,
@@ -381,6 +381,15 @@ pub(super) fn enumerate_processes() -> Result<Vec<AudioProcessInfo>, String> {
     }
 }
 
+pub(super) fn validate_source(process_id: Option<u32>) -> Result<(), String> {
+    let _com = ComApartment::multithreaded()
+        .map_err(|error| format!("Inicializa COM para validar áudio: {error}"))?;
+    let (client, _) = open_capture(process_id)?;
+    unsafe { client.Start() }.map_err(|error| format!("Inicia teste WASAPI: {error}"))?;
+    std::thread::sleep(Duration::from_millis(25));
+    unsafe { client.Stop() }.map_err(|error| format!("Encerra teste WASAPI: {error}"))
+}
+
 #[implement(IActivateAudioInterfaceCompletionHandler)]
 struct ActivationHandler(Arc<(Mutex<bool>, Condvar)>);
 
@@ -537,14 +546,6 @@ fn take_timestamp(next: &mut u64) -> u64 {
 
 fn sync_wait_ms(audio_age_ms: u32, target_age_ms: u32) -> u32 {
     target_age_ms.saturating_sub(audio_age_ms).min(100)
-}
-
-fn unix_now_us() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros()
-        .min(u128::from(u64::MAX)) as u64
 }
 
 fn set_status(state: &Arc<Mutex<Inner>>, audio: &'static str, error: Option<&str>) {

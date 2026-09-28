@@ -27,6 +27,7 @@ pakery-spake2 = "0.6"
 pakery-crypto = { version = "0.6", default-features = false, features = ["std", "p256", "spake2"] }
 rand_core = "0.10"
 tokio = { version = "1.47", features = ["net", "rt-multi-thread", "time", "macros"] }
+socket2 = { version = "0.6", features = ["all"] }
 voxa-native-core = { path = "native-core" }
 
 [target.'cfg(windows)'.dependencies]
@@ -50,4 +51,5 @@ windows = { version = "0.61", features = [
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Variant",
   "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
 ] }

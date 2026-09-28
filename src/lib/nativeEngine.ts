@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Matchmaking } from "./signaling";
 
 export type StreamRole = "host" | "viewer";
-export type EnginePhase = "idle" | "binding" | "waiting" | "punching" | "connected" | "decoding" | "streaming" | "recovering" | "stopped" | "failed";
+export type EnginePhase = "idle" | "authenticating" | "awaiting-approval" | "connecting" | "streaming" | "recovering" | "closed" | "failed";
 export interface PreparedEndpoint { local: string; public: string | null; publicKey: string; codecs: number; }
 export interface PakeStart { protocol: string; share: string; }
 export interface CaptureTargetId { adapterIndex: number; outputIndex: number; }
@@ -15,6 +15,11 @@ export interface GraphicsAdapterInfo {
   adapterIndex: number; name: string; dedicatedMemoryMb: number;
   vendorId: number; deviceId: number; revision: number; driverVersion: string | null;
 }
+export interface PreflightReport {
+  ready: boolean;
+  checks: Array<{ name: string; passed: boolean; detail: string }>;
+}
+export interface StagePercentiles { p50Ms: number; p95Ms: number; p99Ms: number; samples: number; }
 export interface EngineStatus {
   phase: EnginePhase; role: StreamRole | null; localEndpoint: string | null;
   publicEndpoint: string | null; peerEndpoint: string | null; rttMs: number;
@@ -22,9 +27,11 @@ export interface EngineStatus {
   droppedFrames: number; keyframeRequests: number; renderer: string;
   capture: string; encoder: string; decoder: string; decoderGpu: string | null; decodedFrames: number;
   audio: string; audioBitrateKbps: number; audioError: string | null;
-  avSyncMs: number; encoderCapacity: number; cursorVisible: boolean; hdr: boolean; captureRestarts: number;
+  avSyncMs: number; encoderCapacity: number; cursorVisible: boolean; remoteControlEnabled: boolean; hdr: boolean; captureRestarts: number;
   rejoinRequired: boolean;
   latencyP50Ms: number; latencyP95Ms: number; latencyP99Ms: number;
+  stages: { captureInterval: StagePercentiles; encode: StagePercentiles; network: StagePercentiles;
+    decode: StagePercentiles; present: StagePercentiles; applicationQueueBytes: number };
   verificationCode: string | null; connectedPeers: number; maxPeers: number;
   peerVerifications: Array<{ peerId: string; code: string }>;
   peerMetrics: Array<{ peerId: string; endpoint: string | null; phase: string; rttMs: number;
@@ -67,18 +74,25 @@ export class NativeEngine {
   setCursorVisible(visible: boolean) {
     return invoke<void>("engine_set_cursor_visible", { visible });
   }
+  setRemoteControl(enabled: boolean) {
+    return invoke<void>("engine_set_remote_control", { enabled });
+  }
   exportDiagnostic() { return invoke<string>("engine_export_diagnostic"); }
+  preflight(role: StreamRole, captureTarget: CaptureTargetId | null = null, audioProcessId: number | null = null, decoderAdapterIndex: number | null = null) {
+    return invoke<PreflightReport>("engine_preflight", { role, captureTarget, audioProcessId, decoderAdapterIndex });
+  }
   prepare(role: StreamRole, captureTarget: CaptureTargetId | null = null, audioProcessId: number | null = null, decoderAdapterIndex: number | null = null, reuseIdentity = false) {
     return invoke<PreparedEndpoint>("engine_prepare", { role, captureTarget, audioProcessId, decoderAdapterIndex, reuseIdentity });
   }
+  refreshEndpoint() { return invoke<PreparedEndpoint>("engine_refresh_endpoint"); }
   setMaxPeers(maxPeers: number) { return invoke<void>("engine_set_max_peers", { maxPeers }); }
   previewPeer(peer: { publicKey: string; peerId: string }) {
     return invoke<string>("engine_preview_peer", { peerId: peer.peerId, peerPublicKey: peer.publicKey });
   }
-  connectPeer(peer: { endpoint: string; publicKey: string; peerId: string; codecs?: number; relayEndpoint: string | null; relaySession: string | null; relayAuth: string | null }) {
+  connectPeer(peer: { endpoint: string; publicKey: string; peerId: string; codecs?: number; relayEndpoint: string | null; relayCandidates?: string[]; relaySession: string | null; relayAuth: string | null }) {
     return invoke<void>("engine_connect_peer", { request: {
       endpoint: peer.endpoint, peerPublicKey: peer.publicKey, peerId: peer.peerId, peerCodecs: peer.codecs ?? 1,
-      relayEndpoint: peer.relayEndpoint, relaySession: peer.relaySession, relayAuth: peer.relayAuth,
+      relayEndpoint: peer.relayEndpoint, relayCandidates: peer.relayCandidates, relaySession: peer.relaySession, relayAuth: peer.relayAuth,
     } });
   }
   disconnectPeer(peerId: string) { return invoke<void>("engine_disconnect_peer", { peerId }); }

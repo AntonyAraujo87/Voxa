@@ -10,6 +10,7 @@ export interface PeerAnnouncement {
   publicKey: string;
   codecs?: number;
   relayEndpoint: string | null;
+  relayCandidates?: string[];
   relaySession: string | null;
   relayAuth: string | null;
 }

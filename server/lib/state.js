@@ -7,7 +7,7 @@ export class StreamRegistry {
   #rooms = new Map();
 
   constructor(relayEndpoint = "", relaySecret = "", maxViewers = DEFAULT_MAX_VIEWERS) {
-    this.relayEndpoint = relayEndpoint;
+    this.relayEndpoints = (Array.isArray(relayEndpoint) ? relayEndpoint : [relayEndpoint]).filter(Boolean);
     this.relaySecret = relaySecret;
     this.maxViewers = Number.isInteger(maxViewers) && maxViewers > 0
       ? Math.min(maxViewers, 16)
@@ -94,7 +94,7 @@ export class StreamRegistry {
   summary() { return { clients: this.#clients.size, streamRooms: this.#rooms.size }; }
 
   relay(viewer, role) {
-    return relayAllocation(this.relayEndpoint, this.relaySecret, viewer, role);
+    return relayAllocation(this.relayEndpoints, this.relaySecret, viewer, role);
   }
 }
 
@@ -106,9 +106,11 @@ function relayAuth(secret, session, role) {
     .slice(0, 16);
 }
 
-function relayAllocation(endpoint, secret, viewer, role) {
+function relayAllocation(endpoints, secret, viewer, role) {
+  const endpoint = endpoints[0] || null;
   return {
-    endpoint: endpoint || null,
+    endpoint,
+    candidates: endpoints,
     session: endpoint ? viewer?.relaySession ?? null : null,
     auth: endpoint ? relayAuth(secret, viewer?.relaySession ?? "", role) : null,
   };

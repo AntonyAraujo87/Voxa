@@ -1,6 +1,6 @@
 use super::{
-    audio, com::ComApartment, decoder::HardwareVideoDecoder, presenter::NativePresenter, renderer,
-    transport::TransportHandle, Inner,
+    audio, com::ComApartment, decoder::HardwareVideoDecoder, input, presenter::NativePresenter,
+    renderer, transport::TransportHandle, Inner, SessionPhase,
 };
 use std::{
     collections::VecDeque,
@@ -83,6 +83,7 @@ fn run(
         }
     };
     let audio = audio::spawn_playback(transport.clone(), state.clone());
+    let input = input::spawn_capture(hwnd, transport.clone(), state.clone());
     while !transport.stopped() {
         match run_session(&transport, &state, &app, hwnd, decoder_adapter_index) {
             Ok(()) => break,
@@ -94,6 +95,7 @@ fn run(
         }
     }
     let _ = audio.join();
+    let _ = input.join();
 }
 
 fn run_session(
@@ -150,7 +152,7 @@ fn run_session(
             voxa_native_core::protocol::VideoCodec::Av1 => "media-foundation-av1",
         };
         inner.status.decoder_gpu = Some(decoder_gpu);
-        inner.status.phase = "decoding";
+        inner.status.phase = SessionPhase::Connecting;
         inner.status.last_error = None;
     }
     let mut duration = 10_000_000i64 / i64::from(config.fps);
@@ -183,6 +185,7 @@ fn run_session(
             transport.wait_for_video(Duration::from_millis(250));
             continue;
         };
+        let decode_started = std::time::Instant::now();
         let texture = match decoder.decode(&frame.bytes, frame.timestamp_us as i64 * 10, duration) {
             Ok(texture) => texture,
             Err(error) => {
@@ -203,8 +206,18 @@ fn run_session(
                 continue;
             }
         };
+        let decode_ms = duration_ms(decode_started.elapsed());
+        if let Ok(mut inner) = state.lock() {
+            inner.telemetry.decode(decode_ms);
+            if let Some(age) = transport.capture_to_display_ms(frame.timestamp_us) {
+                inner.telemetry.network(age.saturating_sub(decode_ms));
+            }
+            inner.status.stages = inner.telemetry.snapshot(transport.queued_bytes());
+        }
         if let Some(texture) = texture {
+            let present_started = std::time::Instant::now();
             presenter.present(&texture.texture, texture.subresource_index)?;
+            let present_ms = duration_ms(present_started.elapsed());
             if let Some(cursor) = transport.current_cursor() {
                 if cursor.timestamp_us <= frame.timestamp_us.saturating_add(100_000) {
                     presenter.present_cursor(&cursor)?;
@@ -218,9 +231,11 @@ fn run_session(
                 frames_since_latency_update += 1;
             }
             if let Ok(mut inner) = state.lock() {
+                inner.telemetry.present(present_ms);
+                inner.status.stages = inner.telemetry.snapshot(transport.queued_bytes());
                 inner.status.decoded_frames += 1;
                 inner.status.renderer = "d3d11-swapchain";
-                inner.status.phase = "streaming";
+                inner.status.phase = SessionPhase::Streaming;
                 inner.status.last_error = None;
                 if frames_since_latency_update >= 30 {
                     let (p50, p95, p99) = latency_percentiles(&latency_samples);
@@ -237,6 +252,10 @@ fn run_session(
         }
     }
     Ok(())
+}
+
+fn duration_ms(duration: Duration) -> u32 {
+    duration.as_millis().min(u128::from(u32::MAX)) as u32
 }
 
 fn create_device(
@@ -350,9 +369,9 @@ fn latency_percentiles(samples: &VecDeque<u32>) -> (u32, u32, u32) {
 fn fail(state: &Arc<Mutex<Inner>>, decoder: &'static str, error: &str) {
     if let Ok(mut inner) = state.lock() {
         inner.status.phase = if decoder == "recovering" {
-            "recovering"
+            SessionPhase::Recovering
         } else {
-            "failed"
+            SessionPhase::Failed
         };
         inner.status.decoder = decoder;
         inner.status.last_error = Some(error.chars().take(240).collect());

@@ -12,9 +12,11 @@ pub const MAX_DATAGRAM: usize = 1178;
 pub const HEADER_LEN: usize = 42;
 pub const TAG_LEN: usize = 16;
 pub const MAX_PAYLOAD: usize = MAX_DATAGRAM - HEADER_LEN - TAG_LEN;
-pub const FEC_HEADER_LEN: usize = 2;
+pub const FEC_HEADER_LEN: usize = 3;
 pub const FEC_DATA_PAYLOAD: usize = MAX_PAYLOAD - FEC_HEADER_LEN;
 pub const FEC_GROUP_SIZE: usize = 8;
+pub const MIN_FEC_GROUP_SIZE: usize = 4;
+pub const MAX_FEC_GROUP_SIZE: usize = 16;
 pub const MAX_FRAGMENTS: usize = 4096;
 pub const MAX_ENCODED_FRAME: usize = MAX_PAYLOAD * MAX_FRAGMENTS;
 const MAGIC: &[u8; 4] = b"VOXA";
@@ -565,5 +567,51 @@ mod tests {
             VideoCodec::best_common(VideoCodec::Av1.bit(), VideoCodec::H264.bit()),
             None
         );
+    }
+
+    #[test]
+    fn generated_wire_cases_preserve_limits_and_monotonic_replay() {
+        let key = [0x5au8; 32];
+        let lengths = [1, 2, 31, MAX_PAYLOAD - 1, MAX_PAYLOAD, MAX_PAYLOAD + 1];
+        for (case, length) in lengths.into_iter().enumerate() {
+            let payload = (0..length).map(|index| index as u8).collect::<Vec<_>>();
+            let meta = Meta {
+                stream_id: 77,
+                sequence: case as u64 + 1,
+                frame_id: case as u64,
+                fragment_count: 1,
+                ..Default::default()
+            };
+            if length <= MAX_PAYLOAD {
+                let decoded =
+                    open(&key, &seal(&key, Kind::Video, meta, &payload).unwrap()).unwrap();
+                assert_eq!(decoded.payload, payload);
+                assert!(decoded.payload.len() <= MAX_PAYLOAD);
+            } else {
+                assert!(seal(&key, Kind::Video, meta, &payload).is_err());
+            }
+        }
+
+        let mut guard = ReplayGuard::default();
+        for sequence in 1..=512 {
+            assert!(guard.accept(88, sequence));
+            assert!(!guard.accept(88, sequence));
+        }
+        assert!(!guard.accept(88, 1));
+    }
+
+    #[test]
+    fn generated_malformed_packets_never_open() {
+        let key = [3u8; 32];
+        for length in 0..HEADER_LEN + TAG_LEN {
+            assert!(open(&key, &vec![0u8; length]).is_err());
+        }
+        for kind in 13u8..=255 {
+            let mut packet = vec![0u8; HEADER_LEN + TAG_LEN];
+            packet[..4].copy_from_slice(MAGIC);
+            packet[4] = VERSION;
+            packet[5] = kind;
+            assert!(open(&key, &packet).is_err());
+        }
     }
 }

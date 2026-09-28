@@ -56,7 +56,7 @@ impl DiagnosticRing {
     pub fn record_status(&self, status: &EngineStatus) {
         self.record(
             "metrics",
-            status.phase,
+            status.phase.as_str(),
             json!({
                 "role": status.role,
                 "rttMs": status.rtt_ms,
@@ -78,6 +78,7 @@ impl DiagnosticRing {
                 "latencyP50Ms": status.latency_p50_ms,
                 "latencyP95Ms": status.latency_p95_ms,
                 "latencyP99Ms": status.latency_p99_ms,
+                "stages": status.stages,
                 "avSyncMs": status.av_sync_ms,
                 "rejoinRequired": status.rejoin_required,
             }),

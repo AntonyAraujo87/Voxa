@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio::{
     net::{lookup_host, UdpSocket},
     time::{timeout_at, Duration, Instant},
@@ -18,8 +18,8 @@ pub async fn discover(socket: &UdpSocket, server: &str) -> Result<SocketAddr, St
     let target = lookup_host(server)
         .await
         .map_err(|e| e.to_string())?
-        .find(|addr| addr.is_ipv4())
-        .ok_or("STUN sem IPv4")?;
+        .next()
+        .ok_or("Servidor STUN sem endereço IP")?;
     let mut last_error = "STUN expirou".to_string();
     for _ in 0..2 {
         let mut transaction = [0u8; 12];
@@ -98,6 +98,18 @@ fn parse(data: &[u8], transaction: [u8; 12]) -> Result<SocketAddr, String> {
             );
             return Ok(SocketAddr::new(IpAddr::V4(ip), port));
         }
+        if kind == 0x0020 && len >= 20 && data[start + 1] == 0x02 {
+            let port =
+                u16::from_be_bytes([data[start + 2], data[start + 3]]) ^ (MAGIC >> 16) as u16;
+            let mut mask = [0u8; 16];
+            mask[..4].copy_from_slice(&MAGIC.to_be_bytes());
+            mask[4..].copy_from_slice(&transaction);
+            let mut ip = [0u8; 16];
+            for index in 0..16 {
+                ip[index] = data[start + 4 + index] ^ mask[index];
+            }
+            return Ok(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(ip)), port));
+        }
         offset = start + ((len + 3) & !3);
     }
     Err("STUN não retornou XOR-MAPPED-ADDRESS".into())
@@ -142,6 +154,28 @@ mod tests {
             data.push(ip[index] ^ magic[index]);
         }
         assert!(parse(&data, tx).is_err());
+    }
+
+    #[test]
+    fn parses_ipv6_xor_mapped_address() {
+        let tx = [9u8; 12];
+        let port = 3479u16 ^ (MAGIC >> 16) as u16;
+        let ip: Ipv6Addr = "2001:db8::42".parse().unwrap();
+        let mut mask = [0u8; 16];
+        mask[..4].copy_from_slice(&MAGIC.to_be_bytes());
+        mask[4..].copy_from_slice(&tx);
+        let mut data = vec![0x01, 0x01, 0, 24];
+        data.extend_from_slice(&MAGIC.to_be_bytes());
+        data.extend_from_slice(&tx);
+        data.extend_from_slice(&[0, 0x20, 0, 20, 0, 2]);
+        data.extend_from_slice(&port.to_be_bytes());
+        for (value, mask) in ip.octets().iter().zip(mask) {
+            data.push(value ^ mask);
+        }
+        assert_eq!(
+            parse(&data, tx).unwrap(),
+            SocketAddr::new(IpAddr::V6(ip), 3479)
+        );
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-use super::{diagnostics, pake};
+use super::{diagnostics, pake, telemetry};
 use crate::native::transport::{DatagramHub, HostTransportHandle, TransportControl};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,6 +13,63 @@ use voxa_native_core::protocol;
 pub enum StreamRole {
     Host,
     Viewer,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionPhase {
+    Idle,
+    Authenticating,
+    AwaitingApproval,
+    Connecting,
+    Streaming,
+    Recovering,
+    Closed,
+    Failed,
+}
+
+impl SessionPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Authenticating => "authenticating",
+            Self::AwaitingApproval => "awaiting-approval",
+            Self::Connecting => "connecting",
+            Self::Streaming => "streaming",
+            Self::Recovering => "recovering",
+            Self::Closed => "closed",
+            Self::Failed => "failed",
+        }
+    }
+    pub fn can_transition_to(self, next: Self) -> bool {
+        use SessionPhase::*;
+        self == next
+            || matches!(
+                (self, next),
+                (Idle | Closed | Failed, Authenticating)
+                    | (
+                        Authenticating,
+                        AwaitingApproval | Connecting | Failed | Closed
+                    )
+                    | (AwaitingApproval, Connecting | Closed | Failed)
+                    | (Connecting, Streaming | Recovering | Closed | Failed)
+                    | (Streaming, Recovering | Closed | Failed)
+                    | (Recovering, Connecting | Streaming | Closed | Failed)
+            )
+    }
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::SessionPhase::*;
+    #[test]
+    fn session_state_machine_rejects_unsafe_shortcuts() {
+        assert!(Idle.can_transition_to(Authenticating));
+        assert!(AwaitingApproval.can_transition_to(Connecting));
+        assert!(Recovering.can_transition_to(Streaming));
+        assert!(!Idle.can_transition_to(Streaming));
+        assert!(!Closed.can_transition_to(Streaming));
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -52,6 +109,21 @@ pub struct GraphicsAdapterInfo {
     pub device_id: u32,
     pub revision: u32,
     pub driver_version: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreflightCheck {
+    pub name: &'static str,
+    pub passed: bool,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreflightReport {
+    pub ready: bool,
+    pub checks: Vec<PreflightCheck>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -98,7 +170,7 @@ impl PeerMetric {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineStatus {
-    pub(super) phase: &'static str,
+    pub(super) phase: SessionPhase,
     pub(super) role: Option<StreamRole>,
     pub(super) local_endpoint: Option<String>,
     pub(super) public_endpoint: Option<String>,
@@ -121,6 +193,7 @@ pub struct EngineStatus {
     pub(super) av_sync_ms: i32,
     pub(super) encoder_capacity: usize,
     pub(super) cursor_visible: bool,
+    pub(super) remote_control_enabled: bool,
     pub(super) hdr: bool,
     pub(super) capture_restarts: u32,
     pub(super) rejoin_required: bool,
@@ -128,6 +201,7 @@ pub struct EngineStatus {
     pub(super) latency_p50_ms: u32,
     pub(super) latency_p95_ms: u32,
     pub(super) latency_p99_ms: u32,
+    pub(super) stages: telemetry::PipelineTelemetry,
     pub(super) verification_code: Option<String>,
     pub(super) connected_peers: usize,
     pub(super) max_peers: usize,
@@ -136,10 +210,21 @@ pub struct EngineStatus {
     pub(super) last_error: Option<String>,
 }
 
+impl EngineStatus {
+    pub(super) fn transition(&mut self, next: SessionPhase) -> bool {
+        if self.phase.can_transition_to(next) {
+            self.phase = next;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 impl Default for EngineStatus {
     fn default() -> Self {
         Self {
-            phase: "idle",
+            phase: SessionPhase::Idle,
             role: None,
             local_endpoint: None,
             public_endpoint: None,
@@ -162,6 +247,7 @@ impl Default for EngineStatus {
             av_sync_ms: 0,
             encoder_capacity: 0,
             cursor_visible: true,
+            remote_control_enabled: false,
             hdr: false,
             capture_restarts: 0,
             rejoin_required: false,
@@ -169,6 +255,7 @@ impl Default for EngineStatus {
             latency_p50_ms: 0,
             latency_p95_ms: 0,
             latency_p99_ms: 0,
+            stages: telemetry::PipelineTelemetry::default(),
             verification_code: None,
             connected_peers: 0,
             max_peers: 4,
@@ -209,8 +296,10 @@ pub(super) struct Inner {
     pub(super) hardware_encoder_capacity: usize,
     pub(super) signaling_max_peers: usize,
     pub(super) cursor_visible: bool,
+    pub(super) remote_control_enabled: bool,
     pub(super) pake: pake::PakeManager,
     pub(super) diagnostics: diagnostics::DiagnosticRing,
+    pub(super) telemetry: telemetry::TelemetryCollector,
 }
 
 #[derive(Default)]

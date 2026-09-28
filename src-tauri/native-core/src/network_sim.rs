@@ -6,7 +6,8 @@ use crate::{
 
 fn parity(chunks: &[&[u8]], last_len: usize) -> Vec<u8> {
     let size = chunks.iter().map(|chunk| chunk.len()).max().unwrap_or(0);
-    let mut output = (last_len as u16).to_be_bytes().to_vec();
+    let mut output = vec![FEC_GROUP_SIZE as u8];
+    output.extend_from_slice(&(last_len as u16).to_be_bytes());
     output.resize(FEC_HEADER_LEN + size, 0);
     for chunk in chunks {
         for (index, byte) in chunk.iter().enumerate() {

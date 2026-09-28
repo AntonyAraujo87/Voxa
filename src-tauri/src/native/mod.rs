@@ -1,7 +1,11 @@
+mod compatibility;
 mod diagnostics;
 mod identity;
+#[cfg(target_os = "windows")]
+mod input;
 mod model;
 mod pake;
+mod telemetry;
 mod transport;
 
 #[cfg(target_os = "windows")]
@@ -27,9 +31,11 @@ pub mod viewer;
 use model::Inner;
 pub use model::{
     AudioProcessInfo, CaptureTargetId, CaptureTargetInfo, EngineStatus, GraphicsAdapterInfo,
-    NativeEngine, PeerMetric, PeerVerification, PreparedEndpoint, StreamRole,
+    NativeEngine, PeerMetric, PeerVerification, PreflightCheck, PreflightReport, PreparedEndpoint,
+    SessionPhase, StreamRole,
 };
 use serde::Deserialize;
+use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     fs,
     sync::Arc,
@@ -39,6 +45,22 @@ use tauri::{AppHandle, Manager, State};
 use tokio::net::UdpSocket;
 use transport::{spawn_receiver, DatagramHub, PeerTransport};
 use voxa_native_core::{protocol, stun};
+
+fn bind_dual_stack_udp() -> Result<UdpSocket, String> {
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))
+        .map_err(|error| format!("Cria socket UDP IPv6: {error}"))?;
+    socket
+        .set_only_v6(false)
+        .map_err(|error| format!("Ativa dual stack UDP: {error}"))?;
+    socket
+        .set_nonblocking(true)
+        .map_err(|error| format!("Configura UDP assíncrono: {error}"))?;
+    socket
+        .bind(&"[::]:0".parse::<std::net::SocketAddr>().unwrap().into())
+        .map_err(|error| format!("Abre UDP dual stack: {error}"))?;
+    let standard: std::net::UdpSocket = socket.into();
+    UdpSocket::from_std(standard).map_err(|error| format!("Integra UDP ao Tokio: {error}"))
+}
 
 fn effective_max_peers(signaling_max: usize, encoder_capacity: usize) -> usize {
     signaling_max.clamp(1, 16).min(encoder_capacity.max(1))
@@ -78,6 +100,160 @@ pub fn engine_graphics_adapters() -> Result<Vec<GraphicsAdapterInfo>, String> {
     {
         Ok(Vec::new())
     }
+}
+
+#[tauri::command]
+pub async fn engine_preflight(
+    role: StreamRole,
+    capture_target: Option<CaptureTargetId>,
+    audio_process_id: Option<u32>,
+    decoder_adapter_index: Option<u32>,
+) -> Result<PreflightReport, String> {
+    let mut checks = Vec::new();
+    #[cfg(target_os = "windows")]
+    if role == StreamRole::Host {
+        match capture::DxgiCapture::open(capture_target) {
+            Ok(capture) => {
+                checks.push(PreflightCheck {
+                    name: "monitor",
+                    passed: true,
+                    detail: format!(
+                        "DXGI pronto: {}x{}{}",
+                        capture.width,
+                        capture.height,
+                        if capture.hdr { " HDR" } else { "" }
+                    ),
+                });
+                match encoder::hardware_encoder_codecs_for_device(&capture.device) {
+                    Ok(codecs) if !codecs.is_empty() => checks.push(PreflightCheck {
+                        name: "encoder",
+                        passed: true,
+                        detail: format!(
+                            "Hardware: {}",
+                            codecs
+                                .iter()
+                                .map(|codec| codec.name())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    }),
+                    Ok(_) => checks.push(PreflightCheck {
+                        name: "encoder",
+                        passed: false,
+                        detail: "Nenhum encoder de hardware compatível".into(),
+                    }),
+                    Err(error) => checks.push(PreflightCheck {
+                        name: "encoder",
+                        passed: false,
+                        detail: error,
+                    }),
+                }
+            }
+            Err(error) => checks.push(PreflightCheck {
+                name: "monitor",
+                passed: false,
+                detail: error,
+            }),
+        }
+        if let Err(error) = audio::validate_source(audio_process_id) {
+            checks.push(PreflightCheck {
+                name: "wasapi",
+                passed: false,
+                detail: error,
+            });
+        } else {
+            checks.push(PreflightCheck {
+                name: "wasapi",
+                passed: true,
+                detail: "Captura WASAPI abriu, iniciou e encerrou corretamente".into(),
+            });
+        }
+        match audio::enumerate_processes() {
+            Ok(processes) => {
+                let selected_ok = audio_process_id
+                    .map(|id| processes.iter().any(|process| process.process_id == id))
+                    .unwrap_or(true);
+                checks.push(PreflightCheck {
+                    name: "audio",
+                    passed: selected_ok,
+                    detail: if let Some(id) = audio_process_id {
+                        if selected_ok {
+                            format!("Sessão de áudio do processo {id} disponível")
+                        } else {
+                            format!("O processo {id} não possui sessão de áudio ativa")
+                        }
+                    } else {
+                        "Loopback do dispositivo padrão selecionado".into()
+                    },
+                });
+            }
+            Err(error) => checks.push(PreflightCheck {
+                name: "audio",
+                passed: false,
+                detail: error,
+            }),
+        }
+    }
+    #[cfg(target_os = "windows")]
+    if role == StreamRole::Viewer {
+        match viewer::hardware_decoder_codecs(decoder_adapter_index) {
+            Ok(codecs) if !codecs.is_empty() => checks.push(PreflightCheck {
+                name: "decoder",
+                passed: true,
+                detail: format!(
+                    "Hardware: {}",
+                    codecs
+                        .iter()
+                        .map(|codec| codec.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }),
+            Ok(_) => checks.push(PreflightCheck {
+                name: "decoder",
+                passed: false,
+                detail: "Nenhum decoder de hardware compatível".into(),
+            }),
+            Err(error) => checks.push(PreflightCheck {
+                name: "decoder",
+                passed: false,
+                detail: error,
+            }),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    checks.push(PreflightCheck {
+        name: "windows",
+        passed: false,
+        detail: "O motor nativo requer Windows".into(),
+    });
+
+    let socket = bind_dual_stack_udp()?;
+    match stun::discover_any(
+        &socket,
+        &[
+            "stun.cloudflare.com:3478",
+            "stun.l.google.com:19302",
+            "stun1.l.google.com:19302",
+        ],
+    )
+    .await
+    {
+        Ok(endpoint) => checks.push(PreflightCheck {
+            name: "stun",
+            passed: true,
+            detail: format!("Rota pública descoberta: {endpoint}"),
+        }),
+        Err(error) => checks.push(PreflightCheck {
+            name: "stun",
+            passed: false,
+            detail: error,
+        }),
+    }
+    Ok(PreflightReport {
+        ready: checks.iter().all(|check| check.passed),
+        checks,
+    })
 }
 
 #[tauri::command]
@@ -157,6 +333,33 @@ pub fn engine_set_cursor_visible(
 }
 
 #[tauri::command]
+pub fn engine_set_remote_control(
+    enabled: bool,
+    engine: State<'_, NativeEngine>,
+) -> Result<(), String> {
+    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+    if inner.status.role != Some(StreamRole::Host) || inner.socket.is_none() {
+        return Err("Inicie uma hospedagem antes de autorizar o controle remoto".into());
+    }
+    inner.remote_control_enabled = enabled;
+    inner.status.remote_control_enabled = enabled;
+    if !enabled {
+        #[cfg(target_os = "windows")]
+        input::release_all();
+    }
+    inner.diagnostics.record(
+        "security",
+        if enabled {
+            "remote-control-authorized"
+        } else {
+            "remote-control-revoked"
+        },
+        serde_json::json!({ "visibleConsent": true }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
 pub fn engine_export_diagnostic(
     app: AppHandle,
     engine: State<'_, NativeEngine>,
@@ -204,7 +407,8 @@ pub fn engine_export_diagnostic(
         "supportedCodecs": codec_names,
         "encoderCapacity": capacity,
         "captureTargets": targets,
-        "graphicsAdapters": adapters,
+        "graphicsAdapters": &adapters,
+        "gpuCompatibilityProfiles": adapters.iter().map(compatibility::profile).collect::<Vec<_>>(),
         "detectedAudioProcesses": audio_processes,
         "recentEvents": recent_events,
         "panicLog": crate::diagnostico::read_panic_log(app.clone()),
@@ -249,17 +453,13 @@ pub async fn engine_prepare(
     engine_stop(app, engine.clone()).await?;
     {
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
-        inner.status.phase = "binding";
+        let _ = inner.status.transition(SessionPhase::Authenticating);
         inner.status.role = Some(role);
         inner
             .diagnostics
             .record("session", "binding", serde_json::json!({ "role": role }));
     }
-    let socket = Arc::new(
-        UdpSocket::bind("0.0.0.0:0")
-            .await
-            .map_err(|e| format!("Não foi possível abrir UDP: {e}"))?,
-    );
+    let socket = Arc::new(bind_dual_stack_udp()?);
     let bound = socket.local_addr().map_err(|e| e.to_string())?;
     let local = stun::local_endpoint(bound.port())
         .unwrap_or(bound)
@@ -335,7 +535,7 @@ pub async fn engine_prepare(
     inner.signaling_max_peers = 4;
     inner.cursor_visible = true;
     inner.host_fanout.set_supported_codecs(codecs);
-    inner.status.phase = "waiting";
+    inner.status.phase = SessionPhase::AwaitingApproval;
     inner.status.local_endpoint = Some(local.clone());
     inner.status.public_endpoint = public.clone();
     inner.status.capture = capture_state;
@@ -362,6 +562,64 @@ pub async fn engine_prepare(
     })
 }
 
+#[tauri::command]
+pub async fn engine_refresh_endpoint(
+    engine: State<'_, NativeEngine>,
+) -> Result<PreparedEndpoint, String> {
+    let (socket, role) = {
+        let inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+        (
+            inner
+                .socket
+                .clone()
+                .ok_or("O motor UDP ainda não foi iniciado")?,
+            inner.status.role.ok_or("Modo de conexão ausente")?,
+        )
+    };
+    let port = socket
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
+    let local = stun::local_endpoint(port)
+        .unwrap_or_else(|_| std::net::SocketAddr::from(([0, 0, 0, 0], port)))
+        .to_string();
+    let public = stun::discover_any(
+        &socket,
+        &[
+            "stun.cloudflare.com:3478",
+            "stun.l.google.com:19302",
+            "stun1.l.google.com:19302",
+        ],
+    )
+    .await
+    .ok()
+    .map(|endpoint| endpoint.to_string());
+    let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
+    if inner.status.role != Some(role) || inner.socket.is_none() {
+        return Err("A sessão mudou durante a renovação da rota".into());
+    }
+    let public_key = inner
+        .key_exchange
+        .as_ref()
+        .ok_or("Identidade X25519 ausente")?
+        .public_base64();
+    inner.status.local_endpoint = Some(local.clone());
+    inner.status.public_endpoint = public.clone();
+    inner.status.rejoin_required = false;
+    inner.status.phase = SessionPhase::Recovering;
+    inner.diagnostics.record(
+        "network",
+        "endpoint-refreshed-without-restarting-media",
+        serde_json::json!({ "publicRouteAvailable": public.is_some() }),
+    );
+    Ok(PreparedEndpoint {
+        local,
+        public,
+        public_key,
+        codecs: inner.supported_codecs,
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectRequest {
@@ -370,6 +628,7 @@ pub struct ConnectRequest {
     peer_codecs: u8,
     peer_id: String,
     relay_endpoint: Option<String>,
+    relay_candidates: Option<Vec<String>>,
     relay_session: Option<String>,
     relay_auth: Option<String>,
 }
@@ -482,6 +741,7 @@ pub async fn engine_connect_peer(
         peer_codecs,
         peer_id,
         relay_endpoint,
+        relay_candidates,
         relay_session,
         relay_auth,
     } = request;
@@ -492,21 +752,35 @@ pub async fn engine_connect_peer(
         return Err("Lista de codecs do computador remoto inválida".into());
     }
     let peer = endpoint.parse().map_err(|_| "Endpoint UDP inválido")?;
-    let relay = match (relay_endpoint, relay_session, relay_auth) {
+    let relays = match (relay_endpoint, relay_session, relay_auth) {
         (Some(endpoint), Some(session), Some(auth)) => {
-            let endpoint = endpoint
-                .parse()
-                .map_err(|_| "Endpoint do relay UDP inválido")?;
             let session =
-                u64::from_str_radix(&session, 16).map_err(|_| "Sessão do relay inválida")?;
+                u64::from_str_radix(&session, 16).map_err(|_| "Sessao do relay invalida")?;
             let auth =
-                u64::from_str_radix(&auth, 16).map_err(|_| "Credencial do relay inválida")?;
-            Some((endpoint, session, auth))
+                u64::from_str_radix(&auth, 16).map_err(|_| "Credencial do relay invalida")?;
+            let mut candidates = relay_candidates.unwrap_or_default();
+            if candidates.is_empty() {
+                candidates.push(endpoint);
+            }
+            candidates.sort();
+            candidates.dedup();
+            if candidates.len() > 4 {
+                return Err("Muitos relays anunciados".into());
+            }
+            candidates
+                .into_iter()
+                .map(|candidate| {
+                    candidate
+                        .parse()
+                        .map(|endpoint| (endpoint, session, auth))
+                        .map_err(|_| "Endpoint do relay UDP invalido".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?
         }
-        (None, None, None) => None,
-        _ => return Err("Configuração do relay incompleta".into()),
+        (None, None, None) => Vec::new(),
+        _ => return Err("Configuracao do relay incompleta".into()),
     };
-    let relay_configured = relay.is_some();
+    let relay_configured = !relays.is_empty();
     let (datagrams, role, generation, previous, key, verification_code) = {
         let mut inner = engine.inner.lock().map_err(|_| "Estado indisponível")?;
         let role = inner.status.role.ok_or("Modo ausente")?;
@@ -525,7 +799,7 @@ pub async fn engine_connect_peer(
         {
             return Err("O espectador já está conectado a um host".into());
         }
-        inner.status.phase = "punching";
+        inner.status.phase = SessionPhase::Connecting;
         inner.status.peer_endpoint = Some(endpoint.clone());
         let binding = inner
             .pake
@@ -569,7 +843,7 @@ pub async fn engine_connect_peer(
         datagrams,
         PeerTransport {
             endpoint: peer,
-            relay,
+            relays,
             id: peer_id.clone(),
             codecs: peer_codecs,
         },
@@ -627,7 +901,7 @@ pub async fn engine_connect_peer(
                 control.stop();
                 if let Ok(mut inner) = engine.inner.lock() {
                     if session_is_current(&inner, generation, role) {
-                        inner.status.phase = "failed";
+                        inner.status.phase = SessionPhase::Failed;
                     }
                 }
                 return Err(error);
@@ -679,7 +953,7 @@ pub async fn engine_connect_peer(
     } else {
         None
     };
-    inner.status.phase = "connected";
+    inner.status.phase = SessionPhase::Connecting;
     inner.diagnostics.record(
         "peer",
         "connected",
@@ -717,11 +991,11 @@ pub async fn engine_disconnect_peer(
             None
         };
         inner.status.phase = if remaining > 0 {
-            "streaming"
+            SessionPhase::Streaming
         } else if inner.socket.is_some() {
-            "waiting"
+            SessionPhase::AwaitingApproval
         } else {
-            "idle"
+            SessionPhase::Idle
         };
         inner.diagnostics.record(
             "peer",
@@ -761,12 +1035,12 @@ pub fn engine_set_max_peers(
     Ok(())
 }
 
-fn connection_failure_phase(role: StreamRole, connected_peers: usize) -> &'static str {
+fn connection_failure_phase(role: StreamRole, connected_peers: usize) -> SessionPhase {
     match (role, connected_peers) {
-        (StreamRole::Host, 0) => "waiting",
-        (StreamRole::Host, _) => "streaming",
-        (StreamRole::Viewer, 0) => "failed",
-        (StreamRole::Viewer, _) => "connected",
+        (StreamRole::Host, 0) => SessionPhase::AwaitingApproval,
+        (StreamRole::Host, _) => SessionPhase::Streaming,
+        (StreamRole::Viewer, 0) => SessionPhase::Failed,
+        (StreamRole::Viewer, _) => SessionPhase::Connecting,
     }
 }
 
@@ -808,10 +1082,14 @@ pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Res
         let audio = inner.host_audio.take();
         let next_generation = inner.generation.wrapping_add(1);
         let diagnostics = inner.diagnostics.clone();
+        #[cfg(target_os = "windows")]
+        if inner.remote_control_enabled {
+            input::release_all();
+        }
         *inner = Inner::default();
         inner.diagnostics = diagnostics;
         inner.generation = next_generation;
-        inner.status.phase = "stopped";
+        inner.status.phase = SessionPhase::Closed;
         inner
             .diagnostics
             .record("session", "stopped", serde_json::json!({}));
@@ -843,7 +1121,7 @@ pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Res
     if let Ok(mut inner) = engine.inner.lock() {
         if inner.generation == generation && inner.socket.is_none() {
             inner.status = EngineStatus::default();
-            inner.status.phase = "stopped";
+            inner.status.phase = SessionPhase::Closed;
         }
     }
     Ok(())
@@ -883,7 +1161,7 @@ mod tests {
     #[test]
     fn default_engine_is_idle() {
         let status = EngineStatus::default();
-        assert_eq!(status.phase, "idle");
+        assert_eq!(status.phase, SessionPhase::Idle);
         assert_eq!(status.encoder_capacity, 0);
     }
 

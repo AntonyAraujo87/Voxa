@@ -1,4 +1,4 @@
-use super::{Inner, StreamRole};
+use super::{input, Inner, SessionPhase, StreamRole};
 mod fanout;
 mod feedback;
 mod packetizer;
@@ -15,7 +15,7 @@ use std::{
         atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
         Arc, Condvar, Mutex,
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 use tauri::async_runtime::JoinHandle;
 use tokio::{
@@ -40,11 +40,13 @@ pub struct TransportControl {
     incoming_audio: Arc<Mutex<VecDeque<AudioPacket>>>,
     outgoing_cursor: Arc<Mutex<Option<CursorPacket>>>,
     incoming_cursor: Arc<Mutex<Option<CursorPacket>>>,
+    outgoing_input: Arc<Mutex<VecDeque<Vec<u8>>>>,
     outgoing_config: Arc<Mutex<Option<StreamConfig>>>,
     incoming_config: Arc<Mutex<Option<StreamConfig>>>,
     force_keyframe: Arc<AtomicBool>,
     request_remote_keyframe: Arc<AtomicBool>,
     bitrate_bps: Arc<AtomicU32>,
+    queued_bytes: Arc<AtomicU64>,
     peer_codecs: Arc<AtomicU32>,
     clock_offset_us: Arc<AtomicI64>,
     outgoing_wake: Arc<WakeSignal>,
@@ -52,13 +54,14 @@ pub struct TransportControl {
     outgoing_audio_wake: Arc<WakeSignal>,
     incoming_audio_wake: Arc<WakeSignal>,
     outgoing_cursor_wake: Arc<WakeSignal>,
+    outgoing_input_wake: Arc<WakeSignal>,
     tasks: Vec<JoinHandle<()>>,
     native_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 pub struct PeerTransport {
     pub endpoint: SocketAddr,
-    pub relay: Option<(SocketAddr, u64, u64)>,
+    pub relays: Vec<(SocketAddr, u64, u64)>,
     pub id: String,
     pub codecs: u8,
 }
@@ -72,11 +75,13 @@ pub struct TransportHandle {
     incoming_audio: Arc<Mutex<VecDeque<AudioPacket>>>,
     outgoing_cursor: Arc<Mutex<Option<CursorPacket>>>,
     incoming_cursor: Arc<Mutex<Option<CursorPacket>>>,
+    outgoing_input: Arc<Mutex<VecDeque<Vec<u8>>>>,
     outgoing_config: Arc<Mutex<Option<StreamConfig>>>,
     incoming_config: Arc<Mutex<Option<StreamConfig>>>,
     force_keyframe: Arc<AtomicBool>,
     request_remote_keyframe: Arc<AtomicBool>,
     bitrate_bps: Arc<AtomicU32>,
+    queued_bytes: Arc<AtomicU64>,
     peer_codecs: Arc<AtomicU32>,
     clock_offset_us: Arc<AtomicI64>,
     outgoing_wake: Arc<WakeSignal>,
@@ -84,6 +89,7 @@ pub struct TransportHandle {
     outgoing_audio_wake: Arc<WakeSignal>,
     incoming_audio_wake: Arc<WakeSignal>,
     outgoing_cursor_wake: Arc<WakeSignal>,
+    outgoing_input_wake: Arc<WakeSignal>,
 }
 
 #[derive(Default)]
@@ -183,6 +189,7 @@ impl TransportControl {
         self.outgoing_audio_wake.notify();
         self.incoming_audio_wake.notify();
         self.outgoing_cursor_wake.notify();
+        self.outgoing_input_wake.notify();
         for task in self.tasks {
             task.abort();
         }
@@ -199,11 +206,13 @@ impl TransportControl {
             incoming_audio: self.incoming_audio.clone(),
             outgoing_cursor: self.outgoing_cursor.clone(),
             incoming_cursor: self.incoming_cursor.clone(),
+            outgoing_input: self.outgoing_input.clone(),
             outgoing_config: self.outgoing_config.clone(),
             incoming_config: self.incoming_config.clone(),
             force_keyframe: self.force_keyframe.clone(),
             request_remote_keyframe: self.request_remote_keyframe.clone(),
             bitrate_bps: self.bitrate_bps.clone(),
+            queued_bytes: self.queued_bytes.clone(),
             peer_codecs: self.peer_codecs.clone(),
             clock_offset_us: self.clock_offset_us.clone(),
             outgoing_wake: self.outgoing_wake.clone(),
@@ -211,6 +220,7 @@ impl TransportControl {
             outgoing_audio_wake: self.outgoing_audio_wake.clone(),
             incoming_audio_wake: self.incoming_audio_wake.clone(),
             outgoing_cursor_wake: self.outgoing_cursor_wake.clone(),
+            outgoing_input_wake: self.outgoing_input_wake.clone(),
         }
     }
     pub fn attach_native_thread(&mut self, thread: std::thread::JoinHandle<()>) {
@@ -223,10 +233,16 @@ impl TransportHandle {
         self.stop.load(Ordering::Acquire)
     }
     pub fn queue_video(&self, frame: EncodedFrame) -> bool {
+        let size = frame.bytes.len() as u64;
         let replaced = self
             .outgoing
             .lock()
-            .map(|mut slot| slot.replace(frame).is_some())
+            .map(|mut slot| {
+                let old = slot.replace(frame);
+                let old_size = old.as_ref().map_or(0, |frame| frame.bytes.len() as u64);
+                adjust_queue_bytes(&self.queued_bytes, old_size, size);
+                old.is_some()
+            })
             .unwrap_or(true);
         self.outgoing_wake.notify();
         replaced
@@ -249,8 +265,12 @@ impl TransportHandle {
     pub fn queue_audio(&self, packet: AudioPacket) {
         if let Ok(mut queue) = self.outgoing_audio.lock() {
             if queue.len() >= 4 {
-                queue.pop_front();
+                if let Some(old) = queue.pop_front() {
+                    adjust_queue_bytes(&self.queued_bytes, old.bytes.len() as u64, 0);
+                }
             }
+            self.queued_bytes
+                .fetch_add(packet.bytes.len() as u64, Ordering::AcqRel);
             queue.push_back(packet);
         }
         self.outgoing_audio_wake.notify();
@@ -277,6 +297,19 @@ impl TransportHandle {
             .and_then(|slot| slot.clone())
     }
 
+    pub fn queue_input(&self, payload: Vec<u8>) {
+        if payload.len() > 64 {
+            return;
+        }
+        if let Ok(mut queue) = self.outgoing_input.lock() {
+            if queue.len() >= 128 {
+                queue.pop_front();
+            }
+            queue.push_back(payload);
+        }
+        self.outgoing_input_wake.notify();
+    }
+
     pub fn take_keyframe_request(&self) -> bool {
         self.force_keyframe.swap(false, Ordering::AcqRel)
     }
@@ -288,6 +321,9 @@ impl TransportHandle {
 
     pub fn target_bitrate(&self) -> u32 {
         self.bitrate_bps.load(Ordering::Acquire)
+    }
+    pub fn queued_bytes(&self) -> u64 {
+        self.queued_bytes.load(Ordering::Acquire)
     }
     pub fn capture_to_display_ms(&self, remote_timestamp_us: u64) -> Option<u32> {
         let offset = self.clock_offset_us.load(Ordering::Acquire);
@@ -308,7 +344,7 @@ pub async fn spawn_receiver(
 ) -> Result<TransportControl, String> {
     let PeerTransport {
         endpoint,
-        relay,
+        relays,
         id: peer_id,
         codecs: peer_codecs,
     } = peer;
@@ -318,14 +354,17 @@ pub async fn spawn_receiver(
     let route = Arc::new(Route {
         socket: hub.socket.clone(),
         direct: endpoint,
-        relay: relay.map(|(endpoint, session, auth)| {
-            (
-                endpoint,
-                session,
-                auth,
-                if role == StreamRole::Host { 0 } else { 1 },
-            )
-        }),
+        relays: relays
+            .into_iter()
+            .map(|(endpoint, session, auth)| {
+                (
+                    endpoint,
+                    session,
+                    auth,
+                    if role == StreamRole::Host { 0 } else { 1 },
+                )
+            })
+            .collect(),
         selected: AtomicU32::new(0),
     });
     let (host_to_viewer, viewer_to_host) = protocol::directional_keys(&base_key);
@@ -345,11 +384,14 @@ pub async fn spawn_receiver(
     let incoming_audio = Arc::new(Mutex::new(VecDeque::<AudioPacket>::with_capacity(8)));
     let outgoing_cursor = Arc::new(Mutex::new(None::<CursorPacket>));
     let incoming_cursor = Arc::new(Mutex::new(None::<CursorPacket>));
+    let outgoing_input = Arc::new(Mutex::new(VecDeque::<Vec<u8>>::with_capacity(128)));
     let outgoing_config = Arc::new(Mutex::new(None::<StreamConfig>));
     let incoming_config = Arc::new(Mutex::new(None::<StreamConfig>));
     let force_keyframe = Arc::new(AtomicBool::new(false));
     let request_remote_keyframe = Arc::new(AtomicBool::new(false));
     let bitrate_bps = Arc::new(AtomicU32::new(12_000_000));
+    let queued_bytes = Arc::new(AtomicU64::new(0));
+    let fec_group_size = Arc::new(AtomicU32::new(0));
     let max_delta_age_us = Arc::new(AtomicU64::new(250_000));
     let peer_codecs = Arc::new(AtomicU32::new(u32::from(peer_codecs)));
     let clock_offset_us = Arc::new(AtomicI64::new(i64::MIN));
@@ -358,6 +400,7 @@ pub async fn spawn_receiver(
     let outgoing_audio_wake = Arc::new(WakeSignal::default());
     let incoming_audio_wake = Arc::new(WakeSignal::default());
     let outgoing_cursor_wake = Arc::new(WakeSignal::default());
+    let outgoing_input_wake = Arc::new(WakeSignal::default());
     // Feedback pertence a este par. Guardar RTT/perda apenas no status global
     // fazia um espectador lento reduzir (ou acelerar) os demais transportes.
     let feedback_rtt_ms = Arc::new(AtomicU32::new(0));
@@ -404,9 +447,8 @@ pub async fn spawn_receiver(
             if last_authenticated.elapsed() >= Duration::from_secs(2) {
                 recv_route.reset();
                 if let Ok(mut inner) = recv_state.lock() {
-                    inner.status.phase = "recovering";
-                    if role == StreamRole::Viewer
-                        && recv_route.relay.is_none()
+                    inner.status.phase = SessionPhase::Recovering;
+                    if recv_route.relays.is_empty()
                         && last_authenticated.elapsed() >= Duration::from_secs(8)
                     {
                         inner.status.rejoin_required = true;
@@ -445,7 +487,7 @@ pub async fn spawn_receiver(
                             inner.status.rejoin_required = false;
                         }
                         let selected = recv_route.select(source);
-                        let observed_endpoint = if selected == 2 {
+                        let observed_endpoint = if selected >= 2 {
                             format!("relay://{}", source)
                         } else {
                             source.to_string()
@@ -537,7 +579,7 @@ pub async fn spawn_receiver(
                                     if let Ok(mut inner) = recv_state.lock() {
                                         inner.status.received_frames += 1;
                                         inner.status.dropped_frames += u64::from(replaced);
-                                        inner.status.phase = "streaming";
+                                        inner.status.phase = SessionPhase::Streaming;
                                     }
                                     update_peer(&recv_state, &recv_peer_id, |metric| {
                                         metric.received_frames += 1;
@@ -638,8 +680,10 @@ pub async fn spawn_receiver(
                                     }
                                 }
                             }
-                            Kind::Input => { /* Input permanece desativado até consentimento local explícito. */
+                            Kind::Input if role == StreamRole::Host => {
+                                input::inject_if_authorized(&packet.payload, &recv_state);
                             }
+                            Kind::Input => {}
                             Kind::Pong => {}
                         }
                         if last_feedback.elapsed() >= Duration::from_millis(500) {
@@ -690,8 +734,10 @@ pub async fn spawn_receiver(
     let video_stop = stop.clone();
     let video_sequence = sequence.clone();
     let video_outgoing = outgoing.clone();
+    let video_queued_bytes = queued_bytes.clone();
     let video_config = outgoing_config.clone();
     let video_bitrate = bitrate_bps.clone();
+    let video_fec_group = fec_group_size.clone();
     let video_max_delta_age = max_delta_age_us.clone();
     let video_keyframe_request = request_remote_keyframe.clone();
     let video_wake = outgoing_wake.clone();
@@ -748,6 +794,7 @@ pub async fn spawn_receiver(
                 let _ = time::timeout(Duration::from_millis(250), video_wake.wait_async()).await;
                 continue;
             };
+            adjust_queue_bytes(&video_queued_bytes, frame.bytes.len() as u64, 0);
             if !frame.keyframe
                 && now_us().saturating_sub(frame.timestamp_us)
                     > video_max_delta_age.load(Ordering::Acquire)
@@ -763,6 +810,7 @@ pub async fn spawn_receiver(
                 continue;
             };
             let chunks = frame.bytes.chunks(chunk_size).collect::<Vec<_>>();
+            let fec_group = video_fec_group.load(Ordering::Acquire) as usize;
             let mut deadline = time::Instant::now();
             for (index, payload) in chunks.iter().copied().enumerate() {
                 if !frame.keyframe
@@ -795,13 +843,16 @@ pub async fn spawn_receiver(
                 deadline += Duration::from_nanos(nanos);
                 time::sleep_until(deadline).await;
                 if frame.keyframe
-                    && ((index + 1).is_multiple_of(protocol::FEC_GROUP_SIZE)
-                        || index + 1 == chunks.len())
+                    && fec_group > 0
+                    && ((index + 1).is_multiple_of(fec_group) || index + 1 == chunks.len())
                 {
-                    let start = index / protocol::FEC_GROUP_SIZE * protocol::FEC_GROUP_SIZE;
+                    let start = index / fec_group * fec_group;
                     let group = &chunks[start..=index];
-                    let fec =
-                        packetizer::xor_parity(group, chunks.last().map_or(0, |part| part.len()));
+                    let fec = packetizer::xor_parity(
+                        group,
+                        fec_group,
+                        chunks.last().map_or(0, |part| part.len()),
+                    );
                     let meta = Meta {
                         stream_id,
                         sequence: video_sequence.fetch_add(1, Ordering::Relaxed),
@@ -831,6 +882,7 @@ pub async fn spawn_receiver(
     let audio_stop = stop.clone();
     let audio_sequence = sequence.clone();
     let audio_outgoing = outgoing_audio.clone();
+    let audio_queued_bytes = queued_bytes.clone();
     let audio_wake = outgoing_audio_wake.clone();
     let audio_state = state.clone();
     let audio_sender = tauri::async_runtime::spawn(async move {
@@ -843,6 +895,7 @@ pub async fn spawn_receiver(
                 audio_wake.wait_async().await;
                 continue;
             };
+            adjust_queue_bytes(&audio_queued_bytes, packet.bytes.len() as u64, 0);
             if send(
                 &audio_route,
                 &send_key,
@@ -893,11 +946,38 @@ pub async fn spawn_receiver(
         }
     });
 
+    let input_route = route.clone();
+    let input_stop = stop.clone();
+    let input_sequence = sequence.clone();
+    let input_outgoing = outgoing_input.clone();
+    let input_wake = outgoing_input_wake.clone();
+    let input_sender = tauri::async_runtime::spawn(async move {
+        while !input_stop.load(Ordering::Acquire) {
+            let payload = input_outgoing
+                .lock()
+                .ok()
+                .and_then(|mut queue| queue.pop_front());
+            let Some(payload) = payload else {
+                input_wake.wait_async().await;
+                continue;
+            };
+            let _ = send(
+                &input_route,
+                &send_key,
+                Kind::Input,
+                next_meta(&input_sequence, stream_id),
+                &payload,
+            )
+            .await;
+        }
+    });
+
     let ping_route = route;
     let ping_stop = stop.clone();
     let ping_sequence = sequence;
     let ping_state = state;
     let ping_bitrate = bitrate_bps.clone();
+    let ping_fec_group = fec_group_size.clone();
     let ping_max_delta_age = max_delta_age_us;
     let ping_force_keyframe = force_keyframe.clone();
     let ping_feedback_rtt = feedback_rtt_ms;
@@ -922,7 +1002,7 @@ pub async fn spawn_receiver(
             {
                 ping_route.reset();
                 if let Ok(mut inner) = ping_state.lock() {
-                    inner.status.phase = "recovering";
+                    inner.status.phase = SessionPhase::Recovering;
                 }
                 update_peer(&ping_state, &ping_peer_id, |metric| {
                     metric.phase = "recovering"
@@ -947,6 +1027,7 @@ pub async fn spawn_receiver(
                 if decision.request_keyframe {
                     ping_force_keyframe.store(true, Ordering::Release);
                 }
+                ping_fec_group.store(adaptive_fec_group_size(feedback_loss), Ordering::Release);
             }
             ping_bitrate.store(bitrate, Ordering::Release);
             if let Ok(mut inner) = ping_state.lock() {
@@ -967,11 +1048,13 @@ pub async fn spawn_receiver(
         incoming_audio,
         outgoing_cursor,
         incoming_cursor,
+        outgoing_input,
         outgoing_config,
         incoming_config,
         force_keyframe,
         request_remote_keyframe,
         bitrate_bps,
+        queued_bytes,
         peer_codecs,
         clock_offset_us,
         outgoing_wake,
@@ -979,11 +1062,13 @@ pub async fn spawn_receiver(
         outgoing_audio_wake,
         incoming_audio_wake,
         outgoing_cursor_wake,
+        outgoing_input_wake,
         tasks: vec![
             receiver,
             video_sender,
             audio_sender,
             cursor_sender,
+            input_sender,
             heartbeat,
         ],
         native_thread: None,
@@ -994,14 +1079,20 @@ fn mark_dropped(state: &Arc<Mutex<Inner>>) {
         inner.status.dropped_frames += 1;
     }
 }
+
+fn adjust_queue_bytes(counter: &AtomicU64, removed: u64, added: u64) {
+    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        Some(current.saturating_sub(removed).saturating_add(added))
+    });
+}
 fn mark_failed(state: &Arc<Mutex<Inner>>) {
     if let Ok(mut inner) = state.lock() {
         // Um erro de envio e recuperavel: a rota e reavaliada pelo heartbeat.
         // No host, ele tambem nao pode derrubar os demais espectadores.
         inner.status.phase = if inner.status.role == Some(StreamRole::Host) {
-            "recovering"
+            SessionPhase::Recovering
         } else {
-            "failed"
+            SessionPhase::Failed
         };
     }
 }
@@ -1009,9 +1100,9 @@ fn mark_failed(state: &Arc<Mutex<Inner>>) {
 fn mark_connected(state: &Arc<Mutex<Inner>>, role: StreamRole, peer_id: &str) {
     if let Ok(mut inner) = state.lock() {
         inner.status.phase = if role == StreamRole::Host {
-            "streaming"
+            SessionPhase::Streaming
         } else {
-            "connected"
+            SessionPhase::Connecting
         };
     }
     update_peer(state, peer_id, |metric| metric.phase = "connected");
@@ -1039,6 +1130,18 @@ fn apply_feedback(
             metric.latency_p95_ms = report.latency_p95_ms;
             metric.latency_p99_ms = report.latency_p99_ms;
         });
+    }
+}
+
+fn adaptive_fec_group_size(loss_pct: f32) -> u32 {
+    if !loss_pct.is_finite() || loss_pct >= 8.0 {
+        4
+    } else if loss_pct >= 3.0 {
+        8
+    } else if loss_pct >= 1.0 {
+        16
+    } else {
+        0
     }
 }
 
@@ -1112,10 +1215,7 @@ fn next_meta(sequence: &AtomicU64, stream_id: u32) -> Meta {
     }
 }
 fn now_us() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros() as u64
+    voxa_native_core::clock::monotonic_us()
 }
 
 #[cfg(test)]
@@ -1156,5 +1256,14 @@ mod tests {
         assert_eq!(decoded.y, packet.y);
         assert_eq!(decoded.source_width, packet.source_width);
         assert_eq!(decoded.source_height, packet.source_height);
+    }
+
+    #[test]
+    fn fec_cost_tracks_observed_loss() {
+        assert_eq!(adaptive_fec_group_size(0.2), 0);
+        assert_eq!(adaptive_fec_group_size(1.5), 16);
+        assert_eq!(adaptive_fec_group_size(4.0), 8);
+        assert_eq!(adaptive_fec_group_size(12.0), 4);
+        assert_eq!(adaptive_fec_group_size(f32::NAN), 4);
     }
 }
