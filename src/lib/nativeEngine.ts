@@ -3,7 +3,7 @@ import type { Matchmaking } from "./signaling";
 
 export type StreamRole = "host" | "viewer";
 export type EnginePhase = "idle" | "authenticating" | "awaiting-approval" | "connecting" | "streaming" | "recovering" | "closed" | "failed";
-export interface PreparedEndpoint { local: string; public: string | null; publicKey: string; codecs: number; }
+export interface PreparedEndpoint { local: string; public: string | null; publicKey: string; codecs: number; protocolVersion: number; }
 export interface PakeStart { protocol: string; share: string; }
 export interface CaptureTargetId { adapterIndex: number; outputIndex: number; }
 export interface CaptureTargetInfo {
@@ -89,9 +89,9 @@ export class NativeEngine {
   previewPeer(peer: { publicKey: string; peerId: string }) {
     return invoke<string>("engine_preview_peer", { peerId: peer.peerId, peerPublicKey: peer.publicKey });
   }
-  connectPeer(peer: { endpoint: string; publicKey: string; peerId: string; codecs?: number; relayEndpoint: string | null; relayCandidates?: string[]; relaySession: string | null; relayAuth: string | null }) {
+  connectPeer(peer: { endpoint: string; publicKey: string; peerId: string; codecs?: number; protocolVersion?: number; relayEndpoint: string | null; relayCandidates?: string[]; relaySession: string | null; relayAuth: string | null }) {
     return invoke<void>("engine_connect_peer", { request: {
-      endpoint: peer.endpoint, peerPublicKey: peer.publicKey, peerId: peer.peerId, peerCodecs: peer.codecs ?? 1,
+      endpoint: peer.endpoint, peerPublicKey: peer.publicKey, peerId: peer.peerId, peerCodecs: peer.codecs ?? 1, peerProtocolVersion: peer.protocolVersion ?? 1,
       relayEndpoint: peer.relayEndpoint, relayCandidates: peer.relayCandidates, relaySession: peer.relaySession, relayAuth: peer.relayAuth,
     } });
   }

@@ -27,6 +27,7 @@ function announcement(peer, requesterIp, relay) {
     endpoint: peer.ip === requesterIp ? peer.localEndpoint : peer.endpoint,
     publicKey: peer.publicKey,
     codecs: peer.codecs ?? 1,
+    protocolVersion: peer.protocolVersion ?? 1,
     relayEndpoint: relay.endpoint,
     relayCandidates: relay.candidates,
     relaySession: relay.session,
@@ -120,7 +121,8 @@ export function registerHandlers({ io, socket, registry, limiter }) {
     const localEndpoint = endpoint(payload?.localEndpoint);
     const publicKey = normalizePublicKey(payload?.publicKey);
     const codecs = normalizeCodecs(payload?.codecs);
-    const invalid = invalidReadyField({ publicEndpoint, localEndpoint, publicKey, codecs });
+    const protocolVersion = payload?.protocolVersion === 2 ? 2 : null;
+    const invalid = invalidReadyField({ publicEndpoint, localEndpoint, publicKey, codecs, protocolVersion });
     if (invalid) return ack?.({ error: invalid });
     const usableLocalEndpoint = localEndpoint.host === "0.0.0.0" ? publicEndpoint : localEndpoint;
     if (!isIP(usableLocalEndpoint.host) || (!privateIp(usableLocalEndpoint.host) && usableLocalEndpoint.value !== publicEndpoint.value)) {
@@ -129,7 +131,7 @@ export function registerHandlers({ io, socket, registry, limiter }) {
     if (!sameIp(publicEndpoint.host, socket.data.ip)) {
       return ack?.({ error: "Endpoint público não corresponde à conexão" });
     }
-    registry.setEndpoint(socket.id, publicEndpoint.value, usableLocalEndpoint.value, publicKey, codecs);
+    registry.setEndpoint(socket.id, publicEndpoint.value, usableLocalEndpoint.value, publicKey, codecs, protocolVersion);
     const self = registry.get(socket.id), target = registry.get(targetId);
     const viewer = self.role === "viewer" ? self : target;
     io.to(targetId).emit("stream:ready", announcement(self, target.ip, registry.relay(viewer, target.role)));
@@ -144,11 +146,12 @@ export function registerHandlers({ io, socket, registry, limiter }) {
   });
 }
 
-function invalidReadyField({ publicEndpoint, localEndpoint, publicKey, codecs }) {
+function invalidReadyField({ publicEndpoint, localEndpoint, publicKey, codecs, protocolVersion }) {
   if (!publicEndpoint) return "Endpoint UDP público inválido";
   if (!localEndpoint) return "Endpoint UDP local inválido";
   if (!publicKey) return "Chave X25519 inválida; atualize o Voxa";
   if (!codecs) return "Lista de codecs inválida; atualize o Voxa";
+  if (!protocolVersion) return "Protocolo UDP incompatível; atualize o Voxa";
   return null;
 }
 

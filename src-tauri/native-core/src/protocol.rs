@@ -20,7 +20,7 @@ pub const MAX_FEC_GROUP_SIZE: usize = 16;
 pub const MAX_FRAGMENTS: usize = 4096;
 pub const MAX_ENCODED_FRAME: usize = MAX_PAYLOAD * MAX_FRAGMENTS;
 const MAGIC: &[u8; 4] = b"VOXA";
-const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]

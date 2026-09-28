@@ -48,8 +48,11 @@ test("real signaling relays PAKE and hides routes until peers confirm locally", 
     const malformed = await emit(viewer, "stream:ready", { peerId: host.id, endpoint: "127.0.0.1:42000", localEndpoint: "192.168.1.20:42000", publicKey: "curta", codecs: 1 });
     assert.match(malformed.error, /X25519/);
 
+    const outdated = await emit(viewer, "stream:ready", { peerId: host.id, endpoint: "127.0.0.1:42000", localEndpoint: "192.168.1.20:42000", publicKey: "v".repeat(43), codecs: 1 });
+    assert.match(outdated.error, /Protocolo UDP incompatível/);
+
     const hostReady = new Promise(resolve => host.once("stream:ready", resolve));
-    assert.equal((await emit(viewer, "stream:ready", { peerId: host.id, endpoint: "127.0.0.1:42000", localEndpoint: "192.168.1.20:42000", publicKey: "v".repeat(43), codecs: 1 })).ok, true);
+    assert.equal((await emit(viewer, "stream:ready", { peerId: host.id, endpoint: "127.0.0.1:42000", localEndpoint: "192.168.1.20:42000", publicKey: "v".repeat(43), codecs: 1, protocolVersion: 2 })).ok, true);
     const announced = await hostReady;
     assert.equal(announced.peerId, viewer.id);
     assert.equal(announced.endpoint, "192.168.1.20:42000");

@@ -273,6 +273,7 @@ pub struct PreparedEndpoint {
     pub(super) public: Option<String>,
     pub(super) public_key: String,
     pub(super) codecs: u8,
+    pub(super) protocol_version: u8,
 }
 
 #[derive(Default)]

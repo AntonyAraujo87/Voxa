@@ -155,7 +155,7 @@ impl DatagramHub {
                     Ok(Ok((len, source)))
                         if len >= protocol::HEADER_LEN
                             && buffer[..4] == *b"VOXA"
-                            && buffer[4] == 1 =>
+                            && buffer[4] == protocol::VERSION =>
                     {
                         let _ = read_sender.send((Arc::new(buffer[..len].to_vec()), source));
                     }

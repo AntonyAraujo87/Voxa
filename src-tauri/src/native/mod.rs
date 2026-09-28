@@ -559,6 +559,7 @@ pub async fn engine_prepare(
         public,
         public_key,
         codecs,
+        protocol_version: protocol::VERSION,
     })
 }
 
@@ -617,6 +618,7 @@ pub async fn engine_refresh_endpoint(
         public,
         public_key,
         codecs: inner.supported_codecs,
+        protocol_version: protocol::VERSION,
     })
 }
 
@@ -626,6 +628,7 @@ pub struct ConnectRequest {
     endpoint: String,
     peer_public_key: String,
     peer_codecs: u8,
+    peer_protocol_version: u8,
     peer_id: String,
     relay_endpoint: Option<String>,
     relay_candidates: Option<Vec<String>>,
@@ -739,6 +742,7 @@ pub async fn engine_connect_peer(
         endpoint,
         peer_public_key,
         peer_codecs,
+        peer_protocol_version,
         peer_id,
         relay_endpoint,
         relay_candidates,
@@ -750,6 +754,13 @@ pub async fn engine_connect_peer(
     }
     if peer_codecs == 0 || peer_codecs & !0b111 != 0 {
         return Err("Lista de codecs do computador remoto inválida".into());
+    }
+    if peer_protocol_version != protocol::VERSION {
+        return Err(format!(
+            "Protocolo incompatível: local v{}, remoto v{}; atualize os dois computadores",
+            protocol::VERSION,
+            peer_protocol_version
+        ));
     }
     let peer = endpoint.parse().map_err(|_| "Endpoint UDP inválido")?;
     let relays = match (relay_endpoint, relay_session, relay_auth) {
@@ -1179,6 +1190,7 @@ mod tests {
             public: Some("203.0.113.2:50000".into()),
             public_key: "A".repeat(43),
             codecs: protocol::VideoCodec::H264.bit(),
+            protocol_version: protocol::VERSION,
         })
         .unwrap();
         assert_eq!(json["publicKey"], "A".repeat(43));
