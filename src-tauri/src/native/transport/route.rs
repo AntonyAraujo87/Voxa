@@ -28,17 +28,21 @@ impl Route {
                 .map_err(|e| e.to_string()),
             2 => self.send_relay(bytes).await,
             _ => {
-                let direct = self
-                    .socket
-                    .send_to(bytes, self.direct)
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| e.to_string());
-                let relayed = if self.relay.is_some() {
-                    self.send_relay(bytes).await
-                } else {
-                    Ok(())
+                let direct_send = async {
+                    self.socket
+                        .send_to(bytes, self.direct)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
                 };
+                let relay_send = async {
+                    if self.relay.is_some() {
+                        self.send_relay(bytes).await
+                    } else {
+                        Ok(())
+                    }
+                };
+                let (direct, relayed) = tokio::join!(direct_send, relay_send);
                 direct.or(relayed)
             }
         }

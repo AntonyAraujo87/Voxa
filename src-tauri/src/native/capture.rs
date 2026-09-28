@@ -105,7 +105,9 @@ impl DxgiCapture {
             let multithread: ID3D11Multithread = device
                 .cast()
                 .map_err(|e| format!("Proteção multithread D3D11: {e}"))?;
-            let _ = multithread.SetMultithreadProtected(true);
+            if !multithread.SetMultithreadProtected(true).as_bool() {
+                return Err("Driver recusou a protecao multithread D3D11 da captura".into());
+            }
             let duplication = if let Ok(output5) = output.cast::<IDXGIOutput5>() {
                 let formats = if hdr {
                     [DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM]

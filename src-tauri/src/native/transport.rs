@@ -1,9 +1,12 @@
 use super::{Inner, StreamRole};
 mod fanout;
+mod feedback;
+mod packetizer;
 mod route;
 #[cfg(test)]
 use fanout::{negotiated_codec, opus_bitrate_for_video};
 pub use fanout::{AudioPacket, CursorPacket, EncodedFrame, HostTransportHandle};
+use feedback::FeedbackReport;
 use route::Route;
 use std::{
     collections::VecDeque,
@@ -23,7 +26,7 @@ use tokio::{
 #[cfg(test)]
 use voxa_native_core::protocol::VideoCodec;
 use voxa_native_core::{
-    congestion::CongestionController,
+    congestion::{CongestionController, KeyframeRequestLimiter},
     loss::LossEstimator,
     protocol::{self, Kind, Meta, ReplayGuard, StreamConfig},
     reassembly::Reassembler,
@@ -347,6 +350,7 @@ pub async fn spawn_receiver(
     let force_keyframe = Arc::new(AtomicBool::new(false));
     let request_remote_keyframe = Arc::new(AtomicBool::new(false));
     let bitrate_bps = Arc::new(AtomicU32::new(12_000_000));
+    let max_delta_age_us = Arc::new(AtomicU64::new(250_000));
     let peer_codecs = Arc::new(AtomicU32::new(u32::from(peer_codecs)));
     let clock_offset_us = Arc::new(AtomicI64::new(i64::MIN));
     let outgoing_wake = Arc::new(WakeSignal::default());
@@ -395,7 +399,7 @@ pub async fn spawn_receiver(
         let mut loss = LossEstimator::default();
         let mut last_feedback = Instant::now();
         let mut last_authenticated = Instant::now();
-        let mut last_keyframe_request = Instant::now() - Duration::from_secs(1);
+        let mut keyframe_limiter = KeyframeRequestLimiter::new();
         while !recv_stop.load(Ordering::Acquire) {
             if last_authenticated.elapsed() >= Duration::from_secs(2) {
                 recv_route.reset();
@@ -423,7 +427,7 @@ pub async fn spawn_receiver(
                     &recv_sequence,
                     stream_id,
                     &recv_state,
-                    &mut last_keyframe_request,
+                    &mut keyframe_limiter,
                 )
                 .await;
             }
@@ -550,7 +554,7 @@ pub async fn spawn_receiver(
                                         &recv_sequence,
                                         stream_id,
                                         &recv_state,
-                                        &mut last_keyframe_request,
+                                        &mut keyframe_limiter,
                                     )
                                     .await
                                 }
@@ -640,18 +644,24 @@ pub async fn spawn_receiver(
                         }
                         if last_feedback.elapsed() >= Duration::from_millis(500) {
                             let rtt = recv_measured_rtt.load(Ordering::Acquire);
-                            let mut feedback = Vec::with_capacity(20);
-                            feedback.extend_from_slice(&rtt.to_be_bytes());
-                            feedback
-                                .extend_from_slice(&loss.take_percent().to_bits().to_be_bytes());
-                            if let Ok(inner) = recv_state.lock() {
-                                feedback
-                                    .extend_from_slice(&inner.status.latency_p50_ms.to_be_bytes());
-                                feedback
-                                    .extend_from_slice(&inner.status.latency_p95_ms.to_be_bytes());
-                                feedback
-                                    .extend_from_slice(&inner.status.latency_p99_ms.to_be_bytes());
+                            let (p50, p95, p99) = recv_state
+                                .lock()
+                                .map(|inner| {
+                                    (
+                                        inner.status.latency_p50_ms,
+                                        inner.status.latency_p95_ms,
+                                        inner.status.latency_p99_ms,
+                                    )
+                                })
+                                .unwrap_or_default();
+                            let feedback = FeedbackReport {
+                                rtt_ms: rtt,
+                                loss_pct: loss.take_percent(),
+                                latency_p50_ms: p50,
+                                latency_p95_ms: p95,
+                                latency_p99_ms: p99,
                             }
+                            .encode();
                             let _ = send(
                                 &recv_route,
                                 &send_key,
@@ -682,6 +692,7 @@ pub async fn spawn_receiver(
     let video_outgoing = outgoing.clone();
     let video_config = outgoing_config.clone();
     let video_bitrate = bitrate_bps.clone();
+    let video_max_delta_age = max_delta_age_us.clone();
     let video_keyframe_request = request_remote_keyframe.clone();
     let video_wake = outgoing_wake.clone();
     let video_state = state.clone();
@@ -737,17 +748,20 @@ pub async fn spawn_receiver(
                 let _ = time::timeout(Duration::from_millis(250), video_wake.wait_async()).await;
                 continue;
             };
-            let chunk_size = if frame.keyframe {
-                protocol::FEC_DATA_PAYLOAD
-            } else {
-                protocol::MAX_PAYLOAD
-            };
-            let count = frame.bytes.len().saturating_add(chunk_size - 1) / chunk_size;
-            if count == 0 || count > protocol::MAX_FRAGMENTS {
+            if !frame.keyframe
+                && now_us().saturating_sub(frame.timestamp_us)
+                    > video_max_delta_age.load(Ordering::Acquire)
+            {
                 mark_dropped(&video_state);
                 continue;
             }
-            let fragment_count = count as u16;
+            let chunk_size = packetizer::chunk_size(frame.keyframe);
+            let Some(fragment_count) =
+                packetizer::fragment_count(frame.bytes.len(), frame.keyframe)
+            else {
+                mark_dropped(&video_state);
+                continue;
+            };
             let chunks = frame.bytes.chunks(chunk_size).collect::<Vec<_>>();
             let mut deadline = time::Instant::now();
             for (index, payload) in chunks.iter().copied().enumerate() {
@@ -786,17 +800,8 @@ pub async fn spawn_receiver(
                 {
                     let start = index / protocol::FEC_GROUP_SIZE * protocol::FEC_GROUP_SIZE;
                     let group = &chunks[start..=index];
-                    let parity_len = group.iter().map(|part| part.len()).max().unwrap_or(0);
-                    let mut fec = Vec::with_capacity(protocol::FEC_HEADER_LEN + parity_len);
-                    fec.extend_from_slice(
-                        &(chunks.last().map_or(0, |part| part.len()) as u16).to_be_bytes(),
-                    );
-                    fec.resize(protocol::FEC_HEADER_LEN + parity_len, 0);
-                    for part in group {
-                        for (offset, byte) in part.iter().enumerate() {
-                            fec[protocol::FEC_HEADER_LEN + offset] ^= byte;
-                        }
-                    }
+                    let fec =
+                        packetizer::xor_parity(group, chunks.last().map_or(0, |part| part.len()));
                     let meta = Meta {
                         stream_id,
                         sequence: video_sequence.fetch_add(1, Ordering::Relaxed),
@@ -893,6 +898,8 @@ pub async fn spawn_receiver(
     let ping_sequence = sequence;
     let ping_state = state;
     let ping_bitrate = bitrate_bps.clone();
+    let ping_max_delta_age = max_delta_age_us;
+    let ping_force_keyframe = force_keyframe.clone();
     let ping_feedback_rtt = feedback_rtt_ms;
     let ping_feedback_loss = feedback_loss_bits;
     let ping_feedback_at = feedback_at_us;
@@ -928,11 +935,19 @@ pub async fn spawn_receiver(
             let feedback_at = ping_feedback_at.load(Ordering::Acquire);
             let feedback_is_fresh =
                 feedback_at > 0 && now_us().saturating_sub(feedback_at) < 2_000_000;
-            let bitrate = if feedback_is_fresh {
-                congestion.update(feedback_loss, feedback_rtt)
-            } else {
-                ping_bitrate.load(Ordering::Acquire)
-            };
+            let decision =
+                feedback_is_fresh.then(|| congestion.update(feedback_loss, feedback_rtt));
+            let bitrate = decision.map_or_else(
+                || ping_bitrate.load(Ordering::Acquire),
+                |decision| decision.target_bitrate_bps,
+            );
+            if let Some(decision) = decision {
+                ping_max_delta_age
+                    .store(decision.max_delta_age.as_micros() as u64, Ordering::Release);
+                if decision.request_keyframe {
+                    ping_force_keyframe.store(true, Ordering::Release);
+                }
+            }
             ping_bitrate.store(bitrate, Ordering::Release);
             if let Ok(mut inner) = ping_state.lock() {
                 if role == StreamRole::Viewer {
@@ -1009,29 +1024,20 @@ fn apply_feedback(
     peer_id: &str,
     payload: &[u8],
 ) {
-    if payload.len() >= 8 {
-        let rtt = u32::from_be_bytes(payload[..4].try_into().unwrap());
-        let loss = f32::from_bits(u32::from_be_bytes(payload[4..8].try_into().unwrap()));
-        let loss = if loss.is_finite() {
-            loss.clamp(0.0, 100.0)
-        } else {
-            100.0
-        };
-        feedback_rtt_ms.store(rtt, Ordering::Release);
-        feedback_loss_bits.store(loss.to_bits(), Ordering::Release);
+    if let Some(report) = FeedbackReport::decode(payload) {
+        feedback_rtt_ms.store(report.rtt_ms, Ordering::Release);
+        feedback_loss_bits.store(report.loss_pct.to_bits(), Ordering::Release);
         feedback_at_us.store(now_us(), Ordering::Release);
         if let Ok(mut inner) = state.lock() {
-            inner.status.rtt_ms = rtt;
-            inner.status.loss_pct = loss;
+            inner.status.rtt_ms = report.rtt_ms;
+            inner.status.loss_pct = report.loss_pct;
         }
         update_peer(state, peer_id, |metric| {
-            metric.rtt_ms = rtt;
-            metric.loss_pct = loss;
-            if payload.len() >= 20 {
-                metric.latency_p50_ms = u32::from_be_bytes(payload[8..12].try_into().unwrap());
-                metric.latency_p95_ms = u32::from_be_bytes(payload[12..16].try_into().unwrap());
-                metric.latency_p99_ms = u32::from_be_bytes(payload[16..20].try_into().unwrap());
-            }
+            metric.rtt_ms = report.rtt_ms;
+            metric.loss_pct = report.loss_pct;
+            metric.latency_p50_ms = report.latency_p50_ms;
+            metric.latency_p95_ms = report.latency_p95_ms;
+            metric.latency_p99_ms = report.latency_p99_ms;
         });
     }
 }
@@ -1068,12 +1074,11 @@ async fn request_keyframe(
     sequence: &AtomicU64,
     stream_id: u32,
     state: &Arc<Mutex<Inner>>,
-    last: &mut Instant,
+    limiter: &mut KeyframeRequestLimiter,
 ) {
-    if last.elapsed() < Duration::from_millis(250) {
+    if !limiter.allow() {
         return;
     }
-    *last = Instant::now();
     if let Ok(mut inner) = state.lock() {
         inner.status.keyframe_requests += 1;
     }

@@ -198,7 +198,7 @@ pub struct HardwareVideoEncoder {
     activation: IMFActivate,
     output_capacity: u32,
     events: Option<IMFMediaEventGenerator>,
-    codec_api: Option<ICodecAPI>,
+    codec_api: ICodecAPI,
     _runtime: MediaFoundation,
 }
 
@@ -226,21 +226,6 @@ impl HardwareVideoEncoder {
         let runtime = MediaFoundation::start()?;
         let (activation, transform, manager, asynchronous) = activate_for_device(device, codec)?;
         unsafe {
-            let codec_api: Option<ICodecAPI> = transform.cast().ok();
-            if let Some(codec) = &codec_api {
-                // Some vendor MFTs expose only a subset. Apply every low-latency
-                // control they accept and keep the hardware path available.
-                let _ = set_bool(codec, &CODECAPI_AVLowLatencyMode, true);
-                let _ = set_u32(codec, &CODECAPI_AVEncMPVDefaultBPictureCount, 0);
-                let _ = set_u32(codec, &CODECAPI_AVEncMPVGOPSize, fps.max(1));
-                let _ = set_u32(
-                    codec,
-                    &CODECAPI_AVEncCommonRateControlMode,
-                    eAVEncCommonRateControlMode_LowDelayVBR.0 as u32,
-                );
-                let _ = set_u32(codec, &CODECAPI_AVEncCommonMeanBitRate, bitrate);
-            }
-
             let output = media_type(subtype(codec), width, height, fps, Some(bitrate))?;
             let input = media_type(MFVideoFormat_NV12, width, height, fps, None)?;
             transform
@@ -249,6 +234,28 @@ impl HardwareVideoEncoder {
             transform
                 .SetInputType(0, &input, 0)
                 .map_err(|e| format!("Formato NV12: {e}"))?;
+            // A adaptacao de bitrate faz parte do contrato do transporte. Um
+            // codec sem ICodecAPI falhava apenas depois de iniciar a sessao.
+            let codec_api: ICodecAPI = transform.cast().map_err(|e| {
+                format!(
+                    "Encoder {} sem controles de baixa latencia: {e}",
+                    codec.name()
+                )
+            })?;
+            set_bool(&codec_api, &CODECAPI_AVLowLatencyMode, true)
+                .map_err(|e| format!("Baixa latencia {}: {e}", codec.name()))?;
+            set_u32(&codec_api, &CODECAPI_AVEncMPVDefaultBPictureCount, 0)
+                .map_err(|e| format!("B-frames {}: {e}", codec.name()))?;
+            set_u32(&codec_api, &CODECAPI_AVEncMPVGOPSize, fps.max(1))
+                .map_err(|e| format!("GOP {}: {e}", codec.name()))?;
+            set_u32(
+                &codec_api,
+                &CODECAPI_AVEncCommonRateControlMode,
+                eAVEncCommonRateControlMode_LowDelayVBR.0 as u32,
+            )
+            .map_err(|e| format!("Controle de taxa {}: {e}", codec.name()))?;
+            set_u32(&codec_api, &CODECAPI_AVEncCommonMeanBitRate, bitrate)
+                .map_err(|e| format!("Bitrate dinamico {}: {e}", codec.name()))?;
             transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
                 .and_then(|_| transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0))
@@ -278,19 +285,11 @@ impl HardwareVideoEncoder {
     }
 
     pub fn set_bitrate(&self, bitrate: u32) -> Result<(), String> {
-        let codec = self
-            .codec_api
-            .as_ref()
-            .ok_or("Encoder não expõe ICodecAPI")?;
-        unsafe { set_u32(codec, &CODECAPI_AVEncCommonMeanBitRate, bitrate) }
+        unsafe { set_u32(&self.codec_api, &CODECAPI_AVEncCommonMeanBitRate, bitrate) }
     }
 
     pub fn force_keyframe(&self) -> Result<(), String> {
-        let codec = self
-            .codec_api
-            .as_ref()
-            .ok_or("Encoder não expõe ICodecAPI")?;
-        unsafe { set_bool(codec, &CODECAPI_AVEncVideoForceKeyFrame, true) }
+        unsafe { set_bool(&self.codec_api, &CODECAPI_AVEncVideoForceKeyFrame, true) }
     }
 
     pub fn transform(&self) -> &IMFTransform {

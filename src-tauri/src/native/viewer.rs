@@ -322,7 +322,9 @@ unsafe fn create_device_on_adapter(
         let multithread: ID3D11Multithread = device
             .cast()
             .map_err(|e| format!("Proteção multithread D3D11 do espectador: {e}"))?;
-        let _ = multithread.SetMultithreadProtected(true);
+        if !multithread.SetMultithreadProtected(true).as_bool() {
+            return Err("Driver recusou a protecao multithread D3D11 do espectador".into());
+        }
         Ok((device, context))
     }
 }

@@ -57,11 +57,11 @@ fn congestion_stays_bounded_during_loss_burst_and_recovers_gradually() {
     for _ in 0..20 {
         controller.update(12.0, 220);
     }
-    assert_eq!(controller.update(12.0, 220), 800_000);
-    let after_one_good_window = controller.update(0.0, 25);
+    assert_eq!(controller.update(12.0, 220).target_bitrate_bps, 800_000);
+    let after_one_good_window = controller.update(0.0, 25).target_bitrate_bps;
     assert_eq!(after_one_good_window, 1_150_000);
     for _ in 0..200 {
         controller.update(0.0, 25);
     }
-    assert_eq!(controller.update(0.0, 25), 35_000_000);
+    assert_eq!(controller.update(0.0, 25).target_bitrate_bps, 35_000_000);
 }
