@@ -36,7 +36,7 @@ export interface EngineStatus {
   peerVerifications: Array<{ peerId: string; code: string }>;
   peerMetrics: Array<{ peerId: string; endpoint: string | null; phase: string; rttMs: number;
     lossPct: number; bitrateKbps: number; receivedFrames: number; droppedFrames: number;
-    latencyP50Ms: number; latencyP95Ms: number; latencyP99Ms: number }>;
+    latencyP50Ms: number; latencyP95Ms: number; latencyP99Ms: number; remoteControlAuthorized: boolean }>;
   lastError: string | null;
 }
 
@@ -74,8 +74,8 @@ export class NativeEngine {
   setCursorVisible(visible: boolean) {
     return invoke<void>("engine_set_cursor_visible", { visible });
   }
-  setRemoteControl(enabled: boolean) {
-    return invoke<void>("engine_set_remote_control", { enabled });
+  setRemoteControl(peerId: string, enabled: boolean) {
+    return invoke<void>("engine_set_remote_control", { peerId, enabled });
   }
   exportDiagnostic() { return invoke<string>("engine_export_diagnostic"); }
   preflight(role: StreamRole, captureTarget: CaptureTargetId | null = null, audioProcessId: number | null = null, decoderAdapterIndex: number | null = null) {

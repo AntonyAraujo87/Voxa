@@ -2,7 +2,7 @@ use super::{diagnostics, pake, telemetry};
 use crate::native::transport::{DatagramHub, HostTransportHandle, TransportControl};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 use tokio::net::UdpSocket;
@@ -170,6 +170,7 @@ pub struct PeerMetric {
     pub(super) latency_p50_ms: u32,
     pub(super) latency_p95_ms: u32,
     pub(super) latency_p99_ms: u32,
+    pub(super) remote_control_authorized: bool,
 }
 
 impl PeerMetric {
@@ -186,6 +187,7 @@ impl PeerMetric {
             latency_p50_ms: 0,
             latency_p95_ms: 0,
             latency_p99_ms: 0,
+            remote_control_authorized: false,
         }
     }
 }
@@ -333,6 +335,7 @@ pub(super) struct Inner {
     pub(super) signaling_max_peers: usize,
     pub(super) cursor_visible: bool,
     pub(super) remote_control_enabled: bool,
+    pub(super) remote_control_peers: HashSet<String>,
     pub(super) pake: pake::PakeManager,
     pub(super) diagnostics: diagnostics::DiagnosticRing,
     pub(super) telemetry: telemetry::TelemetryCollector,

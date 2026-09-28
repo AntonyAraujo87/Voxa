@@ -334,6 +334,7 @@ pub fn engine_set_cursor_visible(
 
 #[tauri::command]
 pub fn engine_set_remote_control(
+    peer_id: String,
     enabled: bool,
     engine: State<'_, NativeEngine>,
 ) -> Result<(), String> {
@@ -341,8 +342,20 @@ pub fn engine_set_remote_control(
     if inner.status.role != Some(StreamRole::Host) || inner.socket.is_none() {
         return Err("Inicie uma hospedagem antes de autorizar o controle remoto".into());
     }
-    inner.remote_control_enabled = enabled;
-    inner.status.remote_control_enabled = enabled;
+    if !inner.transports.contains_key(&peer_id) {
+        return Err("O espectador selecionado não está conectado".into());
+    }
+    if enabled {
+        inner.remote_control_peers.insert(peer_id.clone());
+    } else {
+        inner.remote_control_peers.remove(&peer_id);
+    }
+    inner.remote_control_enabled = !inner.remote_control_peers.is_empty();
+    inner.status.remote_control_enabled = inner.remote_control_enabled;
+    if let Some(metric) = inner.peer_metrics.get_mut(&peer_id) {
+        metric.remote_control_authorized = enabled;
+    }
+    refresh_peer_list(&mut inner);
     if !enabled {
         #[cfg(target_os = "windows")]
         input::release_all();
@@ -354,7 +367,7 @@ pub fn engine_set_remote_control(
         } else {
             "remote-control-revoked"
         },
-        serde_json::json!({ "visibleConsent": true }),
+        serde_json::json!({ "visibleConsent": true, "peerId": peer_id }),
     );
     Ok(())
 }
@@ -1004,6 +1017,9 @@ pub async fn engine_disconnect_peer(
         inner.verification_codes.remove(&peer_id);
         inner.peer_public_keys.remove(&peer_id);
         inner.peer_metrics.remove(&peer_id);
+        let revoked_control = inner.remote_control_peers.remove(&peer_id);
+        inner.remote_control_enabled = !inner.remote_control_peers.is_empty();
+        inner.status.remote_control_enabled = inner.remote_control_enabled;
         inner.pake.remove(&peer_id);
         let remaining = inner.transports.len();
         refresh_peer_list(&mut inner);
@@ -1028,6 +1044,10 @@ pub async fn engine_disconnect_peer(
                 "remainingPeers": remaining,
             }),
         );
+        #[cfg(target_os = "windows")]
+        if revoked_control {
+            input::release_all();
+        }
         (control, role, remaining)
     };
     if let Some(control) = control {

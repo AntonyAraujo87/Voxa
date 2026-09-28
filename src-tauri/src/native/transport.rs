@@ -681,7 +681,11 @@ pub async fn spawn_receiver(
                                 }
                             }
                             Kind::Input if role == StreamRole::Host => {
-                                input::inject_if_authorized(&packet.payload, &recv_state);
+                                input::inject_if_authorized(
+                                    &recv_peer_id,
+                                    &packet.payload,
+                                    &recv_state,
+                                );
                             }
                             Kind::Input => {}
                             Kind::Pong => {}

@@ -355,13 +355,13 @@ export default function App() {
     }
   }
 
-  async function toggleRemoteControl() {
-    const next = !status.remoteControlEnabled;
-    if (next && !window.confirm("Permitir que o espectador controle teclado e mouse deste computador? Você pode revogar a qualquer momento.")) return;
+  async function toggleRemoteControl(peerId: string, currentlyAuthorized: boolean) {
+    const next = !currentlyAuthorized;
+    if (next && !window.confirm("Permitir que este espectador controle teclado e mouse deste computador? Você pode revogar a qualquer momento.")) return;
     try {
-      await engine.setRemoteControl(next);
+      await engine.setRemoteControl(peerId, next);
       setStatus(await engine.status());
-      setMessage(next ? "Controle remoto autorizado pelo host" : "Controle remoto revogado imediatamente");
+      setMessage(next ? "Controle remoto autorizado somente para este espectador" : "Controle remoto deste espectador revogado imediatamente");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
@@ -423,9 +423,6 @@ export default function App() {
           </button>}
           {role === "host" && <button className="secondary" type="button" onClick={() => void clearTrustedPeers()} disabled={busy || active}>
             Remover computadores confiáveis
-          </button>}
-          {role === "host" && active && <button className={status.remoteControlEnabled ? "primary danger" : "secondary"} type="button" onClick={() => void toggleRemoteControl()} disabled={busy}>
-            {status.remoteControlEnabled ? "Revogar controle remoto" : "Permitir teclado e mouse remotos"}
           </button>}
           {role === "host" && <label>Áudio transmitido
             <select value={audioProcessId} onChange={(event) => void selectAudioSource(Number(event.target.value))} disabled={busy}>
@@ -499,6 +496,9 @@ export default function App() {
             <strong>Espectador {index + 1}</strong>
             <span>{peer.phase} · {peer.rttMs} ms · {peer.lossPct.toFixed(1)}% · {peer.bitrateKbps} kbps · P95 {peer.latencyP95Ms || "—"} ms</span>
             <small title={peer.endpoint ?? undefined}>{peer.endpoint ?? "Rota em negociação"}</small>
+            <button className={peer.remoteControlAuthorized ? "primary danger" : "secondary"} type="button" onClick={() => void toggleRemoteControl(peer.peerId, peer.remoteControlAuthorized)} disabled={busy}>
+              {peer.remoteControlAuthorized ? "Revogar teclado e mouse" : "Permitir teclado e mouse"}
+            </button>
           </div>)}
         </div>}
         {(status.verificationCode || status.peerVerifications.length > 0) && <small>Compare cada Código E2E com o espectador correspondente antes de confiar na sessão.</small>}

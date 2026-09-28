@@ -2,7 +2,7 @@
 //!
 //! The viewer samples only while the native stream window owns focus. The host
 //! still authenticates every datagram and discards input unless the local user
-//! has visibly enabled `remote_control_enabled`.
+//! has visibly authorized that exact peer.
 
 use super::{transport::TransportHandle, Inner};
 use std::{
@@ -173,12 +173,8 @@ pub(super) fn spawn_capture(
     })
 }
 
-pub(super) fn inject_if_authorized(payload: &[u8], state: &Arc<Mutex<Inner>>) {
-    let authorized = state
-        .lock()
-        .map(|inner| inner.remote_control_enabled)
-        .unwrap_or(false);
-    if !authorized {
+pub(super) fn inject_if_authorized(peer_id: &str, payload: &[u8], state: &Arc<Mutex<Inner>>) {
+    if !is_authorized_peer(peer_id, state) {
         return;
     }
     let Some(event) = RemoteInput::decode(payload) else {
@@ -220,6 +216,13 @@ pub(super) fn inject_if_authorized(payload: &[u8], state: &Arc<Mutex<Inner>>) {
     }
 }
 
+fn is_authorized_peer(peer_id: &str, state: &Arc<Mutex<Inner>>) -> bool {
+    state
+        .lock()
+        .map(|inner| inner.remote_control_peers.contains(peer_id))
+        .unwrap_or(false)
+}
+
 pub(super) fn release_all() {
     unsafe {
         for vk in 8u8..=254 {
@@ -248,5 +251,18 @@ mod tests {
         let mut invalid = event.encode();
         invalid[0] = 9;
         assert!(RemoteInput::decode(&invalid).is_none());
+    }
+
+    #[test]
+    fn consent_is_scoped_to_the_exact_peer() {
+        let state = Arc::new(Mutex::new(Inner::default()));
+        assert!(!is_authorized_peer("viewer-a", &state));
+        state
+            .lock()
+            .unwrap()
+            .remote_control_peers
+            .insert("viewer-a".into());
+        assert!(is_authorized_peer("viewer-a", &state));
+        assert!(!is_authorized_peer("viewer-b", &state));
     }
 }
