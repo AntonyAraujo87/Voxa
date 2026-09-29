@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { Admission } from "../lib/admission.js";
-import { clientIp, observedClientIp } from "../lib/security.js";
+import { clientIp, observedClientIp, originAllowed, originPolicy } from "../lib/security.js";
 import { createHttpApp } from "../lib/http.js";
 import { spawn } from "node:child_process";
 
@@ -52,6 +52,24 @@ test("HTTP real responde 429 no limite e health nao revela ocupacao", async () =
     assert.equal(limited.status, 429);
     assert.ok(limited.headers.get("retry-after"));
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
+test("CORS aceita somente o WebView autorizado e clientes sem Origin", () => {
+  const policy = originPolicy("http://tauri.localhost,http://localhost:1420");
+  const check = (origin) => new Promise((resolve) => policy(origin, (error, accepted) => resolve({ error, accepted })));
+  return Promise.all([
+    check("http://tauri.localhost").then(({ error, accepted }) => { assert.equal(error, null); assert.equal(accepted, true); }),
+    check(undefined).then(({ error, accepted }) => { assert.equal(error, null); assert.equal(accepted, true); }),
+    check("https://site-malicioso.example").then(({ error, accepted }) => { assert.match(error.message, /bloqueada/); assert.equal(accepted, false); }),
+  ]);
+});
+
+test("CORS legado com asterisco migra para a lista segura", async () => {
+  const policy = originPolicy("*");
+  const check = (origin) => new Promise((resolve) => policy(origin, (_error, accepted) => resolve(accepted)));
+  assert.equal(await check("http://tauri.localhost"), true);
+  assert.equal(await check("https://qualquer-site.example"), false);
+  assert.equal(originAllowed("*", "https://qualquer-site.example"), false);
 });
 
 test("health informa relay sem revelar endpoint ou ocupacao", async () => {

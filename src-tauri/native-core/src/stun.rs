@@ -8,40 +8,64 @@ const MAGIC: u32 = 0x2112_A442;
 const ATTEMPT_TIMEOUT: Duration = Duration::from_millis(900);
 
 pub fn local_endpoint(port: u16) -> Result<SocketAddr, String> {
-    let probe = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
-    probe.connect("8.8.8.8:80").map_err(|e| e.to_string())?;
-    let ip = probe.local_addr().map_err(|e| e.to_string())?.ip();
-    Ok(SocketAddr::new(ip, port))
+    let candidates = [
+        ("0.0.0.0:0", "8.8.8.8:80"),
+        ("[::]:0", "[2001:4860:4860::8888]:80"),
+    ];
+    let mut failures = Vec::new();
+    for (bind, target) in candidates {
+        let result = (|| {
+            let probe = std::net::UdpSocket::bind(bind)?;
+            probe.connect(target)?;
+            probe.local_addr()
+        })();
+        match result {
+            Ok(local) if !local.ip().is_unspecified() => {
+                return Ok(SocketAddr::new(local.ip(), port));
+            }
+            Ok(_) => failures.push(format!("{target}: endereco local indefinido")),
+            Err(error) => failures.push(format!("{target}: {error}")),
+        }
+    }
+    Err(format!(
+        "Nenhuma interface IPv4/IPv6 com rota externa ({})",
+        failures.join("; ")
+    ))
 }
 
 pub async fn discover(socket: &UdpSocket, server: &str) -> Result<SocketAddr, String> {
-    let target = lookup_host(server)
+    let targets = lookup_host(server)
         .await
         .map_err(|e| e.to_string())?
-        .next()
-        .ok_or("Servidor STUN sem endereço IP")?;
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Err("Servidor STUN sem endereço IP".into());
+    }
     let mut last_error = "STUN expirou".to_string();
-    for _ in 0..2 {
-        let mut transaction = [0u8; 12];
-        getrandom::fill(&mut transaction).map_err(|e| format!("Entropia indisponível: {e}"))?;
-        let mut request = [0u8; 20];
-        request[..2].copy_from_slice(&1u16.to_be_bytes());
-        request[4..8].copy_from_slice(&MAGIC.to_be_bytes());
-        request[8..].copy_from_slice(&transaction);
-        socket
-            .send_to(&request, target)
-            .await
-            .map_err(|e| e.to_string())?;
-        let deadline = Instant::now() + ATTEMPT_TIMEOUT;
-        let mut response = [0u8; 1024];
-        loop {
-            let Ok(received) = timeout_at(deadline, socket.recv_from(&mut response)).await else {
+    for target in targets {
+        for _ in 0..2 {
+            let mut transaction = [0u8; 12];
+            getrandom::fill(&mut transaction).map_err(|e| format!("Entropia indisponível: {e}"))?;
+            let mut request = [0u8; 20];
+            request[..2].copy_from_slice(&1u16.to_be_bytes());
+            request[4..8].copy_from_slice(&MAGIC.to_be_bytes());
+            request[8..].copy_from_slice(&transaction);
+            if let Err(error) = socket.send_to(&request, target).await {
+                last_error = format!("{target}: {error}");
                 break;
-            };
-            let (len, _) = received.map_err(|e| e.to_string())?;
-            match parse(&response[..len], transaction) {
-                Ok(endpoint) => return Ok(endpoint),
-                Err(error) => last_error = error,
+            }
+            let deadline = Instant::now() + ATTEMPT_TIMEOUT;
+            let mut response = [0u8; 1024];
+            loop {
+                let Ok(received) = timeout_at(deadline, socket.recv_from(&mut response)).await
+                else {
+                    break;
+                };
+                let (len, _) = received.map_err(|e| e.to_string())?;
+                match parse(&response[..len], transaction) {
+                    Ok(endpoint) => return Ok(endpoint),
+                    Err(error) => last_error = error,
+                }
             }
         }
     }

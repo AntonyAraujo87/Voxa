@@ -16,6 +16,6 @@ services:
       - key: TRUST_PROXY
         value: "1"  # somente atras do proxy confiavel do Render
       - key: ORIGIN
-        value: "*"
+        value: "http://tauri.localhost"
       - key: VOXA_MAX_VIEWERS
         value: "4"

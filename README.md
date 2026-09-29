@@ -34,7 +34,7 @@ mapeamento descoberto por STUN e perfuração UDP.
 - Painel mínimo de hospedar/conectar e telemetria.
 - Matchmaking autenticado, limitado por IP e sem perfis/chat.
 - Socket UDP Tokio, fallback entre Cloudflare e dois servidores Google STUN e hole punching.
-- X25519 efêmero entre os computadores; o signaling nunca cria nem recebe a chave de mídia.
+- Identidade X25519 protegida pelo Windows e segredo de mídia novo a cada SPAKE2; o signaling nunca cria nem recebe a chave de mídia.
 - Relay UDP cego opcional para NAT simétrico/CGNAT, disputado em paralelo com a rota direta.
 - Túnel autenticado, antirreplay, heartbeat/RTT, fragmentação e keyframe request.
 - Seleção explícita de monitor/GPU; captura DXGI, conversão BGRA→NV12, escala e entrada no encoder permanecem na GPU.

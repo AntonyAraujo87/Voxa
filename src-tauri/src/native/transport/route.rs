@@ -18,6 +18,12 @@ pub(super) struct Route {
 }
 
 impl Route {
+    pub(super) fn accepts(&self, source: SocketAddr) -> bool {
+        let source = canonical(source);
+        source == canonical(self.direct)
+            || self.relays.iter().any(|relay| canonical(relay.0) == source)
+    }
+
     pub(super) async fn send(&self, bytes: &[u8]) -> Result<(), String> {
         match self.selected.load(Ordering::Acquire) {
             1 => self
@@ -110,5 +116,19 @@ mod tests {
         let mapped: SocketAddr = "[::ffff:203.0.113.7]:3479".parse().unwrap();
         let plain: SocketAddr = "203.0.113.7:3479".parse().unwrap();
         assert_eq!(canonical(mapped), plain);
+    }
+
+    #[tokio::test]
+    async fn rejects_datagrams_from_unannounced_sources_before_decryption() {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let route = Route {
+            socket,
+            direct: "203.0.113.7:4000".parse().unwrap(),
+            relays: vec![("198.51.100.8:3479".parse().unwrap(), 1, 2, 0)],
+            selected: AtomicU32::new(0),
+        };
+        assert!(route.accepts("203.0.113.7:4000".parse().unwrap()));
+        assert!(route.accepts("198.51.100.8:3479".parse().unwrap()));
+        assert!(!route.accepts("192.0.2.9:9999".parse().unwrap()));
     }
 }

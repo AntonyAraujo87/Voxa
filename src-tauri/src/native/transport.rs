@@ -453,8 +453,17 @@ pub async fn spawn_receiver(
             if last_authenticated.elapsed() >= Duration::from_secs(2) {
                 recv_route.reset();
                 if let Ok(mut inner) = recv_state.lock() {
-                    inner.status.set_phase(SessionPhase::Recovering);
-                    if recv_route.relays.is_empty()
+                    // Um espectador isolado nao deve colocar a sessao inteira
+                    // do host em recuperacao nem reduzir os demais pares.
+                    // O espectador e quem renova sua rota; uma troca de rede
+                    // do host tambem derruba o signaling e aciona o rejoin.
+                    if role == StreamRole::Viewer {
+                        inner.status.set_phase(SessionPhase::Recovering);
+                    }
+                    // Relay configurado nao significa relay disponivel. Se
+                    // nenhuma rota autenticou por oito segundos, refazer o
+                    // matchmaking renova endpoint, chaves e alocacao do relay.
+                    if role == StreamRole::Viewer
                         && last_authenticated.elapsed() >= Duration::from_secs(8)
                     {
                         inner.status.rejoin_required = true;
@@ -481,6 +490,12 @@ pub async fn spawn_receiver(
             }
             match time::timeout(Duration::from_millis(20), datagrams.recv()).await {
                 Ok(Ok((buffer, source))) => {
+                    // Descarta trafego de origem que o signaling nao anunciou
+                    // antes de gastar CPU com ChaCha20-Poly1305. Isso limita a
+                    // amplificacao de um flood UDP contra varios espectadores.
+                    if !recv_route.accepts(source) {
+                        continue;
+                    }
                     if let Ok(packet) = protocol::open(&receive_key, &buffer) {
                         if !replay.accept(packet.meta.stream_id, packet.meta.sequence) {
                             continue;

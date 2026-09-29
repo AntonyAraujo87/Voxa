@@ -26,11 +26,13 @@ import {
   RateLimiter,
   clientIp,
   observedClientIp,
+  originAllowed,
+  originPolicy,
   requestIp,
 } from "./lib/security.js";
 
 const PORT = Number(process.env.PORT || 3001);
-const ORIGIN = process.env.ORIGIN || "*";
+const ORIGIN = process.env.ORIGIN || "http://tauri.localhost,http://localhost:1420";
 const RELAY_PORT = Number(process.env.VOXA_RELAY_PORT || 0);
 const RELAY_BIND = process.env.VOXA_RELAY_BIND || "0.0.0.0";
 const RELAY_PUBLIC_ENDPOINTS = (process.env.VOXA_RELAY_PUBLIC_ENDPOINTS || process.env.VOXA_RELAY_PUBLIC_ENDPOINT || "")
@@ -81,6 +83,7 @@ const reservations = new WeakMap();
 
 const io = new Server(httpServer, {
   allowRequest: (req, callback) => {
+    if (!originAllowed(ORIGIN, req.headers.origin)) return callback("origem bloqueada", false);
     const ip = requestIp(req);
     if (!limiter.allow(`transport:${ip}`, 60000, MAX_HANDSHAKES_PER_MIN)) return callback("muitas tentativas", false);
     const reservation = admission.reserve(ip);
@@ -88,7 +91,7 @@ const io = new Server(httpServer, {
     reservations.set(req, reservation);
     callback(null, true);
   },
-  cors: { origin: ORIGIN, methods: ["GET", "POST"] },
+  cors: { origin: originPolicy(ORIGIN), methods: ["GET", "POST"] },
   // Handshake e mensagens curtas: websocket direto, sem polling.
   transports: ["websocket"],
   perMessageDeflate: false,

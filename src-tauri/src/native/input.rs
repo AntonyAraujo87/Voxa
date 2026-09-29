@@ -6,7 +6,7 @@
 
 use super::{transport::TransportHandle, Inner};
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -15,9 +15,10 @@ use windows::Win32::{
     Foundation::{HWND, POINT},
     UI::{
         Input::KeyboardAndMouse::{
-            keybd_event, mouse_event, GetAsyncKeyState, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
-            MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-            MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+            GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+            KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+            MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+            MOUSEEVENTF_RIGHTUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
         },
         WindowsAndMessaging::{GetCursorPos, GetForegroundWindow},
     },
@@ -36,6 +37,29 @@ pub(super) struct RemoteInput {
     down: bool,
     dx: i16,
     dy: i16,
+}
+
+#[derive(Default)]
+pub(super) struct RemoteInputState {
+    keys: HashSet<u8>,
+    buttons: HashSet<u8>,
+}
+
+impl RemoteInputState {
+    fn record(&mut self, event: RemoteInput) {
+        let target = match event.kind {
+            KEYBOARD => Some(&mut self.keys),
+            MOUSE_BUTTON => Some(&mut self.buttons),
+            _ => None,
+        };
+        if let Some(target) = target {
+            if event.down {
+                target.insert(event.code);
+            } else {
+                target.remove(&event.code);
+            }
+        }
+    }
 }
 
 impl RemoteInput {
@@ -174,48 +198,81 @@ pub(super) fn spawn_capture(
 }
 
 pub(super) fn inject_if_authorized(peer_id: &str, payload: &[u8], state: &Arc<Mutex<Inner>>) {
-    if !is_authorized_peer(peer_id, state) {
-        return;
-    }
     let Some(event) = RemoteInput::decode(payload) else {
         return;
     };
-    unsafe {
-        match event.kind {
-            MOUSE_MOVE => mouse_event(
-                MOUSEEVENTF_MOVE,
-                i32::from(event.dx),
-                i32::from(event.dy),
-                0,
-                0,
-            ),
-            MOUSE_BUTTON => {
-                let flag = match (event.code, event.down) {
-                    (1, true) => MOUSEEVENTF_LEFTDOWN,
-                    (1, false) => MOUSEEVENTF_LEFTUP,
-                    (2, true) => MOUSEEVENTF_RIGHTDOWN,
-                    (2, false) => MOUSEEVENTF_RIGHTUP,
-                    (4, true) => MOUSEEVENTF_MIDDLEDOWN,
-                    (4, false) => MOUSEEVENTF_MIDDLEUP,
-                    _ => return,
-                };
-                mouse_event(flag, 0, 0, 0, 0);
-            }
-            KEYBOARD => keybd_event(
-                event.code,
-                0,
-                if event.down {
-                    KEYBD_EVENT_FLAGS(0)
-                } else {
-                    KEYEVENTF_KEYUP
-                },
-                0,
-            ),
-            _ => {}
+    let Ok(mut inner) = state.lock() else {
+        return;
+    };
+    if !inner.remote_control_peers.contains(peer_id) || !inject(event) {
+        return;
+    }
+    // Injetar e registrar sob a mesma trava impede que uma revogacao libere
+    // as teclas e este pacote as pressione novamente logo depois.
+    inner
+        .remote_input_states
+        .entry(peer_id.to_owned())
+        .or_default()
+        .record(event);
+}
+
+fn inject(event: RemoteInput) -> bool {
+    match event.kind {
+        MOUSE_MOVE => send_mouse(MOUSEEVENTF_MOVE, i32::from(event.dx), i32::from(event.dy)),
+        MOUSE_BUTTON => {
+            let flag = match (event.code, event.down) {
+                (1, true) => MOUSEEVENTF_LEFTDOWN,
+                (1, false) => MOUSEEVENTF_LEFTUP,
+                (2, true) => MOUSEEVENTF_RIGHTDOWN,
+                (2, false) => MOUSEEVENTF_RIGHTUP,
+                (4, true) => MOUSEEVENTF_MIDDLEDOWN,
+                (4, false) => MOUSEEVENTF_MIDDLEUP,
+                _ => return false,
+            };
+            send_mouse(flag, 0, 0)
         }
+        KEYBOARD => send_keyboard(
+            event.code,
+            if event.down {
+                KEYBD_EVENT_FLAGS(0)
+            } else {
+                KEYEVENTF_KEYUP
+            },
+        ),
+        _ => false,
     }
 }
 
+fn send_keyboard(code: u8, flags: KEYBD_EVENT_FLAGS) -> bool {
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(u16::from(code)),
+                dwFlags: flags,
+                ..Default::default()
+            },
+        },
+    };
+    unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 1 }
+}
+
+fn send_mouse(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32) -> bool {
+    let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx,
+                dy,
+                dwFlags: flags,
+                ..Default::default()
+            },
+        },
+    };
+    unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 1 }
+}
+
+#[cfg(test)]
 fn is_authorized_peer(peer_id: &str, state: &Arc<Mutex<Inner>>) -> bool {
     state
         .lock()
@@ -223,14 +280,35 @@ fn is_authorized_peer(peer_id: &str, state: &Arc<Mutex<Inner>>) -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn release_all() {
-    unsafe {
-        for vk in 8u8..=254 {
-            keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
-        }
-        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-        mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
-        mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0);
+pub(super) fn release_peer(inner: &mut Inner, peer_id: &str) {
+    if let Some(pressed) = inner.remote_input_states.remove(peer_id) {
+        release(pressed);
+    }
+}
+
+pub(super) fn release_all(inner: &mut Inner) {
+    let pressed = inner
+        .remote_input_states
+        .drain()
+        .map(|(_, state)| state)
+        .collect::<Vec<_>>();
+    for state in pressed {
+        release(state);
+    }
+}
+
+fn release(pressed: RemoteInputState) {
+    for vk in pressed.keys {
+        let _ = send_keyboard(vk, KEYEVENTF_KEYUP);
+    }
+    for button in pressed.buttons {
+        let flag = match button {
+            1 => MOUSEEVENTF_LEFTUP,
+            2 => MOUSEEVENTF_RIGHTUP,
+            4 => MOUSEEVENTF_MIDDLEUP,
+            _ => continue,
+        };
+        let _ = send_mouse(flag, 0, 0);
     }
 }
 
@@ -264,5 +342,33 @@ mod tests {
             .insert("viewer-a".into());
         assert!(is_authorized_peer("viewer-a", &state));
         assert!(!is_authorized_peer("viewer-b", &state));
+    }
+
+    #[test]
+    fn tracks_only_inputs_that_each_peer_actually_pressed() {
+        let mut pressed = RemoteInputState::default();
+        pressed.record(RemoteInput {
+            kind: KEYBOARD,
+            code: 65,
+            down: true,
+            dx: 0,
+            dy: 0,
+        });
+        pressed.record(RemoteInput {
+            kind: MOUSE_BUTTON,
+            code: 1,
+            down: true,
+            dx: 0,
+            dy: 0,
+        });
+        pressed.record(RemoteInput {
+            kind: KEYBOARD,
+            code: 65,
+            down: false,
+            dx: 0,
+            dy: 0,
+        });
+        assert!(pressed.keys.is_empty());
+        assert_eq!(pressed.buttons, HashSet::from([1]));
     }
 }

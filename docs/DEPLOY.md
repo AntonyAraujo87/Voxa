@@ -12,7 +12,7 @@ Variáveis necessárias:
 | Variável | Uso |
 |---|---|
 | `TRUST_PROXY=1` | Usa o último IP de `X-Forwarded-For` atrás do Render |
-| `ORIGIN` | Origem permitida para o Socket.IO |
+| `ORIGIN` | Origens permitidas para o Socket.IO, separadas por vírgula. Em produção: `http://tauri.localhost` |
 | `VITE_SIGNALING_URL` | URL WSS gravada no painel durante o build |
 | `VOXA_RELAY_PUBLIC_ENDPOINT` | `IP:3479` da VM UDP; vazio desativa o fallback |
 | `VOXA_RELAY_PUBLIC_ENDPOINTS` | Lista separada por vírgulas (`IP:3479,[IPv6]:3479`) para anunciar vários relays; substitui a variável singular |
@@ -74,4 +74,4 @@ Secrets do GitHub:
 | `TAURI_SIGNING_PRIVATE_KEY` | Assinatura do atualizador |
 | `VITE_SIGNALING_URL` | Matchmaking WSS |
 
-Supabase, TURN, perfis, voz, chat e anexos não fazem parte do produto 0.7.
+Supabase, TURN, perfis, voz, chat e anexos não fazem parte do produto 0.8.

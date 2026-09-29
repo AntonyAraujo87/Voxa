@@ -16,7 +16,7 @@ Esta versão altera o protocolo nativo para v2 e é incompatível com clientes 0
 4. O espectador decodifica em superfície D3D11 e apresenta em janela nativa separada, com swapchain flip-discard, letterbox, resize, fullscreen e recuperação após `device lost`.
 5. Áudio usa WASAPI loopback a 48 kHz estéreo e Opus de baixa latência. O usuário pode capturar todo o sistema ou somente uma aplicação com sessão ativa; o modo por processo evita devolver Discord e o próprio Voxa ao espectador.
 6. A mídia usa UDP assíncrono. Datagramas cifrados respeitam MTU interno de 1.178 bytes, remontagem limitada, antirreplay, expiração de frames e pedido de keyframe limitado.
-7. X25519 cria chaves de mídia independentes por par. SPAKE2 P-256 e Argon2id vinculam a senha da sala sem enviar senha, hash ou prova reutilizável ao servidor. ChaCha20-Poly1305 cifra e autentica cada datagrama.
+7. Uma identidade X25519 protegida pelo Windows, combinada ao resultado SPAKE2 aleatório da sessão, cria chaves de mídia novas e independentes por par. SPAKE2 P-256 e Argon2id vinculam a senha da sala sem enviar senha, hash ou prova reutilizável ao servidor. ChaCha20-Poly1305 cifra e autentica cada datagrama.
 8. A corrida de rota tenta hole punching direto e relay VRLY cego. IPv4 e IPv6 são aceitos; o relay encaminha bytes cifrados sem conhecer a chave.
 
 ## Implementações concluídas desde 0.7.5
@@ -38,7 +38,7 @@ Esta versão altera o protocolo nativo para v2 e é incompatível com clientes 0
 ## Qualidade, segurança e validações executadas
 
 - Frontend TypeScript e bundle Vite: aprovados.
-- Servidor, segurança, matchmaking, relay e scripts: 37 de 37 testes aprovados.
+- Servidor, segurança, matchmaking, relay e scripts: 39 de 39 testes aprovados.
 - Núcleo Rust: 31 de 31 testes aprovados.
 - `cargo check --locked`: aprovado para o backend Windows completo.
 - Clippy em todos os alvos com `-D warnings`: aprovado.
@@ -75,4 +75,70 @@ Esta versão altera o protocolo nativo para v2 e é incompatível com clientes 0
 
 ## Critério de publicação
 
-O código está pronto para gerar um draft 0.8.0. Antes de marcar a versão como estável, o workflow de release deve concluir build, assinatura, inspeção do PE, instalação, update e desinstalação na VM Windows. A validação física descrita acima continua sendo o critério para declarar compatibilidade de GPU/rede, não um requisito que possa ser falsamente substituído por testes automatizados.
+O release 0.8.0 já foi publicado depois de o workflow concluir build, assinatura,
+inspeção do PE, instalação, update e desinstalação na VM Windows. Correções desta
+reauditoria seguem para o código principal e para o deploy do signaling, mas uma
+nova tag só deve ser criada depois do resumo e da autorização do proprietário. A
+validação física descrita acima continua sendo o critério para declarar
+compatibilidade de GPU/rede, não um requisito que possa ser falsamente
+substituído por testes automatizados.
+
+## Reauditoria pós-release de 29/09/2026
+
+A revisão integral da versão publicada encontrou e corrigiu sete defeitos que os
+testes anteriores não reproduziam:
+
+1. Uma confirmação SPAKE2 podia chegar antes do `share` remoto e ser descartada,
+   deixando a sessão presa em autenticação. Confirmações antecipadas agora são
+   armazenadas por par e consumidas depois que a chave compartilhada existe.
+2. Revogar um espectador liberava todas as teclas do Windows, inclusive entradas
+   de outro espectador. O host agora registra somente teclas e botões efetivamente
+   injetados por cada par e libera apenas os pertencentes ao par revogado. A
+   autorização, a chamada a `SendInput` e o registro foram tornados atômicos para
+   impedir que um pacote concorrente pressione a tecla depois da revogação.
+3. A injeção usava `keybd_event` e `mouse_event`, APIs substituídas pela Microsoft.
+   O caminho passou a usar `SendInput`.
+4. Datagramas com o magic correto vindos de qualquer IP chegavam ao ChaCha20 de
+   todos os pares. Origens não anunciadas pelo signaling agora são descartadas
+   antes da autenticação criptográfica, reduzindo amplificação de flood UDP.
+5. Uma rota com relay configurado nunca pedia novo matchmaking se todas as rotas
+   ficassem oito segundos sem autenticar. O espectador agora renova endpoint,
+   segredo da sessão e alocação de relay também nesse cenário; uma falha isolada
+   não muda o estado global dos demais espectadores do host.
+6. Uma falha rara entre `AcquireNextFrame` e o cast da textura podia deixar o
+   frame DXGI preso. Um lease RAII garante exatamente um `ReleaseFrame` em todos
+   os retornos.
+7. A descoberta STUN usava somente o primeiro endereço DNS e a rota LAN local
+   era exclusivamente IPv4. Agora todos os endereços resolvidos são tentados e
+   existe fallback de interface local IPv6.
+
+O signaling também passou a validar a origem no próprio `allowRequest` do
+WebSocket, pois cabeçalhos CORS não protegem upgrade WebSocket. Configurações
+legadas `ORIGIN=*` são convertidas para `http://tauri.localhost` e o localhost
+de desenvolvimento, preservando o auto-deploy sem manter acesso de qualquer site.
+
+Após as correções: build TypeScript/Vite aprovado; 39/39 testes Node aprovados;
+31/31 testes do núcleo Rust aprovados; formatação e `git diff --check` aprovados;
+Clippy de todos os alvos com `-D warnings` aprovado; npm audit do app e servidor
+com zero vulnerabilidades; RustSec sem vulnerabilidades exploráveis. O release
+0.8.0 e seu `latest.json` possuem EXE/MSI e assinaturas, e o deploy respondeu
+HTTP 200 por TLS 1.3 com relay anunciado.
+
+### Pendências que exigem hardware ou mudança arquitetural
+
+- Validar dois PCs, CGNAT, suspensão e troca Wi-Fi/cabo. Mocks não certificam
+  driver, firewall, NAT doméstico, áudio do jogo nem relay público sob carga.
+- O cursor transmitido leva posição e visibilidade, mas ainda desenha a seta
+  padrão. Suporte correto a cursores coloridos/animados exige transportar a
+  forma obtida por `GetFramePointerShape` e compô-la na textura D3D11.
+- O controle de mouse usa deltas da posição do cursor. Jogos que prendem o mouse
+  ou usam Raw Input precisam de captura relativa nativa e tratamento de teclas
+  estendidas; gamepad continua dependendo de driver virtual assinado.
+- Os MFTs assíncronos ainda consultam eventos a cada 1 ms para manter timeout e
+  recuperação de driver. Trocar isso por `BeginGetEvent` reduz CPU ociosa, mas
+  precisa de HIL para garantir cancelamento seguro em drivers AMD/NVIDIA/Intel.
+- O relay único em São Paulo continua sendo ponto único de falha. O protocolo já
+  aceita até quatro candidatos; a conta Oracle não possui outra capacidade
+  Always Free sem risco de cobrança.
+- O ponteiro é composto após a apresentação por GDI. A composição definitiva
+  deve ocorrer no backbuffer D3D11 antes do `Present` para eliminar flicker.

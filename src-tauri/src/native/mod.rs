@@ -270,6 +270,8 @@ pub fn engine_switch_capture(
         let codecs = protocol::VideoCodec::mask(available.iter().copied());
         let encoder_capacity =
             encoder::hardware_encoder_capacity_for_device(&capture.device, &available, 4).max(1);
+        let hdr10_capable =
+            capture.hdr10.is_some() && encoder::hardware_hdr10_encoder_available(&capture.device);
         if codecs == 0 {
             return Err("A GPU do novo monitor não possui encoder compatível".into());
         }
@@ -289,6 +291,7 @@ pub fn engine_switch_capture(
         }
         inner.capture_target = Some(capture_target);
         inner.supported_codecs = codecs;
+        inner.hdr10_capable = hdr10_capable;
         inner.hardware_encoder_capacity = encoder_capacity;
         inner.host_fanout.set_supported_codecs(codecs);
         inner.status.capture = "switching-monitor";
@@ -358,7 +361,7 @@ pub fn engine_set_remote_control(
     refresh_peer_list(&mut inner);
     if !enabled {
         #[cfg(target_os = "windows")]
-        input::release_all();
+        input::release_peer(&mut inner, &peer_id);
     }
     inner.diagnostics.record(
         "security",
@@ -1057,7 +1060,7 @@ pub async fn engine_disconnect_peer(
         );
         #[cfg(target_os = "windows")]
         if revoked_control {
-            input::release_all();
+            input::release_peer(&mut inner, &peer_id);
         }
         (control, role, remaining)
     };
@@ -1139,7 +1142,7 @@ pub async fn engine_stop(app: AppHandle, engine: State<'_, NativeEngine>) -> Res
         let diagnostics = inner.diagnostics.clone();
         #[cfg(target_os = "windows")]
         if inner.remote_control_enabled {
-            input::release_all();
+            input::release_all(&mut inner);
         }
         *inner = Inner::default();
         inner.diagnostics = diagnostics;

@@ -50,14 +50,17 @@ pub struct GpuFrame<'a> {
     pub cursor_y: i32,
     pub source_width: u32,
     pub source_height: u32,
-    duplication: &'a IDXGIOutputDuplication,
+    _lease: FrameLease<'a>,
 }
 
 #[cfg(target_os = "windows")]
-impl Drop for GpuFrame<'_> {
+struct FrameLease<'a>(&'a IDXGIOutputDuplication);
+
+#[cfg(target_os = "windows")]
+impl Drop for FrameLease<'_> {
     fn drop(&mut self) {
         unsafe {
-            let _ = self.duplication.ReleaseFrame();
+            let _ = self.0.ReleaseFrame();
         }
     }
 }
@@ -150,6 +153,10 @@ impl DxgiCapture {
                 .AcquireNextFrame(timeout_ms, &mut info, &mut resource)
             {
                 Ok(()) => {
+                    // A duplicacao exige exatamente um ReleaseFrame para toda
+                    // aquisicao bem-sucedida, inclusive quando o recurso veio
+                    // ausente ou o cast falha. O lease cobre todos os retornos.
+                    let lease = FrameLease(&self.duplication);
                     let texture = resource
                         .ok_or("DXGI não retornou textura")?
                         .cast::<ID3D11Texture2D>()
@@ -161,7 +168,7 @@ impl DxgiCapture {
                         cursor_y: info.PointerPosition.Position.y - self.origin_y,
                         source_width: self.width,
                         source_height: self.height,
-                        duplication: &self.duplication,
+                        _lease: lease,
                     }))
                 }
                 Err(error) if error.code().0 as u32 == 0x887A0027 => Ok(None),

@@ -72,6 +72,25 @@ export function clientIp(socket) {
 
 export const requestIp = (req) => clientIp({ handshake: { address: req.socket.remoteAddress, headers: req.headers } });
 
+/** Politica CORS estrita para o WebView do Tauri e o servidor local de dev. */
+export function originPolicy(value = "http://tauri.localhost,http://localhost:1420") {
+  return (origin, callback) => {
+    const accepted = originAllowed(value, origin);
+    callback(accepted ? null : new Error("origem bloqueada"), accepted);
+  };
+}
+
+export function originAllowed(value, origin) {
+  const configured = String(value).split(",").map((item) => item.trim()).filter(Boolean);
+  // Instalacoes antigas usavam ORIGIN=*. Tratar esse legado como a lista
+  // segura evita tanto uma janela de abuso quanto quebrar o auto-deploy.
+  const origins = configured.includes("*")
+    ? ["http://tauri.localhost", "http://localhost:1420"]
+    : configured;
+  const allowed = new Set(origins);
+  return !origin || allowed.has(origin);
+}
+
 /* -------------------------- limitador por janela -------------------------- */
 
 export class RateLimiter {

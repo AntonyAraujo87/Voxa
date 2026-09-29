@@ -1,6 +1,6 @@
 # Motor nativo de streaming
 
-## Entregue na base 0.7
+## Entregue na base 0.8
 
 - Exclusão do produto social, Supabase e mídia WebRTC.
 - Painel React restrito a hospedar, conectar, encerrar e mostrar telemetria.
@@ -54,8 +54,9 @@
 4. **Validação de hardware:** medir limites de sessões simultâneas de NVENC, AMF
    e QuickSync e reduzir o limite de espectadores quando o driver exigir.
 
-Input remoto permanece fora do escopo atual de transmissão. Se voltar ao produto,
-deve exigir consentimento local, indicador persistente e botão de emergência.
+Teclado e mouse remotos já usam o túnel autenticado e exigem consentimento local
+por espectador, com revogação imediata. Gamepad continua fora do escopo até que
+exista um driver virtual assinado, instalado separadamente e com consentimento.
 
 ## Critério para chamar de transmissão pronta
 

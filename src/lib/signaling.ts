@@ -43,9 +43,11 @@ export class Matchmaking {
   private readonly connectionWaiters = new Set<(error?: Error) => void>();
   private readonly stubs = new Map<string, PeerStub>();
   private readonly started = new Set<string>();
+  private readonly finished = new Set<string>();
   private readonly authenticated = new Set<string>();
   private readonly delivered = new Set<string>();
   private readonly earlyShares = new Map<string, string>();
+  private readonly earlyConfirmations = new Map<string, string>();
   private readonly earlyReady = new Map<string, PeerAnnouncement>();
   private peerEvents: Promise<void> = Promise.resolve();
 
@@ -162,10 +164,26 @@ export class Matchmaking {
       return;
     }
     const confirmation = await this.options.pakeFinish(peerId, share);
+    this.finished.add(peerId);
     await this.emit("stream:pake-confirm", { peerId, confirmation });
+    const early = this.earlyConfirmations.get(peerId);
+    if (early) {
+      this.earlyConfirmations.delete(peerId);
+      await this.receiveConfirmation(peerId, early);
+    }
   }
 
   private async receiveConfirmation(peerId: string, confirmation: string) {
+    // As duas direcoes do Socket.IO sao independentes. Um computador pode
+    // terminar o SPAKE2 e devolver a confirmacao antes de este lado receber e
+    // processar o share remoto. Guardar a confirmacao evita perder esse evento
+    // legitimo e deixar a sessao eternamente presa em "autenticando".
+    if (!this.started.has(peerId) || !this.stubs.has(peerId)) return;
+    if (this.authenticated.has(peerId)) return;
+    if (!this.finished.has(peerId)) {
+      this.earlyConfirmations.set(peerId, confirmation);
+      return;
+    }
     await this.options.pakeConfirm(peerId, confirmation);
     this.authenticated.add(peerId);
     const desired = this.desired;
@@ -214,18 +232,22 @@ export class Matchmaking {
   private forgetPeer(peerId: string) {
     this.stubs.delete(peerId);
     this.started.delete(peerId);
+    this.finished.delete(peerId);
     this.authenticated.delete(peerId);
     this.delivered.delete(peerId);
     this.earlyShares.delete(peerId);
+    this.earlyConfirmations.delete(peerId);
     this.earlyReady.delete(peerId);
   }
 
   private resetPeers() {
     this.stubs.clear();
     this.started.clear();
+    this.finished.clear();
     this.authenticated.clear();
     this.delivered.clear();
     this.earlyShares.clear();
+    this.earlyConfirmations.clear();
     this.earlyReady.clear();
   }
 

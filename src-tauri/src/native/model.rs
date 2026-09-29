@@ -1,4 +1,4 @@
-use super::{diagnostics, pake, telemetry};
+use super::{diagnostics, input, pake, telemetry};
 use crate::native::transport::{DatagramHub, HostTransportHandle, TransportControl};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -338,6 +338,7 @@ pub(super) struct Inner {
     pub(super) cursor_visible: bool,
     pub(super) remote_control_enabled: bool,
     pub(super) remote_control_peers: HashSet<String>,
+    pub(super) remote_input_states: HashMap<String, input::RemoteInputState>,
     pub(super) pake: pake::PakeManager,
     pub(super) diagnostics: diagnostics::DiagnosticRing,
     pub(super) telemetry: telemetry::TelemetryCollector,
