@@ -49,16 +49,16 @@ Esta versão altera o protocolo nativo para v2 e é incompatível com clientes 0
 ## Riscos e bugs futuros encontrados
 
 1. O pipeline HDR10 depende do comportamento dos MFTs de AMD, NVIDIA e Intel. Alguns drivers aceitam P010 no probe e falham apenas sob carga ou troca de modo; o fallback SDR reduz o impacto, mas HIL físico continua obrigatório.
-2. O controle de gamepad exige um driver virtual assinado. Injetar teclado/mouse com APIs de usuário é possível; emular controle Xbox de forma confiável não deve ser feito com driver próprio sem assinatura. Uma integração futura deve detectar e usar um driver virtual instalado com consentimento explícito.
-3. A segunda região de relay não pode ser criada na conta Oracle atual sem sair do Always Free: as duas instâncias E2 Micro gratuitas já são usadas por Voxa e Guará. O código já aceita vários relays, mas a infraestrutura adicional aguarda capacidade gratuita legítima.
+2. O controle de gamepad exige um driver virtual assinado. Injetar teclado/mouse com APIs de usuário é possível; emular controle Xbox de forma confiável não deve ser feito com driver próprio sem assinatura. O recurso não será desenvolvido enquanto depender de componente pago ou driver sem manutenção confiável.
+3. A segunda região de relay não pode ser criada na conta Oracle atual sem sair do Always Free: as duas instâncias E2 Micro gratuitas já são usadas por Voxa e Guará. O protocolo mantém suporte a vários relays, mas nenhuma infraestrutura paga será criada.
 4. O teste real entre dois PCs, CGNAT, suspensão, firewall doméstico, WASAPI por processo e troca Wi-Fi/cabo não pode ser certificado por mocks ou por uma única máquina.
 5. Quatro encodes independentes podem ultrapassar o limite de sessões de certas GPUs. O Voxa mede capacidade e reduz o máximo; GPUs/driver novos ainda precisam alimentar a matriz HIL.
 6. O relay configurado é confirmado pelo health do signaling, mas o preflight não envia mídia antes do pareamento. A disponibilidade UDP efetiva é confirmada durante a corrida autenticada de rotas.
 
 ## Melhorias recomendadas após 0.8.0
 
-- Integrar gamepad por um driver virtual assinado e mantido, com instalação separada, aviso claro e revogação imediata.
-- Criar uma segunda região de relay somente quando existir cota gratuita real; nunca ativar recurso pago automaticamente.
+- Manter gamepad fora do produto enquanto depender de driver pago ou não confiável.
+- Manter apenas o relay atual enquanto não existir capacidade gratuita legítima.
 - Alimentar uma base local de compatibilidade com resultados HIL assinados por versão de driver, além do probe já executado em tempo real.
 - Adicionar telemetria de tempo na fila interna do encoder quando o fabricante expuser essa métrica sem cópia da textura.
 - Automatizar um laboratório com duas máquinas físicas e controle de perda/jitter para executar o soak em AMD, NVIDIA e Intel.
@@ -134,11 +134,30 @@ HTTP 200 por TLS 1.3 com relay anunciado.
 - O controle de mouse usa deltas da posição do cursor. Jogos que prendem o mouse
   ou usam Raw Input precisam de captura relativa nativa e tratamento de teclas
   estendidas; gamepad continua dependendo de driver virtual assinado.
-- Os MFTs assíncronos ainda consultam eventos a cada 1 ms para manter timeout e
-  recuperação de driver. Trocar isso por `BeginGetEvent` reduz CPU ociosa, mas
+- Os MFTs assíncronos usam consulta limitada com espera adaptativa de 1–5 ms e
+  timeout de 500 ms. `BeginGetEvent` continua sendo uma evolução possível, mas
   precisa de HIL para garantir cancelamento seguro em drivers AMD/NVIDIA/Intel.
 - O relay único em São Paulo continua sendo ponto único de falha. O protocolo já
   aceita até quatro candidatos; a conta Oracle não possui outra capacidade
   Always Free sem risco de cobrança.
 - O ponteiro é composto após a apresentação por GDI. A composição definitiva
   deve ocorrer no backbuffer D3D11 antes do `Present` para eliminar flicker.
+
+## Otimizações gratuitas posteriores à reauditoria
+
+- A espera de eventos Media Foundation foi centralizada em `mf_events.rs`.
+  Respostas imediatas continuam sem atraso artificial; drivers lentos passam a
+  usar backoff progressivo, preservando o timeout contra travamentos e reduzindo
+  despertares de CPU.
+- O runtime do socket e os sinais de despertar saíram de `transport.rs` para
+  `transport/runtime.rs`. Atualização de métricas, estado e FEC saiu para
+  `transport/state.rs`, reduzindo acoplamento sem alterar o protocolo.
+- O parser de controle remoto agora rejeita combinações inválidas de tipo,
+  botão, tecla e deltas antes de chamar a API do Windows.
+- Teclas estendidas, como setas, Insert/Delete, Windows e modificadores direitos,
+  são injetadas com `KEYEVENTF_EXTENDEDKEY`.
+- Movimentos consecutivos do mouse são agregados na fila. Sob pressão, o Voxa
+  descarta movimento antigo antes de qualquer transição de tecla ou botão,
+  reduzindo o risco de entrada presa sem aumentar banda ou memória.
+- A abertura do socket dual stack deixou de conter `unwrap` em código de
+  produção e agora devolve um erro diagnosticável.

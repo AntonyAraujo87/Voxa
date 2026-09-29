@@ -22,11 +22,10 @@ use windows::{
             MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_STREAMING,
             MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER,
             MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO,
-            MF_EVENT_FLAG_NO_WAIT, MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_NEED_MORE_INPUT,
-            MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-            MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_CHROMA_SITING,
-            MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES, MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC,
-            MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
+            MF_E_TRANSFORM_NEED_MORE_INPUT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+            MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_MT_TRANSFER_FUNCTION,
+            MF_MT_VIDEO_CHROMA_SITING, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES,
+            MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
         },
         System::{
             Com::CoTaskMemFree,
@@ -335,7 +334,7 @@ impl HardwareVideoEncoder {
     ) -> Result<Option<EncodedAccessUnit>, String> {
         unsafe {
             if let Some(events) = &self.events {
-                wait_for(events, METransformNeedInput.0 as u32)?;
+                super::mf_events::wait_for(events, METransformNeedInput.0 as u32, "encoder")?;
             }
             let input_buffer = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, nv12, 0, false)
                 .map_err(|e| format!("Superfície NV12 do encoder: {e}"))?;
@@ -351,7 +350,7 @@ impl HardwareVideoEncoder {
                 .ProcessInput(0, &input, 0)
                 .map_err(|e| format!("Entrada do encoder: {e}"))?;
             if let Some(events) = &self.events {
-                wait_for(events, METransformHaveOutput.0 as u32)?;
+                super::mf_events::wait_for(events, METransformHaveOutput.0 as u32, "encoder")?;
             }
 
             let stream = self
@@ -425,30 +424,6 @@ unsafe fn set_bool(codec: &ICodecAPI, property: &GUID, value: bool) -> Result<()
     data.vt = VT_BOOL;
     data.Anonymous.boolVal.0 = if value { -1 } else { 0 };
     unsafe { codec.SetValue(property, &variant) }.map_err(|e| format!("ICodecAPI: {e}"))
-}
-
-unsafe fn wait_for(events: &IMFMediaEventGenerator, expected: u32) -> Result<(), String> {
-    let started = std::time::Instant::now();
-    loop {
-        let event = match unsafe { events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
-            Ok(event) => event,
-            Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => {
-                if started.elapsed() >= std::time::Duration::from_millis(500) {
-                    return Err("Encoder de hardware não respondeu em 500 ms".into());
-                }
-                std::thread::sleep(std::time::Duration::from_millis(1));
-                continue;
-            }
-            Err(error) => return Err(format!("Evento do encoder: {error}")),
-        };
-        let status = unsafe { event.GetStatus() }.map_err(|e| e.to_string())?;
-        status
-            .ok()
-            .map_err(|e| format!("Falha assíncrona do encoder: {e}"))?;
-        if unsafe { event.GetType() }.map_err(|e| e.to_string())? == expected {
-            return Ok(());
-        }
-    }
 }
 
 impl Drop for HardwareVideoEncoder {

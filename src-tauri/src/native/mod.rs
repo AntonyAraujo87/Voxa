@@ -3,6 +3,8 @@ mod diagnostics;
 mod identity;
 #[cfg(target_os = "windows")]
 mod input;
+#[cfg(target_os = "windows")]
+mod mf_events;
 mod model;
 mod pake;
 mod telemetry;
@@ -47,6 +49,9 @@ use transport::{spawn_receiver, DatagramHub, PeerTransport};
 use voxa_native_core::{protocol, stun};
 
 fn bind_dual_stack_udp() -> Result<UdpSocket, String> {
+    let bind_address = "[::]:0"
+        .parse::<std::net::SocketAddr>()
+        .map_err(|error| format!("Endereco UDP local invalido: {error}"))?;
     let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))
         .map_err(|error| format!("Cria socket UDP IPv6: {error}"))?;
     socket
@@ -56,7 +61,7 @@ fn bind_dual_stack_udp() -> Result<UdpSocket, String> {
         .set_nonblocking(true)
         .map_err(|error| format!("Configura UDP assíncrono: {error}"))?;
     socket
-        .bind(&"[::]:0".parse::<std::net::SocketAddr>().unwrap().into())
+        .bind(&bind_address.into())
         .map_err(|error| format!("Abre UDP dual stack: {error}"))?;
     let standard: std::net::UdpSocket = socket.into();
     UdpSocket::from_std(standard).map_err(|error| format!("Integra UDP ao Tokio: {error}"))

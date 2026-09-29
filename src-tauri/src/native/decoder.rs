@@ -1,6 +1,6 @@
 //! Hardware-only video decoder backed by Windows Media Foundation.
 
-use std::{mem::ManuallyDrop, ptr, slice, time::Duration};
+use std::{mem::ManuallyDrop, ptr, slice};
 use voxa_native_core::protocol::VideoCodec;
 use windows::{
     core::{Interface, GUID},
@@ -19,11 +19,11 @@ use windows::{
             MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_STREAMING,
             MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER,
             MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO,
-            MF_EVENT_FLAG_NO_WAIT, MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_NEED_MORE_INPUT,
-            MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-            MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_CHROMA_SITING,
-            MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES, MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC,
-            MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
+            MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_FRAME_RATE,
+            MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
+            MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_CHROMA_SITING, MF_MT_VIDEO_NOMINAL_RANGE,
+            MF_MT_VIDEO_PRIMARIES, MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
+            MF_VERSION,
         },
         System::Com::CoTaskMemFree,
     },
@@ -189,7 +189,7 @@ impl HardwareVideoDecoder {
         let length = u32::try_from(bytes.len()).map_err(|_| "Frame H.264 grande demais")?;
         unsafe {
             if let Some(events) = &self.events {
-                wait_for(events, METransformNeedInput.0 as u32)?;
+                super::mf_events::wait_for(events, METransformNeedInput.0 as u32, "decoder")?;
             }
             let buffer = MFCreateMemoryBuffer(length).map_err(|e| e.to_string())?;
             let mut destination = ptr::null_mut();
@@ -209,7 +209,7 @@ impl HardwareVideoDecoder {
                 .ProcessInput(0, &sample, 0)
                 .map_err(|e| format!("Entrada H.264 do decoder: {e}"))?;
             if let Some(events) = &self.events {
-                wait_for(events, METransformHaveOutput.0 as u32)?;
+                super::mf_events::wait_for(events, METransformHaveOutput.0 as u32, "decoder")?;
             }
             for attempt in 0..2 {
                 let mut output = MFT_OUTPUT_DATA_BUFFER {
@@ -386,28 +386,4 @@ unsafe fn media_type(
         }
     }
     Ok(media)
-}
-
-unsafe fn wait_for(events: &IMFMediaEventGenerator, expected: u32) -> Result<(), String> {
-    let started = std::time::Instant::now();
-    loop {
-        let event = match unsafe { events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
-            Ok(event) => event,
-            Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => {
-                if started.elapsed() >= Duration::from_millis(500) {
-                    return Err("Decoder de hardware não respondeu em 500 ms".into());
-                }
-                std::thread::sleep(Duration::from_millis(1));
-                continue;
-            }
-            Err(error) => return Err(format!("Evento do decoder: {error}")),
-        };
-        let status = unsafe { event.GetStatus() }.map_err(|e| e.to_string())?;
-        status
-            .ok()
-            .map_err(|e| format!("Falha assíncrona do decoder: {e}"))?;
-        if unsafe { event.GetType() }.map_err(|e| e.to_string())? == expected {
-            return Ok(());
-        }
-    }
 }

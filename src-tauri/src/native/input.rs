@@ -16,9 +16,9 @@ use windows::Win32::{
     UI::{
         Input::KeyboardAndMouse::{
             GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-            KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-            MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-            MOUSEEVENTF_RIGHTUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
+            KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN,
+            MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+            MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
         },
         WindowsAndMessaging::{GetCursorPos, GetForegroundWindow},
     },
@@ -82,14 +82,48 @@ impl RemoteInput {
         {
             return None;
         }
-        Some(Self {
+        let event = Self {
             kind: bytes[1],
             code: bytes[2],
             down: bytes[3] != 0,
             dx: i16::from_be_bytes([bytes[4], bytes[5]]),
             dy: i16::from_be_bytes([bytes[6], bytes[7]]),
-        })
+        };
+        let valid = match event.kind {
+            MOUSE_MOVE => event.code == 0 && !event.down,
+            MOUSE_BUTTON => matches!(event.code, 1 | 2 | 4) && event.dx == 0 && event.dy == 0,
+            KEYBOARD => event.code >= 8 && event.dx == 0 && event.dy == 0,
+            _ => false,
+        };
+        valid.then_some(event)
     }
+}
+
+pub(super) fn coalesce_queued_motion(queue: &mut VecDeque<Vec<u8>>, payload: &[u8]) -> bool {
+    let Some(current) = RemoteInput::decode(payload).filter(|event| event.kind == MOUSE_MOVE)
+    else {
+        return false;
+    };
+    let Some(previous) = queue
+        .back()
+        .and_then(|bytes| RemoteInput::decode(bytes))
+        .filter(|event| event.kind == MOUSE_MOVE)
+    else {
+        return false;
+    };
+    let merged = RemoteInput {
+        dx: previous.dx.saturating_add(current.dx),
+        dy: previous.dy.saturating_add(current.dy),
+        ..current
+    };
+    if let Some(last) = queue.back_mut() {
+        *last = merged.encode().to_vec();
+    }
+    true
+}
+
+pub(super) fn is_queued_motion(payload: &[u8]) -> bool {
+    RemoteInput::decode(payload).is_some_and(|event| event.kind == MOUSE_MOVE)
 }
 
 pub(super) fn spawn_capture(
@@ -244,6 +278,11 @@ fn inject(event: RemoteInput) -> bool {
 }
 
 fn send_keyboard(code: u8, flags: KEYBD_EVENT_FLAGS) -> bool {
+    let flags = if is_extended_key(code) {
+        flags | KEYEVENTF_EXTENDEDKEY
+    } else {
+        flags
+    };
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -255,6 +294,15 @@ fn send_keyboard(code: u8, flags: KEYBD_EVENT_FLAGS) -> bool {
         },
     };
     unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 1 }
+}
+
+fn is_extended_key(code: u8) -> bool {
+    matches!(
+        code,
+        // Navegacao, teclado numerico, Print Screen, Windows e modificadores
+        // direitos usam o prefixo E0 no protocolo de teclado do Windows.
+        0x21..=0x2e | 0x5b..=0x5d | 0x6f | 0x90 | 0xa3 | 0xa5
+    )
 }
 
 fn send_mouse(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32) -> bool {
@@ -329,6 +377,17 @@ mod tests {
         let mut invalid = event.encode();
         invalid[0] = 9;
         assert!(RemoteInput::decode(&invalid).is_none());
+        let mut malformed_move = event.encode();
+        malformed_move[2] = 1;
+        assert!(RemoteInput::decode(&malformed_move).is_none());
+        let invalid_key = RemoteInput {
+            kind: KEYBOARD,
+            code: 1,
+            down: true,
+            dx: 0,
+            dy: 0,
+        };
+        assert!(RemoteInput::decode(&invalid_key.encode()).is_none());
     }
 
     #[test]
@@ -370,5 +429,46 @@ mod tests {
         });
         assert!(pressed.keys.is_empty());
         assert_eq!(pressed.buttons, HashSet::from([1]));
+    }
+
+    #[test]
+    fn marks_navigation_and_right_modifiers_as_extended() {
+        assert!(is_extended_key(0x25)); // seta esquerda
+        assert!(is_extended_key(0xa3)); // Ctrl direito
+        assert!(!is_extended_key(0x41)); // A
+    }
+
+    #[test]
+    fn coalesces_mouse_motion_without_dropping_button_transitions() {
+        let mut queue = VecDeque::from([RemoteInput {
+            kind: MOUSE_MOVE,
+            code: 0,
+            down: false,
+            dx: 10,
+            dy: -5,
+        }
+        .encode()
+        .to_vec()]);
+        let next = RemoteInput {
+            kind: MOUSE_MOVE,
+            code: 0,
+            down: false,
+            dx: 4,
+            dy: 2,
+        }
+        .encode();
+        assert!(coalesce_queued_motion(&mut queue, &next));
+        let merged = RemoteInput::decode(queue.front().unwrap()).unwrap();
+        assert_eq!((merged.dx, merged.dy), (14, -3));
+
+        let button = RemoteInput {
+            kind: MOUSE_BUTTON,
+            code: 1,
+            down: true,
+            dx: 0,
+            dy: 0,
+        }
+        .encode();
+        assert!(!coalesce_queued_motion(&mut queue, &button));
     }
 }

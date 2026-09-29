@@ -55,8 +55,13 @@
    e QuickSync e reduzir o limite de espectadores quando o driver exigir.
 
 Teclado e mouse remotos já usam o túnel autenticado e exigem consentimento local
-por espectador, com revogação imediata. Gamepad continua fora do escopo até que
-exista um driver virtual assinado, instalado separadamente e com consentimento.
+por espectador, com revogação imediata. Gamepad permanece fora do escopo para não
+adicionar driver pago, inseguro ou sem manutenção confiável.
+
+O controle de teclado/mouse usa fila com preservação de transições, agregação de
+movimento e suporte às teclas estendidas do Windows. Raw Input permanece como
+etapa condicionada a testes HIL porque exige integrar `WM_INPUT` ao loop nativo
+da janela Tauri sem interferir no tratamento de foco e fechamento.
 
 ## Critério para chamar de transmissão pronta
 

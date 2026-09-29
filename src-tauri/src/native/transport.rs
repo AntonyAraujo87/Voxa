@@ -3,26 +3,30 @@ mod fanout;
 mod feedback;
 mod packetizer;
 mod route;
+mod runtime;
+mod state;
 #[cfg(test)]
 use fanout::{negotiated_codec, opus_bitrate_for_video};
 pub use fanout::{AudioPacket, CursorPacket, EncodedFrame, HostTransportHandle};
 use feedback::FeedbackReport;
 use route::Route;
+pub use runtime::DatagramHub;
+use runtime::WakeSignal;
+use state::{
+    adaptive_fec_group_size, adjust_queue_bytes, apply_feedback, mark_connected, mark_dropped,
+    mark_failed, update_peer,
+};
 use std::{
     collections::VecDeque,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
-        Arc, Condvar, Mutex,
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
 use tauri::async_runtime::JoinHandle;
-use tokio::{
-    net::UdpSocket,
-    sync::{broadcast, Notify},
-    time,
-};
+use tokio::{sync::broadcast, time};
 #[cfg(test)]
 use voxa_native_core::protocol::VideoCodec;
 use voxa_native_core::{
@@ -93,95 +97,6 @@ pub struct TransportHandle {
     incoming_audio_wake: Arc<WakeSignal>,
     outgoing_cursor_wake: Arc<WakeSignal>,
     outgoing_input_wake: Arc<WakeSignal>,
-}
-
-#[derive(Default)]
-struct WakeSignal {
-    pending: Mutex<bool>,
-    blocking: Condvar,
-    asynchronous: Notify,
-}
-
-impl WakeSignal {
-    fn notify(&self) {
-        if let Ok(mut pending) = self.pending.lock() {
-            *pending = true;
-            self.blocking.notify_all();
-        }
-        self.asynchronous.notify_one();
-    }
-
-    fn wait_blocking(&self, timeout: Duration) {
-        let Ok(pending) = self.pending.lock() else {
-            return;
-        };
-        let Ok((mut pending, _)) = self
-            .blocking
-            .wait_timeout_while(pending, timeout, |pending| !*pending)
-        else {
-            return;
-        };
-        *pending = false;
-    }
-
-    async fn wait_async(&self) {
-        self.asynchronous.notified().await;
-        if let Ok(mut pending) = self.pending.lock() {
-            *pending = false;
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct DatagramHub {
-    socket: Arc<UdpSocket>,
-    sender: broadcast::Sender<(Arc<Vec<u8>>, SocketAddr)>,
-    stop: Arc<AtomicBool>,
-}
-
-impl DatagramHub {
-    pub fn new(socket: Arc<UdpSocket>) -> Self {
-        let (sender, _) = broadcast::channel(4_096);
-        let stop = Arc::new(AtomicBool::new(false));
-        let read_socket = socket.clone();
-        let read_sender = sender.clone();
-        let read_stop = stop.clone();
-        tauri::async_runtime::spawn(async move {
-            let mut buffer = [0u8; protocol::MAX_DATAGRAM];
-            while !read_stop.load(Ordering::Acquire) {
-                match time::timeout(
-                    Duration::from_millis(100),
-                    read_socket.recv_from(&mut buffer),
-                )
-                .await
-                {
-                    Ok(Ok((len, source)))
-                        if len >= protocol::HEADER_LEN
-                            && buffer[..4] == *b"VOXA"
-                            && buffer[4] == protocol::VERSION =>
-                    {
-                        let _ = read_sender.send((Arc::new(buffer[..len].to_vec()), source));
-                    }
-                    Ok(Ok(_)) => {}
-                    Ok(Err(_)) => time::sleep(Duration::from_millis(25)).await,
-                    Err(_) => {}
-                }
-            }
-        });
-        Self {
-            socket,
-            sender,
-            stop,
-        }
-    }
-
-    fn subscribe(&self) -> broadcast::Receiver<(Arc<Vec<u8>>, SocketAddr)> {
-        self.sender.subscribe()
-    }
-
-    pub fn stop(&self) {
-        self.stop.store(true, Ordering::Release);
-    }
 }
 
 impl TransportControl {
@@ -306,8 +221,21 @@ impl TransportHandle {
             return;
         }
         if let Ok(mut queue) = self.outgoing_input.lock() {
+            if input::coalesce_queued_motion(&mut queue, &payload) {
+                self.outgoing_input_wake.notify();
+                return;
+            }
             if queue.len() >= 128 {
-                queue.pop_front();
+                // Movimento pode ser descartado sob pressao; transicoes de
+                // tecla/botao precisam manter a ordem para nao ficarem presas.
+                if let Some(position) = queue
+                    .iter()
+                    .position(|queued| input::is_queued_motion(queued))
+                {
+                    queue.remove(position);
+                } else {
+                    return;
+                }
             }
             queue.push_back(payload);
         }
@@ -1099,105 +1027,6 @@ pub async fn spawn_receiver(
         ],
         native_thread: None,
     })
-}
-fn mark_dropped(state: &Arc<Mutex<Inner>>) {
-    if let Ok(mut inner) = state.lock() {
-        inner.status.dropped_frames += 1;
-    }
-}
-
-fn adjust_queue_bytes(counter: &AtomicU64, removed: u64, added: u64) {
-    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-        Some(current.saturating_sub(removed).saturating_add(added))
-    });
-}
-fn mark_failed(state: &Arc<Mutex<Inner>>) {
-    if let Ok(mut inner) = state.lock() {
-        // Um erro de envio e recuperavel: a rota e reavaliada pelo heartbeat.
-        // No host, ele tambem nao pode derrubar os demais espectadores.
-        let next_phase = if inner.status.role == Some(StreamRole::Host) {
-            SessionPhase::Recovering
-        } else {
-            SessionPhase::Failed
-        };
-        inner.status.set_phase(next_phase);
-    }
-}
-
-fn mark_connected(state: &Arc<Mutex<Inner>>, role: StreamRole, peer_id: &str) {
-    if let Ok(mut inner) = state.lock() {
-        let next_phase = if role == StreamRole::Host {
-            SessionPhase::Streaming
-        } else {
-            SessionPhase::Connecting
-        };
-        inner.status.set_phase(next_phase);
-    }
-    update_peer(state, peer_id, |metric| metric.phase = "connected");
-}
-fn apply_feedback(
-    state: &Arc<Mutex<Inner>>,
-    feedback_rtt_ms: &AtomicU32,
-    feedback_loss_bits: &AtomicU32,
-    feedback_at_us: &AtomicU64,
-    peer_id: &str,
-    payload: &[u8],
-) {
-    if let Some(report) = FeedbackReport::decode(payload) {
-        feedback_rtt_ms.store(report.rtt_ms, Ordering::Release);
-        feedback_loss_bits.store(report.loss_pct.to_bits(), Ordering::Release);
-        feedback_at_us.store(now_us(), Ordering::Release);
-        if let Ok(mut inner) = state.lock() {
-            inner.status.rtt_ms = report.rtt_ms;
-            inner.status.loss_pct = report.loss_pct;
-        }
-        update_peer(state, peer_id, |metric| {
-            metric.rtt_ms = report.rtt_ms;
-            metric.loss_pct = report.loss_pct;
-            metric.latency_p50_ms = report.latency_p50_ms;
-            metric.latency_p95_ms = report.latency_p95_ms;
-            metric.latency_p99_ms = report.latency_p99_ms;
-        });
-    }
-}
-
-fn adaptive_fec_group_size(loss_pct: f32) -> u32 {
-    if !loss_pct.is_finite() || loss_pct >= 8.0 {
-        4
-    } else if loss_pct >= 3.0 {
-        8
-    } else if loss_pct >= 1.0 {
-        16
-    } else {
-        0
-    }
-}
-
-fn update_peer(
-    state: &Arc<Mutex<Inner>>,
-    peer_id: &str,
-    update: impl FnOnce(&mut super::PeerMetric),
-) {
-    if let Ok(mut inner) = state.lock() {
-        let snapshot = {
-            let metric = inner
-                .peer_metrics
-                .entry(peer_id.to_string())
-                .or_insert_with(|| super::PeerMetric::waiting(peer_id.to_string()));
-            update(metric);
-            metric.clone()
-        };
-        if let Some(metric) = inner
-            .status
-            .peer_metrics
-            .iter_mut()
-            .find(|metric| metric.peer_id == peer_id)
-        {
-            *metric = snapshot;
-        } else {
-            inner.status.peer_metrics.push(snapshot);
-        }
-    }
 }
 async fn request_keyframe(
     route: &Route,
