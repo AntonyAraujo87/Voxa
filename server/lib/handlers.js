@@ -28,6 +28,7 @@ function announcement(peer, requesterIp, relay) {
     publicKey: peer.publicKey,
     codecs: peer.codecs ?? 1,
     protocolVersion: peer.protocolVersion ?? 1,
+    hdr10: peer.hdr10 === true,
     relayEndpoint: relay.endpoint,
     relayCandidates: relay.candidates,
     relaySession: relay.session,
@@ -122,6 +123,7 @@ export function registerHandlers({ io, socket, registry, limiter }) {
     const publicKey = normalizePublicKey(payload?.publicKey);
     const codecs = normalizeCodecs(payload?.codecs);
     const protocolVersion = payload?.protocolVersion === 2 ? 2 : null;
+    const hdr10 = payload?.hdr10 === true;
     const invalid = invalidReadyField({ publicEndpoint, localEndpoint, publicKey, codecs, protocolVersion });
     if (invalid) return ack?.({ error: invalid });
     const usableLocalEndpoint = localEndpoint.host === "0.0.0.0" ? publicEndpoint : localEndpoint;
@@ -131,7 +133,7 @@ export function registerHandlers({ io, socket, registry, limiter }) {
     if (!sameIp(publicEndpoint.host, socket.data.ip)) {
       return ack?.({ error: "Endpoint público não corresponde à conexão" });
     }
-    registry.setEndpoint(socket.id, publicEndpoint.value, usableLocalEndpoint.value, publicKey, codecs, protocolVersion);
+    registry.setEndpoint(socket.id, publicEndpoint.value, usableLocalEndpoint.value, publicKey, codecs, protocolVersion, hdr10);
     const self = registry.get(socket.id), target = registry.get(targetId);
     const viewer = self.role === "viewer" ? self : target;
     io.to(targetId).emit("stream:ready", announcement(self, target.ip, registry.relay(viewer, target.role)));

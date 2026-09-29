@@ -1,6 +1,7 @@
 //! D3D11 presenter for the separate native stream window.
 
 use std::mem::ManuallyDrop;
+use voxa_native_core::protocol::Hdr10Metadata;
 use windows::{
     core::Interface,
     Win32::{
@@ -8,9 +9,9 @@ use windows::{
         Graphics::{
             Direct3D11::{
                 ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, ID3D11VideoContext,
-                ID3D11VideoDevice, ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator,
-                ID3D11VideoProcessorOutputView, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV,
-                D3D11_VIDEO_COLOR, D3D11_VIDEO_COLOR_0, D3D11_VIDEO_COLOR_RGBA,
+                ID3D11VideoContext1, ID3D11VideoDevice, ID3D11VideoProcessor,
+                ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorOutputView, D3D11_TEX2D_VPIV,
+                D3D11_TEX2D_VPOV, D3D11_VIDEO_COLOR, D3D11_VIDEO_COLOR_0, D3D11_VIDEO_COLOR_RGBA,
                 D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
                 D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
                 D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0,
@@ -19,10 +20,14 @@ use windows::{
             },
             Dxgi::{
                 Common::{
-                    DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
-                    DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+                    DXGI_ALPHA_MODE_IGNORE, DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020,
+                    DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020, DXGI_FORMAT_B8G8R8A8_UNORM,
+                    DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_RATIONAL,
+                    DXGI_SAMPLE_DESC,
                 },
-                IDXGIDevice, IDXGIFactory2, IDXGISwapChain1, DXGI_PRESENT, DXGI_SCALING_STRETCH,
+                IDXGIDevice, IDXGIFactory2, IDXGISwapChain1, IDXGISwapChain3, IDXGISwapChain4,
+                DXGI_HDR_METADATA_HDR10, DXGI_HDR_METADATA_TYPE_HDR10, DXGI_PRESENT,
+                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT,
                 DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 DXGI_USAGE_RENDER_TARGET_OUTPUT,
             },
@@ -44,6 +49,7 @@ pub struct NativePresenter {
     fps: u32,
     output_width: u32,
     output_height: u32,
+    hdr10: Option<Hdr10Metadata>,
 }
 
 impl NativePresenter {
@@ -54,6 +60,7 @@ impl NativePresenter {
         width: u32,
         height: u32,
         fps: u32,
+        hdr10: Option<Hdr10Metadata>,
     ) -> Result<Self, String> {
         unsafe {
             let dxgi_device: IDXGIDevice = device.cast().map_err(|e| e.to_string())?;
@@ -66,7 +73,11 @@ impl NativePresenter {
             let desc = DXGI_SWAP_CHAIN_DESC1 {
                 Width: width,
                 Height: height,
-                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                Format: if hdr10.is_some() {
+                    DXGI_FORMAT_R10G10B10A2_UNORM
+                } else {
+                    DXGI_FORMAT_B8G8R8A8_UNORM
+                },
                 Stereo: false.into(),
                 SampleDesc: DXGI_SAMPLE_DESC {
                     Count: 1,
@@ -104,6 +115,8 @@ impl NativePresenter {
             let processor = video_device
                 .CreateVideoProcessor(&enumerator, 0)
                 .map_err(|e| format!("Conversor NV12/BGRA: {e}"))?;
+            configure_video_color_space(&video_context, &processor, hdr10.is_some())?;
+            configure_swap_chain_hdr(&swap_chain, hdr10)?;
             Ok(Self {
                 video_device,
                 video_context,
@@ -116,6 +129,7 @@ impl NativePresenter {
                 fps,
                 output_width: width,
                 output_height: height,
+                hdr10,
             })
         }
     }
@@ -290,10 +304,81 @@ impl NativePresenter {
             .map_err(|e| format!("Video processor após resize: {e}"))?;
         self.processor = unsafe { self.video_device.CreateVideoProcessor(&self.enumerator, 0) }
             .map_err(|e| format!("Conversor após resize: {e}"))?;
+        configure_video_color_space(&self.video_context, &self.processor, self.hdr10.is_some())?;
+        configure_swap_chain_hdr(&self.swap_chain, self.hdr10)?;
         self.output_width = width;
         self.output_height = height;
         Ok(true)
     }
+}
+
+fn configure_video_color_space(
+    context: &ID3D11VideoContext,
+    processor: &ID3D11VideoProcessor,
+    hdr10: bool,
+) -> Result<(), String> {
+    if !hdr10 {
+        return Ok(());
+    }
+    let context1: ID3D11VideoContext1 = context
+        .cast()
+        .map_err(|e| format!("Video processor do espectador sem HDR10: {e}"))?;
+    unsafe {
+        context1.VideoProcessorSetStreamColorSpace1(
+            processor,
+            0,
+            DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020,
+        );
+        context1.VideoProcessorSetOutputColorSpace1(
+            processor,
+            DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020,
+        );
+    }
+    Ok(())
+}
+
+fn configure_swap_chain_hdr(
+    swap_chain: &IDXGISwapChain1,
+    metadata: Option<Hdr10Metadata>,
+) -> Result<(), String> {
+    let Some(metadata) = metadata else {
+        return Ok(());
+    };
+    let chain3: IDXGISwapChain3 = swap_chain
+        .cast()
+        .map_err(|e| format!("Swapchain sem suporte a espaço de cor HDR10: {e}"))?;
+    let chain4: IDXGISwapChain4 = swap_chain
+        .cast()
+        .map_err(|e| format!("Swapchain sem suporte a metadata HDR10: {e}"))?;
+    unsafe {
+        let support = chain3
+            .CheckColorSpaceSupport(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
+            .map_err(|e| format!("Consulta de HDR10 da tela: {e}"))?;
+        if support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT.0 as u32 == 0 {
+            return Err("A tela selecionada não aceita apresentação HDR10".into());
+        }
+        chain3
+            .SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
+            .map_err(|e| format!("Espaço de cor HDR10 da swapchain: {e}"))?;
+        let native = DXGI_HDR_METADATA_HDR10 {
+            RedPrimary: metadata.red_primary,
+            GreenPrimary: metadata.green_primary,
+            BluePrimary: metadata.blue_primary,
+            WhitePoint: metadata.white_point,
+            MaxMasteringLuminance: metadata.max_mastering_luminance,
+            MinMasteringLuminance: metadata.min_mastering_luminance,
+            MaxContentLightLevel: metadata.max_content_light_level,
+            MaxFrameAverageLightLevel: metadata.max_frame_average_light_level,
+        };
+        let bytes = std::slice::from_raw_parts(
+            (&native as *const DXGI_HDR_METADATA_HDR10).cast::<u8>(),
+            std::mem::size_of::<DXGI_HDR_METADATA_HDR10>(),
+        );
+        chain4
+            .SetHDRMetaData(DXGI_HDR_METADATA_TYPE_HDR10, Some(bytes))
+            .map_err(|e| format!("Metadata HDR10 da swapchain: {e}"))?;
+    }
+    Ok(())
 }
 
 fn letterbox(source_width: u32, source_height: u32, output_width: u32, output_height: u32) -> RECT {

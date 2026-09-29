@@ -149,15 +149,21 @@ impl HostTransportHandle {
     pub fn request_keyframe(&self) {
         self.force_keyframe.store(true, Ordering::Release);
     }
-    pub fn active_lanes(&self) -> Vec<(String, VideoCodec, u32)> {
+    pub fn active_lanes(&self) -> Vec<(String, VideoCodec, u32, bool)> {
         let Ok(peers) = self.peers.lock() else {
             return Vec::new();
         };
         peers
             .iter()
             .filter_map(|(peer_id, handle)| {
-                self.codec_for(handle)
-                    .map(|codec| (peer_id.clone(), codec, handle.target_bitrate()))
+                self.codec_for(handle).map(|codec| {
+                    (
+                        peer_id.clone(),
+                        codec,
+                        handle.target_bitrate(),
+                        handle.peer_hdr10.load(Ordering::Acquire),
+                    )
+                })
             })
             .collect()
     }

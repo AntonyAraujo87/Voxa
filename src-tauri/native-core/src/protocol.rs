@@ -107,16 +107,29 @@ impl VideoCodec {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Hdr10Metadata {
+    pub red_primary: [u16; 2],
+    pub green_primary: [u16; 2],
+    pub blue_primary: [u16; 2],
+    pub white_point: [u16; 2],
+    pub max_mastering_luminance: u32,
+    pub min_mastering_luminance: u32,
+    pub max_content_light_level: u16,
+    pub max_frame_average_light_level: u16,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamConfig {
     pub codec: VideoCodec,
     pub width: u32,
     pub height: u32,
     pub fps: u16,
+    pub hdr10: Option<Hdr10Metadata>,
 }
 
 impl StreamConfig {
-    const WIRE_LEN: usize = 12;
+    const WIRE_LEN: usize = 40;
 
     pub fn encode(self) -> Result<[u8; Self::WIRE_LEN], String> {
         if self.width == 0
@@ -130,23 +143,75 @@ impl StreamConfig {
         {
             return Err("Configuração de vídeo fora dos limites".into());
         }
+        if self.hdr10.is_some() && self.codec == VideoCodec::H264 {
+            return Err("HDR10 requer H.265 ou AV1".into());
+        }
         let mut bytes = [0u8; Self::WIRE_LEN];
         bytes[0] = self.codec as u8;
+        bytes[1] = u8::from(self.hdr10.is_some());
         bytes[2..6].copy_from_slice(&self.width.to_be_bytes());
         bytes[6..10].copy_from_slice(&self.height.to_be_bytes());
         bytes[10..12].copy_from_slice(&self.fps.to_be_bytes());
+        if let Some(metadata) = self.hdr10 {
+            let coordinates = [
+                metadata.red_primary,
+                metadata.green_primary,
+                metadata.blue_primary,
+                metadata.white_point,
+            ];
+            let mut offset = 12;
+            for coordinate in coordinates.into_iter().flatten() {
+                bytes[offset..offset + 2].copy_from_slice(&coordinate.to_be_bytes());
+                offset += 2;
+            }
+            bytes[28..32].copy_from_slice(&metadata.max_mastering_luminance.to_be_bytes());
+            bytes[32..36].copy_from_slice(&metadata.min_mastering_luminance.to_be_bytes());
+            bytes[36..38].copy_from_slice(&metadata.max_content_light_level.to_be_bytes());
+            bytes[38..40].copy_from_slice(&metadata.max_frame_average_light_level.to_be_bytes());
+            if metadata.max_mastering_luminance == 0
+                || metadata.max_mastering_luminance < metadata.min_mastering_luminance
+            {
+                return Err("Metadata HDR10 fora dos limites".into());
+            }
+        }
         Ok(bytes)
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() != Self::WIRE_LEN || bytes[1] != 0 {
+        if bytes.len() != Self::WIRE_LEN || bytes[1] > 1 {
             return Err("Configuração de stream incompatível".into());
         }
+        let hdr10 = if bytes[1] == 1 {
+            let coordinate = |offset: usize| {
+                [
+                    u16::from_be_bytes([bytes[offset], bytes[offset + 1]]),
+                    u16::from_be_bytes([bytes[offset + 2], bytes[offset + 3]]),
+                ]
+            };
+            Some(Hdr10Metadata {
+                red_primary: coordinate(12),
+                green_primary: coordinate(16),
+                blue_primary: coordinate(20),
+                white_point: coordinate(24),
+                max_mastering_luminance: u32::from_be_bytes(bytes[28..32].try_into().unwrap()),
+                min_mastering_luminance: u32::from_be_bytes(bytes[32..36].try_into().unwrap()),
+                max_content_light_level: u16::from_be_bytes(bytes[36..38].try_into().unwrap()),
+                max_frame_average_light_level: u16::from_be_bytes(
+                    bytes[38..40].try_into().unwrap(),
+                ),
+            })
+        } else {
+            if bytes[12..].iter().any(|byte| *byte != 0) {
+                return Err("Metadata HDR10 inesperada em stream SDR".into());
+            }
+            None
+        };
         let config = Self {
             codec: VideoCodec::try_from(bytes[0])?,
             width: u32::from_be_bytes(bytes[2..6].try_into().unwrap()),
             height: u32::from_be_bytes(bytes[6..10].try_into().unwrap()),
             fps: u16::from_be_bytes(bytes[10..12].try_into().unwrap()),
+            hdr10,
         };
         config.encode()?;
         Ok(config)
@@ -535,6 +600,7 @@ mod tests {
             width: 2560,
             height: 1440,
             fps: 120,
+            hdr10: None,
         };
         assert_eq!(
             StreamConfig::decode(&config.encode().unwrap()).unwrap(),
@@ -546,6 +612,38 @@ mod tests {
             width: 1921,
             height: 1080,
             fps: 60,
+            hdr10: None,
+        }
+        .encode()
+        .is_err());
+    }
+
+    #[test]
+    fn hdr10_metadata_round_trips_and_refuses_h264() {
+        let metadata = Hdr10Metadata {
+            red_primary: [35_400, 14_600],
+            green_primary: [8_500, 39_850],
+            blue_primary: [6_550, 2_300],
+            white_point: [15_635, 16_450],
+            max_mastering_luminance: 10_000_000,
+            min_mastering_luminance: 50,
+            max_content_light_level: 1_000,
+            max_frame_average_light_level: 400,
+        };
+        let config = StreamConfig {
+            codec: VideoCodec::H265,
+            width: 3840,
+            height: 2160,
+            fps: 60,
+            hdr10: Some(metadata),
+        };
+        assert_eq!(
+            StreamConfig::decode(&config.encode().unwrap()).unwrap(),
+            config
+        );
+        assert!(StreamConfig {
+            codec: VideoCodec::H264,
+            ..config
         }
         .encode()
         .is_err());

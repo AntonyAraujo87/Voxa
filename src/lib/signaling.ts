@@ -10,6 +10,7 @@ export interface PeerAnnouncement {
   publicKey: string;
   codecs?: number;
   protocolVersion?: number;
+  hdr10?: boolean;
   relayEndpoint: string | null;
   relayCandidates?: string[];
   relaySession: string | null;
@@ -176,6 +177,7 @@ export class Matchmaking {
       publicKey: desired.endpoint.publicKey,
       codecs: desired.endpoint.codecs,
       protocolVersion: desired.endpoint.protocolVersion,
+      hdr10: desired.endpoint.hdr10,
     });
     const ready = this.earlyReady.get(peerId);
     if (ready) {

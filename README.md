@@ -62,7 +62,7 @@ mapeamento descoberto por STUN e perfuração UDP.
 - O painel de áudio lista somente processos com sessão ativa no mixer do Windows e pode ser atualizado sem reiniciar o Voxa.
 - O limite de encoders é sondado na GPU escolhida. O host reduz o teto de espectadores e mantém a recuperação individual se uma sessão de encode parar.
 - Posição e visibilidade do cursor seguem o timestamp do frame; o host pode ocultar o cursor durante a sessão.
-- Mudanças de resolução e HDR recriam a captura. Cada encoder possui watchdog de dois segundos e solicita nova configuração/keyframe ao voltar.
+- Mudanças de resolução e HDR recriam a captura. HDR10 usa P010, BT.2020/PQ e metadata SMPTE ST 2086/MaxCLL/MaxFALL quando host, codec, decoder e monitor do espectador são compatíveis; cada espectador incompatível recebe fallback SDR. Cada encoder possui watchdog de dois segundos e solicita nova configuração/keyframe ao voltar.
 - Um gravador circular mantém localmente somente os últimos 60 segundos de estados e falhas. `Exportar diagnóstico` salva em Documentos/Voxa um JSON sem senha ou chaves, contendo GPU/driver, codecs, rotas, relay, perda, latências, estado dos espectadores e erros.
 
 O host não usa fallback de captura web nem encode por CPU. A cadeia nativa compila,

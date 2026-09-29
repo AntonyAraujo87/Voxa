@@ -5,6 +5,8 @@
 #[cfg(target_os = "windows")]
 use super::{CaptureTargetId, CaptureTargetInfo, GraphicsAdapterInfo};
 #[cfg(target_os = "windows")]
+use voxa_native_core::protocol::Hdr10Metadata;
+#[cfg(target_os = "windows")]
 use windows::{
     core::Interface,
     Win32::{
@@ -33,6 +35,7 @@ pub struct DxgiCapture {
     pub context: ID3D11DeviceContext,
     pub duplication: IDXGIOutputDuplication,
     pub hdr: bool,
+    pub hdr10: Option<Hdr10Metadata>,
     origin_x: i32,
     origin_y: i32,
     pub(super) width: u32,
@@ -81,10 +84,12 @@ impl DxgiCapture {
                 .GetDesc()
                 .map_err(|e| format!("Descrição do monitor selecionado: {e}"))?;
             let output6: Option<IDXGIOutput6> = output.cast().ok();
-            let hdr = output6
+            let output_desc1 = output6
                 .as_ref()
                 .and_then(|output| output.GetDesc1().ok())
-                .is_some_and(|desc| desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+                .filter(|desc| desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+            let hdr10 = output_desc1.map(hdr10_metadata);
+            let hdr = hdr10.is_some();
             let mut device = None;
             let mut context = None;
             let levels = [D3D_FEATURE_LEVEL_11_0];
@@ -125,6 +130,7 @@ impl DxgiCapture {
                 context,
                 duplication,
                 hdr,
+                hdr10,
                 origin_x: rect.left,
                 origin_y: rect.top,
                 width: (rect.right - rect.left).max(0) as u32,
@@ -162,6 +168,28 @@ impl DxgiCapture {
                 Err(error) => Err(format!("Falha na captura DXGI: {error}")),
             }
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hdr10_metadata(desc: windows::Win32::Graphics::Dxgi::DXGI_OUTPUT_DESC1) -> Hdr10Metadata {
+    let chromaticity = |value: [f32; 2]| {
+        value.map(|component| (component.clamp(0.0, 1.0) * 50_000.0).round() as u16)
+    };
+    let max_nits = desc.MaxLuminance.clamp(1.0, u16::MAX as f32).round() as u16;
+    let average_nits = desc
+        .MaxFullFrameLuminance
+        .clamp(1.0, u16::MAX as f32)
+        .round() as u16;
+    Hdr10Metadata {
+        red_primary: chromaticity(desc.RedPrimary),
+        green_primary: chromaticity(desc.GreenPrimary),
+        blue_primary: chromaticity(desc.BluePrimary),
+        white_point: chromaticity(desc.WhitePoint),
+        max_mastering_luminance: (desc.MaxLuminance.max(1.0) * 10_000.0).round() as u32,
+        min_mastering_luminance: (desc.MinLuminance.max(0.0) * 10_000.0).round() as u32,
+        max_content_light_level: max_nits,
+        max_frame_average_light_level: average_nits,
     }
 }
 

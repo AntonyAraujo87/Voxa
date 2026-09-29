@@ -484,7 +484,7 @@ export default function App() {
           <Metric label="Estágios P95" value={`captura ${status.stages.captureInterval.p95Ms || "—"} · encode ${status.stages.encode.p95Ms || "—"} · rede ${status.stages.network.p95Ms || "—"} · decode ${status.stages.decode.p95Ms || "—"} · present ${status.stages.present.p95Ms || "—"} ms`} />
           <Metric label="Fila nativa" value={`${status.stages.applicationQueueBytes} bytes`} />
           <Metric label="Sincronia A/V" value={`${status.avSyncMs > 0 ? "+" : ""}${status.avSyncMs} ms`} />
-          <Metric label="GPU host" value={`${status.encoderCapacity} encoder(es)${status.hdr ? " · HDR→SDR" : " · SDR"}`} />
+          <Metric label="GPU host" value={`${status.encoderCapacity} encoder(es)${status.hdr ? " · HDR10 disponível (fallback SDR)" : " · SDR"}`} />
           <Metric label="Pipeline" value={`${status.capture} · ${status.encoder} · ${status.decoder}${status.decoderGpu ? ` (${status.decoderGpu})` : ""} · ${status.renderer}`} />
           <Metric label="Áudio" value={`${status.audio} · ${status.audioBitrateKbps || "—"} kbps`} />
           <Metric label="Recuperações" value={`${status.captureRestarts} reinício(s) do pipeline`} />

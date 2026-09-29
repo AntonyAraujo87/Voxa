@@ -17,7 +17,7 @@ export class StreamRegistry {
   identify(socketId, ip) {
     this.#clients.set(socketId, {
       socketId, ip, room: null, role: null, endpoint: null, localEndpoint: null,
-      publicKey: null, codecs: 1, protocolVersion: 1, relaySession: null,
+      publicKey: null, codecs: 1, protocolVersion: 1, hdr10: false, relaySession: null,
     });
   }
 
@@ -40,7 +40,7 @@ export class StreamRegistry {
     }
     this.#rooms.set(roomId, room);
     Object.assign(client, {
-      room: roomId, role, endpoint: null, localEndpoint: null, publicKey: null, codecs: 1, protocolVersion: 1,
+      room: roomId, role, endpoint: null, localEndpoint: null, publicKey: null, codecs: 1, protocolVersion: 1, hdr10: false,
     });
     const peerIds = role === "host" ? [...room.viewers] : room.host ? [room.host] : [];
     const peers = peerIds
@@ -55,10 +55,10 @@ export class StreamRegistry {
     return Boolean(left?.room && left.room === right?.room && left.role !== right.role);
   }
 
-  setEndpoint(socketId, endpoint, localEndpoint, publicKey, codecs, protocolVersion = 1) {
+  setEndpoint(socketId, endpoint, localEndpoint, publicKey, codecs, protocolVersion = 1, hdr10 = false) {
     const client = this.#clients.get(socketId);
     if (!client?.room) return false;
-    Object.assign(client, { endpoint, localEndpoint, publicKey, codecs, protocolVersion });
+    Object.assign(client, { endpoint, localEndpoint, publicKey, codecs, protocolVersion, hdr10 });
     return true;
   }
 
@@ -79,7 +79,7 @@ export class StreamRegistry {
       if (!room.host && room.viewers.size === 0) this.#rooms.delete(roomId);
     }
     Object.assign(client, {
-      room: null, role: null, endpoint: null, localEndpoint: null, publicKey: null, codecs: 1, protocolVersion: 1,
+      room: null, role: null, endpoint: null, localEndpoint: null, publicKey: null, codecs: 1, protocolVersion: 1, hdr10: false,
       relaySession: null,
     });
     return { roomId, otherIds, peerId: socketId };

@@ -1,7 +1,7 @@
 use super::{
     capture::DxgiCapture,
     com::ComApartment,
-    converter::GpuColorConverter,
+    converter::{ConversionSpec, GpuColorConverter},
     encoder::HardwareVideoEncoder,
     transport::{CursorPacket, EncodedFrame, HostTransportHandle},
     CaptureTargetId, Inner, SessionPhase,
@@ -12,7 +12,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use voxa_native_core::protocol::{StreamConfig, VideoCodec};
+use voxa_native_core::protocol::{Hdr10Metadata, StreamConfig, VideoCodec};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_TEXTURE2D_DESC,
 };
@@ -35,6 +35,7 @@ struct EncoderLane {
     next_frame_at: Instant,
     last_output_at: Instant,
     frames_since_output: u32,
+    hdr10: Option<Hdr10Metadata>,
 }
 
 impl EncoderLane {
@@ -45,32 +46,58 @@ impl EncoderLane {
         source_height: u32,
         codec: VideoCodec,
         bitrate: u32,
+        hdr10: Option<Hdr10Metadata>,
     ) -> Result<Self, String> {
         let profile = profile_for(source_width, source_height, bitrate);
+        let requested_hdr10 = hdr10.filter(|_| codec != VideoCodec::H264);
+        let open_pipeline = |hdr: bool| {
+            Ok::<_, String>((
+                GpuColorConverter::new(
+                    device,
+                    context,
+                    ConversionSpec {
+                        input_width: source_width,
+                        input_height: source_height,
+                        output_width: profile.width,
+                        output_height: profile.height,
+                        fps: profile.fps,
+                        hdr10: hdr,
+                    },
+                )?,
+                HardwareVideoEncoder::open(
+                    device,
+                    codec,
+                    profile.width,
+                    profile.height,
+                    profile.fps,
+                    bitrate,
+                    hdr,
+                )?,
+            ))
+        };
+        let (converter, encoder, hdr10) = match requested_hdr10 {
+            Some(metadata) => match open_pipeline(true) {
+                Ok((converter, encoder)) => (converter, encoder, Some(metadata)),
+                Err(_) => {
+                    let (converter, encoder) = open_pipeline(false)?;
+                    (converter, encoder, None)
+                }
+            },
+            None => {
+                let (converter, encoder) = open_pipeline(false)?;
+                (converter, encoder, None)
+            }
+        };
         Ok(Self {
             codec,
             profile,
             bitrate,
-            converter: GpuColorConverter::new(
-                device,
-                context,
-                source_width,
-                source_height,
-                profile.width,
-                profile.height,
-                profile.fps,
-            )?,
-            encoder: HardwareVideoEncoder::open(
-                device,
-                codec,
-                profile.width,
-                profile.height,
-                profile.fps,
-                bitrate,
-            )?,
+            converter,
+            encoder,
             next_frame_at: Instant::now(),
             last_output_at: Instant::now(),
             frames_since_output: 0,
+            hdr10,
         })
     }
 
@@ -91,6 +118,7 @@ impl EncoderLane {
                 source_height,
                 self.codec,
                 bitrate,
+                self.hdr10,
             )?;
             return Ok(true);
         }
@@ -106,6 +134,7 @@ impl EncoderLane {
                     profile.height,
                     profile.fps,
                     bitrate,
+                    self.hdr10.is_some(),
                 )?;
                 return Ok(true);
             }
@@ -119,6 +148,7 @@ impl EncoderLane {
             width: self.profile.width,
             height: self.profile.height,
             fps: self.profile.fps as u16,
+            hdr10: self.hdr10,
         }
     }
 
@@ -276,7 +306,7 @@ fn run_device_session(
         }
         let requested = active_lanes
             .iter()
-            .map(|(_, _, bitrate)| *bitrate)
+            .map(|(_, _, bitrate, _)| *bitrate)
             .min()
             .unwrap_or(12_000_000);
         if let Ok(mut inner) = state.lock() {
@@ -301,9 +331,9 @@ fn run_device_session(
         lanes.retain(|key, _| {
             active_lanes
                 .iter()
-                .any(|(peer_id, codec, _)| key == &(peer_id.clone(), *codec))
+                .any(|(peer_id, codec, _, _)| key == &(peer_id.clone(), *codec))
         });
-        for (peer_id, codec, bitrate) in active_lanes {
+        for (peer_id, codec, bitrate, peer_hdr10) in active_lanes {
             let key = (peer_id.clone(), codec);
             if lane_retries
                 .get(&key)
@@ -320,6 +350,7 @@ fn run_device_session(
                     desc.Height,
                     codec,
                     bitrate,
+                    capture.hdr10.filter(|_| peer_hdr10),
                 ) {
                     Ok(lane) => {
                         transport.queue_config(&peer_id, lane.config());
@@ -367,6 +398,7 @@ fn run_device_session(
                     desc.Height,
                     codec,
                     bitrate,
+                    capture.hdr10.filter(|_| peer_hdr10),
                 ) {
                     Ok(replacement) => {
                         *lane = replacement;

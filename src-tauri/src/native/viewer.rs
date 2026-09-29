@@ -1,6 +1,6 @@
 use super::{
-    audio, com::ComApartment, decoder::HardwareVideoDecoder, input, presenter::NativePresenter,
-    renderer, transport::TransportHandle, Inner, SessionPhase,
+    audio, capture, com::ComApartment, decoder::HardwareVideoDecoder, input,
+    presenter::NativePresenter, renderer, transport::TransportHandle, Inner, SessionPhase,
 };
 use std::{
     collections::VecDeque,
@@ -27,6 +27,27 @@ use windows::{
 pub fn hardware_decoder_codecs(
     selected: Option<u32>,
 ) -> Result<Vec<voxa_native_core::protocol::VideoCodec>, String> {
+    hardware_decoder_codecs_for_format(selected, false)
+}
+
+pub fn hardware_hdr10_decoder_available(selected: Option<u32>) -> bool {
+    let hdr_display = capture::enumerate_targets()
+        .map(|targets| {
+            targets.into_iter().any(|target| {
+                target.hdr && selected.is_none_or(|index| target.id.adapter_index == index)
+            })
+        })
+        .unwrap_or(false);
+    hdr_display
+        && hardware_decoder_codecs_for_format(selected, true)
+            .map(|codecs| !codecs.is_empty())
+            .unwrap_or(false)
+}
+
+fn hardware_decoder_codecs_for_format(
+    selected: Option<u32>,
+    hdr10: bool,
+) -> Result<Vec<voxa_native_core::protocol::VideoCodec>, String> {
     let _apartment = ComApartment::multithreaded()
         .map_err(|error| format!("Inicializa COM para detectar decoders: {error}"))?;
     unsafe {
@@ -43,9 +64,12 @@ pub fn hardware_decoder_codecs(
         }
         let mut available = Vec::new();
         for codec in voxa_native_core::protocol::VideoCodec::ALL {
+            if hdr10 && codec == voxa_native_core::protocol::VideoCodec::H264 {
+                continue;
+            }
             let supported = adapters.iter().any(|adapter| {
                 create_device_on_adapter(adapter).is_ok_and(|(device, _)| {
-                    HardwareVideoDecoder::open(&device, codec, 1280, 720, 30).is_ok()
+                    HardwareVideoDecoder::open(&device, codec, 1280, 720, 30, hdr10).is_ok()
                 })
             });
             if supported {
@@ -136,6 +160,7 @@ fn run_session(
         config.height,
         config.fps.into(),
         decoder_adapter_index,
+        config.hdr10.is_some(),
     )?;
     let mut presenter = NativePresenter::new(
         &device,
@@ -144,6 +169,7 @@ fn run_session(
         config.width,
         config.height,
         config.fps.into(),
+        config.hdr10,
     )?;
     if let Ok(mut inner) = state.lock() {
         inner.status.decoder = match config.codec {
@@ -169,6 +195,7 @@ fn run_session(
                     config.width,
                     config.height,
                     config.fps.into(),
+                    config.hdr10.is_some(),
                 )?;
                 presenter = NativePresenter::new(
                     &device,
@@ -177,6 +204,7 @@ fn run_session(
                     config.width,
                     config.height,
                     config.fps.into(),
+                    config.hdr10,
                 )?;
                 duration = 10_000_000i64 / i64::from(config.fps);
             }
@@ -196,6 +224,7 @@ fn run_session(
                     config.width,
                     config.height,
                     config.fps.into(),
+                    config.hdr10.is_some(),
                 )?;
                 eprintln!(
                     "[voxa] frame {} descartado: {}",
@@ -264,6 +293,7 @@ fn create_device(
     height: u32,
     fps: u32,
     selected: Option<u32>,
+    hdr10: bool,
 ) -> Result<
     (
         ID3D11Device,
@@ -302,7 +332,7 @@ fn create_device(
                 .map(|desc| wide_string(&desc.Description))
                 .unwrap_or_else(|_| format!("GPU {index}"));
             match create_device_on_adapter(&adapter).and_then(|(device, context)| {
-                HardwareVideoDecoder::open(&device, codec, width, height, fps)
+                HardwareVideoDecoder::open(&device, codec, width, height, fps, hdr10)
                     .map(|decoder| (device, context, decoder, description.clone()))
             }) {
                 Ok(stack) => return Ok(stack),

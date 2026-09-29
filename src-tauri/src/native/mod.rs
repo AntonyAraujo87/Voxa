@@ -494,7 +494,8 @@ pub async fn engine_prepare(
     };
     let public_key = key_exchange.public_base64();
     #[cfg(target_os = "windows")]
-    let (capture_state, encoder_state, codecs, encoder_capacity, hdr) = if role == StreamRole::Host
+    let (capture_state, encoder_state, codecs, encoder_capacity, hdr, hdr10_capable) = if role
+        == StreamRole::Host
     {
         let capture = capture::DxgiCapture::open(capture_target)
             .map_err(|error| format!("O monitor selecionado não pode ser capturado: {error}"))?;
@@ -508,12 +509,15 @@ pub async fn engine_prepare(
         } else {
             "hardware-detected"
         };
+        let hdr10_capable =
+            capture.hdr10.is_some() && encoder::hardware_hdr10_encoder_available(&capture.device);
         (
             capture_state,
             encoder_state,
             protocol::VideoCodec::mask(available),
             encoder_capacity,
             capture.hdr,
+            hdr10_capable,
         )
     } else {
         let available = viewer::hardware_decoder_codecs(decoder_adapter_index)
@@ -524,15 +528,16 @@ pub async fn engine_prepare(
             protocol::VideoCodec::mask(available),
             1,
             false,
+            viewer::hardware_hdr10_decoder_available(decoder_adapter_index),
         )
     };
     #[cfg(not(target_os = "windows"))]
-    let (capture_state, encoder_state, codecs, encoder_capacity, hdr) = if role == StreamRole::Host
-    {
-        ("unsupported-os", "hardware-unavailable", 0, 1, false)
-    } else {
-        ("disabled", "decoder-pending", 0, 1, false)
-    };
+    let (capture_state, encoder_state, codecs, encoder_capacity, hdr, hdr10_capable) =
+        if role == StreamRole::Host {
+            ("unsupported-os", "hardware-unavailable", 0, 1, false, false)
+        } else {
+            ("disabled", "decoder-pending", 0, 1, false, false)
+        };
     if codecs == 0 {
         return Err("Nenhum codec de vídeo por hardware compatível foi encontrado".into());
     }
@@ -544,6 +549,7 @@ pub async fn engine_prepare(
     inner.audio_process_id = audio_process_id.filter(|_| role == StreamRole::Host);
     inner.decoder_adapter_index = decoder_adapter_index.filter(|_| role == StreamRole::Viewer);
     inner.supported_codecs = codecs;
+    inner.hdr10_capable = hdr10_capable;
     inner.hardware_encoder_capacity = encoder_capacity;
     inner.signaling_max_peers = 4;
     inner.cursor_visible = true;
@@ -573,6 +579,7 @@ pub async fn engine_prepare(
         public_key,
         codecs,
         protocol_version: protocol::VERSION,
+        hdr10: hdr10_capable,
     })
 }
 
@@ -632,6 +639,7 @@ pub async fn engine_refresh_endpoint(
         public_key,
         codecs: inner.supported_codecs,
         protocol_version: protocol::VERSION,
+        hdr10: inner.hdr10_capable,
     })
 }
 
@@ -642,6 +650,7 @@ pub struct ConnectRequest {
     peer_public_key: String,
     peer_codecs: u8,
     peer_protocol_version: u8,
+    peer_hdr10: bool,
     peer_id: String,
     relay_endpoint: Option<String>,
     relay_candidates: Option<Vec<String>>,
@@ -756,6 +765,7 @@ pub async fn engine_connect_peer(
         peer_public_key,
         peer_codecs,
         peer_protocol_version,
+        peer_hdr10,
         peer_id,
         relay_endpoint,
         relay_candidates,
@@ -876,6 +886,7 @@ pub async fn engine_connect_peer(
             relays,
             id: peer_id.clone(),
             codecs: peer_codecs,
+            hdr10: peer_hdr10,
         },
         key,
         role,
@@ -1224,6 +1235,7 @@ mod tests {
             public_key: "A".repeat(43),
             codecs: protocol::VideoCodec::H264.bit(),
             protocol_version: protocol::VERSION,
+            hdr10: false,
         })
         .unwrap();
         assert_eq!(json["publicKey"], "A".repeat(43));

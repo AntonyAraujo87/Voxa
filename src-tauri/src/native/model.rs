@@ -311,6 +311,7 @@ pub struct PreparedEndpoint {
     pub(super) public_key: String,
     pub(super) codecs: u8,
     pub(super) protocol_version: u8,
+    pub(super) hdr10: bool,
 }
 
 #[derive(Default)]
@@ -331,6 +332,7 @@ pub(super) struct Inner {
     pub(super) audio_process_id: Option<u32>,
     pub(super) decoder_adapter_index: Option<u32>,
     pub(super) supported_codecs: u8,
+    pub(super) hdr10_capable: bool,
     pub(super) hardware_encoder_capacity: usize,
     pub(super) signaling_max_peers: usize,
     pub(super) cursor_visible: bool,

@@ -48,6 +48,7 @@ pub struct TransportControl {
     bitrate_bps: Arc<AtomicU32>,
     queued_bytes: Arc<AtomicU64>,
     peer_codecs: Arc<AtomicU32>,
+    peer_hdr10: Arc<AtomicBool>,
     clock_offset_us: Arc<AtomicI64>,
     outgoing_wake: Arc<WakeSignal>,
     incoming_video_wake: Arc<WakeSignal>,
@@ -64,6 +65,7 @@ pub struct PeerTransport {
     pub relays: Vec<(SocketAddr, u64, u64)>,
     pub id: String,
     pub codecs: u8,
+    pub hdr10: bool,
 }
 
 #[derive(Clone)]
@@ -83,6 +85,7 @@ pub struct TransportHandle {
     bitrate_bps: Arc<AtomicU32>,
     queued_bytes: Arc<AtomicU64>,
     peer_codecs: Arc<AtomicU32>,
+    peer_hdr10: Arc<AtomicBool>,
     clock_offset_us: Arc<AtomicI64>,
     outgoing_wake: Arc<WakeSignal>,
     incoming_video_wake: Arc<WakeSignal>,
@@ -214,6 +217,7 @@ impl TransportControl {
             bitrate_bps: self.bitrate_bps.clone(),
             queued_bytes: self.queued_bytes.clone(),
             peer_codecs: self.peer_codecs.clone(),
+            peer_hdr10: self.peer_hdr10.clone(),
             clock_offset_us: self.clock_offset_us.clone(),
             outgoing_wake: self.outgoing_wake.clone(),
             incoming_video_wake: self.incoming_video_wake.clone(),
@@ -347,6 +351,7 @@ pub async fn spawn_receiver(
         relays,
         id: peer_id,
         codecs: peer_codecs,
+        hdr10: peer_hdr10,
     } = peer;
     if peer_id.is_empty() {
         return Err("Identidade do par ausente".into());
@@ -394,6 +399,7 @@ pub async fn spawn_receiver(
     let fec_group_size = Arc::new(AtomicU32::new(0));
     let max_delta_age_us = Arc::new(AtomicU64::new(250_000));
     let peer_codecs = Arc::new(AtomicU32::new(u32::from(peer_codecs)));
+    let peer_hdr10 = Arc::new(AtomicBool::new(peer_hdr10));
     let clock_offset_us = Arc::new(AtomicI64::new(i64::MIN));
     let outgoing_wake = Arc::new(WakeSignal::default());
     let incoming_video_wake = Arc::new(WakeSignal::default());
@@ -1060,6 +1066,7 @@ pub async fn spawn_receiver(
         bitrate_bps,
         queued_bytes,
         peer_codecs,
+        peer_hdr10,
         clock_offset_us,
         outgoing_wake,
         incoming_video_wake,

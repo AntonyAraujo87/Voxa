@@ -13,17 +13,20 @@ use windows::{
             ICodecAPI, IMFActivate, IMFDXGIDeviceManager, IMFMediaEventGenerator, IMFMediaType,
             IMFTransform, METransformHaveOutput, METransformNeedInput, MFCreateDXGIDeviceManager,
             MFCreateDXGISurfaceBuffer, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
-            MFMediaType_Video, MFSampleExtension_CleanPoint, MFShutdown, MFStartup, MFTEnumEx,
-            MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12,
-            MFVideoInterlace_Progressive, MFSTARTUP_LITE, MFT_CATEGORY_VIDEO_ENCODER,
+            MFMediaType_Video, MFNominalRange_16_235, MFSampleExtension_CleanPoint, MFShutdown,
+            MFStartup, MFTEnumEx, MFVideoChromaSubsampling_MPEG2, MFVideoFormat_AV1,
+            MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoFormat_P010,
+            MFVideoInterlace_Progressive, MFVideoPrimaries_BT2020, MFVideoTransFunc_2084,
+            MFVideoTransferMatrix_BT2020_10, MFSTARTUP_LITE, MFT_CATEGORY_VIDEO_ENCODER,
             MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
             MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_STREAMING,
             MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER,
             MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO,
             MF_EVENT_FLAG_NO_WAIT, MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_NEED_MORE_INPUT,
             MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-            MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
-            MF_VERSION,
+            MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_CHROMA_SITING,
+            MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES, MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC,
+            MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
         },
         System::{
             Com::CoTaskMemFree,
@@ -58,11 +61,19 @@ pub fn hardware_encoder_codecs_for_device(
         // adapter D3D11 usado pelo Desktop Duplication. A abertura real faz a
         // negociacao com o gerenciador DXGI e elimina falsos positivos em
         // notebooks com GPU integrada + dedicada.
-        if HardwareVideoEncoder::open(device, codec, 1280, 720, 30, 2_500_000).is_ok() {
+        if HardwareVideoEncoder::open(device, codec, 1280, 720, 30, 2_500_000, false).is_ok() {
             available.push(codec);
         }
     }
     Ok(available)
+}
+
+pub fn hardware_hdr10_encoder_available(device: &ID3D11Device) -> bool {
+    [VideoCodec::Av1, VideoCodec::H265]
+        .into_iter()
+        .any(|codec| {
+            HardwareVideoEncoder::open(device, codec, 1280, 720, 30, 2_500_000, true).is_ok()
+        })
 }
 
 pub fn hardware_encoder_capacity_for_device(
@@ -80,7 +91,7 @@ pub fn hardware_encoder_capacity_for_device(
     };
     let mut sessions = Vec::new();
     for _ in 0..ceiling.clamp(1, 4) {
-        match HardwareVideoEncoder::open(device, codec, 1280, 720, 30, 2_500_000) {
+        match HardwareVideoEncoder::open(device, codec, 1280, 720, 30, 2_500_000, false) {
             Ok(encoder) => sessions.push(encoder),
             Err(_) => break,
         }
@@ -211,6 +222,7 @@ impl HardwareVideoEncoder {
         height: u32,
         fps: u32,
         bitrate: u32,
+        hdr10: bool,
     ) -> Result<Self, String> {
         if width == 0
             || height == 0
@@ -226,8 +238,22 @@ impl HardwareVideoEncoder {
         let runtime = MediaFoundation::start()?;
         let (activation, transform, manager, asynchronous) = activate_for_device(device, codec)?;
         unsafe {
-            let output = media_type(subtype(codec), width, height, fps, Some(bitrate))?;
-            let input = media_type(MFVideoFormat_NV12, width, height, fps, None)?;
+            if hdr10 && codec == VideoCodec::H264 {
+                return Err("O pipeline HDR10 não usa H.264".into());
+            }
+            let output = media_type(subtype(codec), width, height, fps, Some(bitrate), hdr10)?;
+            let input = media_type(
+                if hdr10 {
+                    MFVideoFormat_P010
+                } else {
+                    MFVideoFormat_NV12
+                },
+                width,
+                height,
+                fps,
+                None,
+                hdr10,
+            )?;
             transform
                 .SetOutputType(0, &output, 0)
                 .map_err(|e| format!("Formato {}: {e}", codec.name()))?;
@@ -442,6 +468,7 @@ unsafe fn media_type(
     height: u32,
     fps: u32,
     bitrate: Option<u32>,
+    hdr10: bool,
 ) -> Result<IMFMediaType, String> {
     let media = unsafe { MFCreateMediaType().map_err(|e| e.to_string())? };
     unsafe {
@@ -460,6 +487,26 @@ unsafe fn media_type(
             media
                 .SetUINT32(&MF_MT_AVG_BITRATE, bitrate)
                 .map_err(|e| format!("Bitrate H.264: {e}"))?;
+        }
+        if hdr10 {
+            media
+                .SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT2020.0 as u32)
+                .and_then(|_| {
+                    media.SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_2084.0 as u32)
+                })
+                .and_then(|_| {
+                    media.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT2020_10.0 as u32)
+                })
+                .and_then(|_| {
+                    media.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)
+                })
+                .and_then(|_| {
+                    media.SetUINT32(
+                        &MF_MT_VIDEO_CHROMA_SITING,
+                        MFVideoChromaSubsampling_MPEG2.0 as u32,
+                    )
+                })
+                .map_err(|e| format!("Metadata HDR10 do encoder: {e}"))?;
         }
     }
     Ok(media)
