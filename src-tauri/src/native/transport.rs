@@ -227,23 +227,9 @@ impl TransportHandle {
             return;
         }
         if let Ok(mut queue) = self.outgoing_input.lock() {
-            if input::coalesce_queued_motion(&mut queue, &payload) {
-                self.outgoing_input_wake.notify();
+            if !input::enqueue_bounded_input(&mut queue, payload, 512) {
                 return;
             }
-            if queue.len() >= 128 {
-                // Movimento pode ser descartado sob pressao; transicoes de
-                // tecla/botao precisam manter a ordem para nao ficarem presas.
-                if let Some(position) = queue
-                    .iter()
-                    .position(|queued| input::is_queued_motion(queued))
-                {
-                    queue.remove(position);
-                } else {
-                    return;
-                }
-            }
-            queue.push_back(payload);
         }
         self.outgoing_input_wake.notify();
     }
@@ -637,7 +623,7 @@ pub async fn spawn_receiver(
                                             packet.meta.frame_id,
                                             packet.meta.fragment_index,
                                             packet.meta.fragment_count,
-                                            false,
+                                            packet.meta.keyframe,
                                             packet.meta.timestamp_us,
                                             &packet.payload,
                                         )
@@ -914,10 +900,13 @@ pub async fn spawn_receiver(
             let Ok(payload) = cursor.encode() else {
                 continue;
             };
-            let Ok(fragment_count) = protocol::fragment_count(payload.len()) else {
+            // Usa o tamanho reservado aos frames protegidos para que a
+            // remontagem conceda 1,5 s ao cursor. Em 800 kbps uma forma de
+            // 16 KiB pode exceder o prazo curto de um delta frame.
+            let Some(fragment_count) = packetizer::fragment_count(payload.len(), true) else {
                 continue;
             };
-            for (index, fragment) in payload.chunks(protocol::MAX_PAYLOAD).enumerate() {
+            for (index, fragment) in payload.chunks(packetizer::chunk_size(true)).enumerate() {
                 let _ = send(
                     &cursor_route,
                     &send_key,
@@ -929,7 +918,7 @@ pub async fn spawn_receiver(
                         fragment_index: index as u16,
                         fragment_count,
                         timestamp_us: cursor.timestamp_us,
-                        ..Default::default()
+                        keyframe: true,
                     },
                     fragment,
                 )
@@ -1184,6 +1173,10 @@ mod tests {
         let mut malformed = encoded;
         malformed[38..42].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(CursorPacket::decode(packet.timestamp_us, &malformed).is_none());
+
+        let mut oversized_color = packet.clone();
+        oversized_color.shape.as_mut().unwrap().height = 65;
+        assert!(oversized_color.encode().is_err());
     }
 
     #[test]

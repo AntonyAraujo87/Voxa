@@ -111,11 +111,15 @@ pub(super) fn coalesce_queued_motion(queue: &mut VecDeque<Vec<u8>>, payload: &[u
     else {
         return false;
     };
-    let merged = RemoteInput {
-        dx: previous.dx.saturating_add(current.dx),
-        dy: previous.dy.saturating_add(current.dy),
-        ..current
+    let (Some(dx), Some(dy)) = (
+        previous.dx.checked_add(current.dx),
+        previous.dy.checked_add(current.dy),
+    ) else {
+        // Preserve o deslocamento integral em um segundo datagrama. Saturar
+        // faria o ponteiro perder distancia em movimentos muito rapidos.
+        return false;
     };
+    let merged = RemoteInput { dx, dy, ..current };
     if let Some(last) = queue.back_mut() {
         *last = merged.encode().to_vec();
     }
@@ -124,6 +128,67 @@ pub(super) fn coalesce_queued_motion(queue: &mut VecDeque<Vec<u8>>, payload: &[u
 
 pub(super) fn is_queued_motion(payload: &[u8]) -> bool {
     RemoteInput::decode(payload).is_some_and(|event| event.kind == MOUSE_MOVE)
+}
+
+fn is_release(payload: &[u8]) -> bool {
+    RemoteInput::decode(payload)
+        .is_some_and(|event| matches!(event.kind, KEYBOARD | MOUSE_BUTTON) && !event.down)
+}
+
+fn is_press(payload: &[u8]) -> bool {
+    RemoteInput::decode(payload)
+        .is_some_and(|event| matches!(event.kind, KEYBOARD | MOUSE_BUTTON) && event.down)
+}
+
+fn is_matching_press(queued: &[u8], release: RemoteInput) -> bool {
+    RemoteInput::decode(queued)
+        .is_some_and(|event| event.kind == release.kind && event.code == release.code && event.down)
+}
+
+/// Enfileira controle remoto sem permitir que pressao da fila deixe uma tecla
+/// presa no host. Retorna `true` quando a fila mudou ou o evento foi absorvido.
+pub(super) fn enqueue_bounded_input(
+    queue: &mut VecDeque<Vec<u8>>,
+    payload: Vec<u8>,
+    limit: usize,
+) -> bool {
+    if coalesce_queued_motion(queue, &payload) {
+        return true;
+    }
+    if queue.len() < limit {
+        queue.push_back(payload);
+        return true;
+    }
+    if let Some(position) = queue.iter().position(|queued| is_queued_motion(queued)) {
+        queue.remove(position);
+        queue.push_back(payload);
+        return true;
+    }
+    let Some(release) = RemoteInput::decode(&payload)
+        .filter(|event| matches!(event.kind, KEYBOARD | MOUSE_BUTTON) && !event.down)
+    else {
+        return false;
+    };
+    // Se a pressao correspondente ainda nem saiu da fila, cancelar o par e
+    // mais correto que transmitir apenas o release.
+    if let Some(position) = queue
+        .iter()
+        .position(|queued| is_matching_press(queued, release))
+    {
+        queue.remove(position);
+        return true;
+    }
+    // Uma transicao de release que chegou ate aqui pode liberar uma tecla ja
+    // enviada. Sacrifique uma nova pressao, que e segura de perder.
+    if let Some(position) = queue.iter().position(|queued| is_press(queued)) {
+        queue.remove(position);
+        queue.push_back(payload);
+        return true;
+    }
+    // Com 512 entradas e no maximo 250 controles validos, esta fila so pode
+    // estar cheia de releases se houver repeticoes. Um release identico ja
+    // pendente torna o novo pacote redundante.
+    queue.iter().any(|queued| queued == &payload) && is_release(&payload)
 }
 
 pub(super) fn spawn_capture(
@@ -470,5 +535,56 @@ mod tests {
         }
         .encode();
         assert!(!coalesce_queued_motion(&mut queue, &button));
+    }
+
+    #[test]
+    fn motion_overflow_is_kept_as_a_separate_event() {
+        let first = RemoteInput {
+            kind: MOUSE_MOVE,
+            code: 0,
+            down: false,
+            dx: i16::MAX,
+            dy: 0,
+        }
+        .encode()
+        .to_vec();
+        let second = RemoteInput {
+            kind: MOUSE_MOVE,
+            code: 0,
+            down: false,
+            dx: 1,
+            dy: 0,
+        }
+        .encode()
+        .to_vec();
+        let mut queue = VecDeque::from([first]);
+        assert!(!coalesce_queued_motion(&mut queue, &second));
+        assert!(enqueue_bounded_input(&mut queue, second, 2));
+        assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn full_input_queue_cancels_unsent_press_before_losing_release() {
+        let press = RemoteInput {
+            kind: KEYBOARD,
+            code: 65,
+            down: true,
+            dx: 0,
+            dy: 0,
+        }
+        .encode()
+        .to_vec();
+        let release = RemoteInput {
+            kind: KEYBOARD,
+            code: 65,
+            down: false,
+            dx: 0,
+            dy: 0,
+        }
+        .encode()
+        .to_vec();
+        let mut queue = VecDeque::from([press]);
+        assert!(enqueue_bounded_input(&mut queue, release, 1));
+        assert!(queue.is_empty());
     }
 }

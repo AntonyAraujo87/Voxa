@@ -171,3 +171,14 @@ HTTP 200 por TLS 1.3 com relay anunciado.
   túnel UDP, reenviada periodicamente e armazenada em cache no espectador. O
   renderer cria o cursor Win32 real para formas monocromáticas e ARGB e mantém
   fallback para tipos que exigem XOR.
+
+## Revisão de robustez posterior
+
+- O autoteste de áudio mantém vivos o cliente de captura e o evento WASAPI até
+  `Stop`, evitando fechar o `HANDLE` enquanto o `IAudioClient` ainda o usa.
+- A fila de controle remoto comporta 512 transições, agrega movimento somente
+  quando a soma cabe em `i16` e prioriza `key up`/`button up`. Quando um par
+  ainda não enviado cabe na fila, pressão e liberação são canceladas juntas.
+- Formas coloridas de cursor ficam limitadas a 64x64 e formas monocromáticas a
+  64x128 por causa das máscaras empilhadas. A remontagem usa fragmentos de
+  keyframe e prazo de 1,5 s, suficiente para o piso de 800 kbps sem reenvio.

@@ -213,23 +213,28 @@ impl DxgiCapture {
                 )
                 .map_err(|error| format!("Forma do cursor DXGI: {error}"))?;
         }
-        if required == 0
-            || required as usize > bytes.len()
-            || required as usize > CursorPacket::MAX_SHAPE_BYTES
-            || info.Width == 0
-            || info.Width > 64
-            || info.Height == 0
-            || info.Height > 128
-            || info.Pitch == 0
-        {
-            return Ok(None);
-        }
         let kind = match info.Type as i32 {
             value if value == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0 => 1,
             value if value == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR.0 => 2,
             value if value == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR.0 => 4,
             _ => return Ok(None),
         };
+        let valid_height = if kind == 1 {
+            info.Height <= 128
+        } else {
+            info.Height <= 64
+        };
+        if required == 0
+            || required as usize > bytes.len()
+            || required as usize > CursorPacket::MAX_SHAPE_BYTES
+            || info.Width == 0
+            || info.Width > 64
+            || info.Height == 0
+            || !valid_height
+            || info.Pitch == 0
+        {
+            return Ok(None);
+        }
         bytes.truncate(required as usize);
         let id = bytes.iter().fold(
             id ^ u64::from(info.Type) ^ (u64::from(info.Width) << 32) ^ u64::from(info.Height),

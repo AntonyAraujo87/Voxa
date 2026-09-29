@@ -232,6 +232,19 @@ impl CursorPacket {
     // mascaras empilhadas de um cursor monocromatico 64x64.
     pub const MAX_SHAPE_BYTES: usize = 64 * 128 * 4;
 
+    fn valid_shape_dimensions(kind: u8, width: u16, height: u16) -> bool {
+        width > 0
+            && width <= 64
+            && height > 0
+            && match kind {
+                // DXGI empilha as mascaras AND/XOR do cursor monocromatico.
+                1 => height <= 128,
+                // Cursores coloridos sao limitados a 64x64 (16 KiB).
+                2 | 4 => height <= 64,
+                _ => false,
+            }
+    }
+
     pub(super) fn encode(&self) -> Result<Vec<u8>, String> {
         let shape_len = self.shape.as_ref().map_or(0, |shape| shape.bytes.len());
         if shape_len > Self::MAX_SHAPE_BYTES || (!self.shape_changed && self.shape.is_some()) {
@@ -255,11 +268,7 @@ impl CursorPacket {
             bytes[17] = Self::SHAPE_VERSION;
             bytes[18] = if self.shape.is_some() { 2 } else { 1 };
             if let Some(shape) = &self.shape {
-                if !matches!(shape.kind, 1 | 2 | 4)
-                    || shape.width == 0
-                    || shape.height == 0
-                    || shape.width > 64
-                    || shape.height > 128
+                if !Self::valid_shape_dimensions(shape.kind, shape.width, shape.height)
                     || shape.pitch == 0
                 {
                     return Err("Metadados da forma do cursor invalidos".into());
@@ -325,12 +334,7 @@ impl CursorPacket {
             hotspot_y: u16::from_be_bytes(bytes[36..38].try_into().ok()?),
             bytes: Arc::new(bytes[43..].to_vec()),
         };
-        if !matches!(shape.kind, 1 | 2 | 4)
-            || shape.width == 0
-            || shape.height == 0
-            || shape.width > 64
-            || shape.height > 128
-            || shape.pitch == 0
+        if !Self::valid_shape_dimensions(shape.kind, shape.width, shape.height) || shape.pitch == 0
         {
             return None;
         }

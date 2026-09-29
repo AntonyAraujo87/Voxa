@@ -411,7 +411,10 @@ pub(super) fn enumerate_processes() -> Result<Vec<AudioProcessInfo>, String> {
 pub(super) fn validate_source(process_id: Option<u32>) -> Result<(), String> {
     let _com = ComApartment::multithreaded()
         .map_err(|error| format!("Inicializa COM para validar áudio: {error}"))?;
-    let (client, _, _) = open_capture(process_id)?;
+    // O cliente foi inicializado com EVENTCALLBACK. Mantenha o capture client e
+    // o HANDLE vivos ate depois de Stop; descarta-los aqui fecha o evento que o
+    // AudioClient ainda usa durante o teste.
+    let (client, _capture, _event) = open_capture(process_id)?;
     unsafe { client.Start() }.map_err(|error| format!("Inicia teste WASAPI: {error}"))?;
     std::thread::sleep(Duration::from_millis(25));
     unsafe { client.Stop() }.map_err(|error| format!("Encerra teste WASAPI: {error}"))
