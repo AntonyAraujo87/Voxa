@@ -63,6 +63,10 @@ movimento e suporte às teclas estendidas do Windows. Raw Input permanece como
 etapa condicionada a testes HIL porque exige integrar `WM_INPUT` ao loop nativo
 da janela Tauri sem interferir no tratamento de foco e fechamento.
 
+Captura e reprodução de áudio usam eventos WASAPI nativos, evitando consulta de
+2 ms quando o dispositivo está ocioso. O fallback de recuperação continua
+reabrindo o cliente após troca ou falha do dispositivo.
+
 ## Critério para chamar de transmissão pronta
 
 - Dois PCs físicos, redes distintas, sessões de 30 minutos em 1080p60.

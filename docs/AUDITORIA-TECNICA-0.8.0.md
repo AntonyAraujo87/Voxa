@@ -161,3 +161,7 @@ HTTP 200 por TLS 1.3 com relay anunciado.
   reduzindo o risco de entrada presa sem aumentar banda ou memória.
 - A abertura do socket dual stack deixou de conter `unwrap` em código de
   produção e agora devolve um erro diagnosticável.
+- Captura e reprodução WASAPI agora usam `AUDCLNT_STREAMFLAGS_EVENTCALLBACK` e
+  eventos nativos do Windows. O caminho de áudio deixa de acordar a thread a
+  cada 2 ms quando não há pacote ou espaço no dispositivo, mantendo timeouts
+  curtos para encerramento e recuperação.

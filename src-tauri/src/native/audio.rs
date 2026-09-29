@@ -17,9 +17,9 @@ use std::{
     time::Duration,
 };
 use windows::{
-    core::{implement, IUnknown, Interface, Ref, HRESULT},
+    core::{implement, IUnknown, Interface, Ref, HRESULT, PCWSTR},
     Win32::{
-        Foundation::CloseHandle,
+        Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::{
             Audio::{
                 eConsole, eRender, ActivateAudioInterfaceAsync, AudioSessionStateActive,
@@ -29,10 +29,11 @@ use windows::{
                 IAudioRenderClient, IAudioSessionControl2, IAudioSessionManager2,
                 IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
                 AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-                AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-                AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
-                AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
-                DEVICE_STATE_ACTIVE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+                AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDIOCLIENT_ACTIVATION_PARAMS,
+                AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+                AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, DEVICE_STATE_ACTIVE,
+                PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
                 VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
             },
             Multimedia::WAVE_FORMAT_IEEE_FLOAT,
@@ -46,6 +47,7 @@ use windows::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
             TH32CS_SNAPPROCESS,
         },
+        System::Threading::{CreateEventW, WaitForSingleObject},
         System::Variant::VT_BLOB,
     },
 };
@@ -56,6 +58,31 @@ const FRAME_SAMPLES: usize = 960;
 const FRAME_US: u64 = 20_000;
 const OPUS_MAX_PACKET: usize = 1_275;
 const WASAPI_BUFFER_100NS: i64 = 400_000;
+
+struct AudioEvent(HANDLE);
+
+impl AudioEvent {
+    fn new() -> Result<Self, String> {
+        unsafe { CreateEventW(None, false, false, PCWSTR::null()) }
+            .map(Self)
+            .map_err(|error| format!("Cria evento WASAPI: {error}"))
+    }
+
+    fn wait(&self, timeout_ms: u32) -> Result<(), String> {
+        match unsafe { WaitForSingleObject(self.0, timeout_ms) } {
+            WAIT_OBJECT_0 | WAIT_TIMEOUT => Ok(()),
+            result => Err(format!("Espera WASAPI falhou: 0x{:08x}", result.0)),
+        }
+    }
+}
+
+impl Drop for AudioEvent {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
 
 pub(super) fn spawn_capture(
     transport: HostTransportHandle,
@@ -105,7 +132,7 @@ fn capture_loop(
 ) -> Result<(), String> {
     let _com = ComApartment::multithreaded()
         .map_err(|error| format!("Inicializa COM para áudio: {error}"))?;
-    let (client, capture) = open_capture(process_id)?;
+    let (client, capture, event) = open_capture(process_id)?;
     // Retomar no relogio monotonic compartilhado evita regressao após
     // suspensao, hot-plug ou correcao do relogio civil do Windows.
     *timestamp_us = (*timestamp_us).max(voxa_native_core::clock::monotonic_us());
@@ -148,7 +175,7 @@ fn capture_loop(
         let packet_frames = unsafe { capture.GetNextPacketSize() }
             .map_err(|e| format!("Consulta áudio do sistema: {e}"))?;
         if packet_frames == 0 {
-            thread::sleep(Duration::from_millis(2));
+            event.wait(100)?;
             continue;
         }
         let mut data = ptr::null_mut();
@@ -194,7 +221,7 @@ fn capture_loop(
 fn playback_loop(transport: &TransportHandle, state: &Arc<Mutex<Inner>>) -> Result<(), String> {
     let _com = ComApartment::multithreaded()
         .map_err(|error| format!("Inicializa COM para áudio: {error}"))?;
-    let (client, render, capacity) = open_render()?;
+    let (client, render, capacity, event) = open_render()?;
     let mut decoder = OpusDecoder::new(SAMPLE_RATE as i32, CHANNELS).map_err(str::to_owned)?;
     let mut decoded = vec![0.0f32; FRAME_SAMPLES * CHANNELS];
     let mut samples = VecDeque::<f32>::with_capacity(FRAME_SAMPLES * CHANNELS * 6);
@@ -254,7 +281,7 @@ fn playback_loop(transport: &TransportHandle, state: &Arc<Mutex<Inner>>) -> Resu
             .map_err(|e| format!("Consulta buffer de áudio: {e}"))?;
         let writable = capacity.saturating_sub(padding).min(FRAME_SAMPLES as u32);
         if writable == 0 {
-            thread::sleep(Duration::from_millis(2));
+            event.wait(20)?;
             continue;
         }
         let pointer = unsafe { render.GetBuffer(writable) }
@@ -384,7 +411,7 @@ pub(super) fn enumerate_processes() -> Result<Vec<AudioProcessInfo>, String> {
 pub(super) fn validate_source(process_id: Option<u32>) -> Result<(), String> {
     let _com = ComApartment::multithreaded()
         .map_err(|error| format!("Inicializa COM para validar áudio: {error}"))?;
-    let (client, _) = open_capture(process_id)?;
+    let (client, _, _) = open_capture(process_id)?;
     unsafe { client.Start() }.map_err(|error| format!("Inicia teste WASAPI: {error}"))?;
     std::thread::sleep(Duration::from_millis(25));
     unsafe { client.Stop() }.map_err(|error| format!("Encerra teste WASAPI: {error}"))
@@ -489,7 +516,9 @@ fn device_enumerator() -> Result<IMMDeviceEnumerator, String> {
     }
 }
 
-fn open_capture(process_id: Option<u32>) -> Result<(IAudioClient, IAudioCaptureClient), String> {
+fn open_capture(
+    process_id: Option<u32>,
+) -> Result<(IAudioClient, IAudioCaptureClient, AudioEvent), String> {
     let client = match process_id {
         Some(process_id) => process_loopback_client(process_id)?,
         None => default_render_client()?,
@@ -500,6 +529,7 @@ fn open_capture(process_id: Option<u32>) -> Result<(IAudioClient, IAudioCaptureC
             AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_LOOPBACK
                 | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
                 | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
             WASAPI_BUFFER_100NS,
             0,
@@ -508,18 +538,23 @@ fn open_capture(process_id: Option<u32>) -> Result<(IAudioClient, IAudioCaptureC
         )
     }
     .map_err(|e| format!("Configura captura do som do sistema: {e}"))?;
+    let event = AudioEvent::new()?;
+    unsafe { client.SetEventHandle(event.0) }
+        .map_err(|error| format!("Configura evento da captura WASAPI: {error}"))?;
     let capture = unsafe { client.GetService::<IAudioCaptureClient>() }
         .map_err(|e| format!("Abre captura do som do sistema: {e}"))?;
-    Ok((client, capture))
+    Ok((client, capture, event))
 }
 
-fn open_render() -> Result<(IAudioClient, IAudioRenderClient, u32), String> {
+fn open_render() -> Result<(IAudioClient, IAudioRenderClient, u32, AudioEvent), String> {
     let client = default_render_client()?;
     let format = format();
     unsafe {
         client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
             WASAPI_BUFFER_100NS,
             0,
             &format,
@@ -527,11 +562,14 @@ fn open_render() -> Result<(IAudioClient, IAudioRenderClient, u32), String> {
         )
     }
     .map_err(|e| format!("Configura reprodução do stream: {e}"))?;
+    let event = AudioEvent::new()?;
+    unsafe { client.SetEventHandle(event.0) }
+        .map_err(|error| format!("Configura evento da saída WASAPI: {error}"))?;
     let capacity = unsafe { client.GetBufferSize() }
         .map_err(|e| format!("Consulta capacidade de áudio: {e}"))?;
     let render = unsafe { client.GetService::<IAudioRenderClient>() }
         .map_err(|e| format!("Abre reprodução do stream: {e}"))?;
-    Ok((client, render, capacity))
+    Ok((client, render, capacity, event))
 }
 
 fn brief(message: &str) -> String {

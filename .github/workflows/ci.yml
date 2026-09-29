@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+# O mesmo commit costuma ser enviado para main e para codex/**. Uma unica
+# execucao por SHA e suficiente e evita consumir runner gratuito em duplicidade.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: true
+
 jobs:
   security:
     name: Auditoria de dependencias
