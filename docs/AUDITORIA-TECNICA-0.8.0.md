@@ -1,0 +1,78 @@
+# Voxa Stream 0.8.0 - Auditoria técnica e relatório de implementação
+
+Data da revisão: 29 de setembro de 2026.
+
+## Resultado executivo
+
+O Voxa 0.8.0 é um motor de streaming remoto P2P para Windows x86-64. O painel React/Tauri controla a sessão, mas nenhum frame de vídeo ou áudio atravessa o WebView. Captura, conversão, encode, transporte, decode, áudio e apresentação pertencem ao processo Rust e às APIs nativas do Windows.
+
+Esta versão altera o protocolo nativo para v2 e é incompatível com clientes 0.7.5. A incompatibilidade é detectada antes da abertura do túnel, com mensagem para atualizar os dois computadores. O release só deve ser promovido quando o signaling v2 estiver implantado e o workflow Windows/MSVC estiver verde.
+
+## Arquitetura validada
+
+1. O painel usa IPC somente para comandos, aprovação, configuração, update e diagnóstico. A CSP bloqueia `media-src`, objetos e frames; conexões remotas ficam limitadas a HTTPS/WSS.
+2. O host captura uma textura por DXGI Desktop Duplication. O D3D11 Video Processor escala e converte a textura para NV12 em SDR ou P010 em HDR10 sem mapear pixels na CPU.
+3. Media Foundation negocia AV1, H.265 ou H.264 conforme host e espectador. O encoder exige modo de baixa latência, GOP de um segundo, zero B-frames e bitrate mutável por `ICodecAPI`.
+4. O espectador decodifica em superfície D3D11 e apresenta em janela nativa separada, com swapchain flip-discard, letterbox, resize, fullscreen e recuperação após `device lost`.
+5. Áudio usa WASAPI loopback a 48 kHz estéreo e Opus de baixa latência. O usuário pode capturar todo o sistema ou somente uma aplicação com sessão ativa; o modo por processo evita devolver Discord e o próprio Voxa ao espectador.
+6. A mídia usa UDP assíncrono. Datagramas cifrados respeitam MTU interno de 1.178 bytes, remontagem limitada, antirreplay, expiração de frames e pedido de keyframe limitado.
+7. X25519 cria chaves de mídia independentes por par. SPAKE2 P-256 e Argon2id vinculam a senha da sala sem enviar senha, hash ou prova reutilizável ao servidor. ChaCha20-Poly1305 cifra e autentica cada datagrama.
+8. A corrida de rota tenta hole punching direto e relay VRLY cego. IPv4 e IPv6 são aceitos; o relay encaminha bytes cifrados sem conhecer a chave.
+
+## Implementações concluídas desde 0.7.5
+
+- Relógio monotônico de processo compartilhado por áudio e vídeo, resistente a ajuste do relógio civil e reinício de dispositivo.
+- Telemetria de captura, encode, rede, decode e apresentação em P50/P95/P99, com fila de aplicação e métricas individuais por espectador.
+- FEC XOR adaptativo apenas em keyframes, reduzindo redundância em rede saudável e aumentando proteção conforme a perda.
+- Máquina de estados formal: `idle`, `authenticating`, `awaiting-approval`, `connecting`, `streaming`, `recovering`, `closed` e `failed`.
+- Reconexão após mudança de rede, nova descoberta STUN, renovação de endpoints e corrida entre rota direta e até quatro relays.
+- Relay Node dual stack, bind configurável e testes reais de loopback IPv4/IPv6.
+- Aprovação e revogação de teclado/mouse por espectador. Input só é capturado com a janela nativa em foco, via túnel autenticado, e só é injetado após consentimento visível do host.
+- Capacidade de HDR10 fim a fim: BGRA/FP16 para P010, BT.2020/PQ, metadata SMPTE ST 2086, MaxCLL e MaxFALL, H.265/AV1 e swapchain R10G10B10A2. A negociação é individual e faz fallback SDR quando qualquer etapa não aceita HDR.
+- Protocolo nativo v2 com rejeição explícita de pares antigos.
+- Preflight de monitor, encoder, áudio, decoder, STUN, HTTPS do signaling e presença de relay. O app não inicia uma sessão que ficaria sem cobertura para CGNAT.
+- Diagnóstico circular local de 60 segundos e exportação JSON sem senha, chaves ou conteúdo.
+- Testes gerados para parser, limites, antirreplay e remontagem, alvos de fuzz para protocolo/FEC, simulação de perda/jitter, roteiro HIL e script de soak de duas horas.
+- RustSec, npm audit, Dependabot para npm/Cargo/Actions e actions fixadas por SHA.
+
+## Qualidade, segurança e validações executadas
+
+- Frontend TypeScript e bundle Vite: aprovados.
+- Servidor, segurança, matchmaking, relay e scripts: 37 de 37 testes aprovados.
+- Núcleo Rust: 31 de 31 testes aprovados.
+- `cargo check --locked`: aprovado para o backend Windows completo.
+- Clippy em todos os alvos com `-D warnings`: aprovado.
+- `npm audit --omit=dev` no app e no servidor: zero vulnerabilidades conhecidas.
+- RustSec: zero vulnerabilidades; sete avisos transitivos. `glib` pertence ao alvo Linux do Tauri e não entra no executável Windows. `unic-*` e `proc-macro-error` são dependências indiretas do ecossistema Tauri e devem ser removidas por atualização upstream, não por override local arriscado.
+- O teste local do crate Tauri não liga sob o toolchain GNU porque o linker não encontra `WebView2Loader.dll`. O código compila; o CI oficial usa MSVC e executa os testes do runtime.
+
+## Riscos e bugs futuros encontrados
+
+1. O pipeline HDR10 depende do comportamento dos MFTs de AMD, NVIDIA e Intel. Alguns drivers aceitam P010 no probe e falham apenas sob carga ou troca de modo; o fallback SDR reduz o impacto, mas HIL físico continua obrigatório.
+2. O controle de gamepad exige um driver virtual assinado. Injetar teclado/mouse com APIs de usuário é possível; emular controle Xbox de forma confiável não deve ser feito com driver próprio sem assinatura. Uma integração futura deve detectar e usar um driver virtual instalado com consentimento explícito.
+3. A segunda região de relay não pode ser criada na conta Oracle atual sem sair do Always Free: as duas instâncias E2 Micro gratuitas já são usadas por Voxa e Guará. O código já aceita vários relays, mas a infraestrutura adicional aguarda capacidade gratuita legítima.
+4. O teste real entre dois PCs, CGNAT, suspensão, firewall doméstico, WASAPI por processo e troca Wi-Fi/cabo não pode ser certificado por mocks ou por uma única máquina.
+5. Quatro encodes independentes podem ultrapassar o limite de sessões de certas GPUs. O Voxa mede capacidade e reduz o máximo; GPUs/driver novos ainda precisam alimentar a matriz HIL.
+6. O relay configurado é confirmado pelo health do signaling, mas o preflight não envia mídia antes do pareamento. A disponibilidade UDP efetiva é confirmada durante a corrida autenticada de rotas.
+
+## Melhorias recomendadas após 0.8.0
+
+- Integrar gamepad por um driver virtual assinado e mantido, com instalação separada, aviso claro e revogação imediata.
+- Criar uma segunda região de relay somente quando existir cota gratuita real; nunca ativar recurso pago automaticamente.
+- Alimentar uma base local de compatibilidade com resultados HIL assinados por versão de driver, além do probe já executado em tempo real.
+- Adicionar telemetria de tempo na fila interna do encoder quando o fabricante expuser essa métrica sem cópia da textura.
+- Automatizar um laboratório com duas máquinas físicas e controle de perda/jitter para executar o soak em AMD, NVIDIA e Intel.
+- Depois de validar HDR em hardware diverso, permitir preferência manual entre HDR10 nativo e tone mapping SDR.
+
+## Ações exigidas do proprietário
+
+1. Instalar o release em dois computadores e seguir `docs/VALIDACAO-HIL-E-REDE.md`, começando por H.264 e depois H.265/AV1.
+2. Testar pelo menos uma conexão em CGNAT e confirmar no diagnóstico uma rota `relay://`.
+3. Testar áudio por processo com jogo e Discord simultâneos, confirmando que o espectador não ouve retorno da chamada.
+4. Executar o soak de duas horas com `scripts/soak-voxa.ps1`, incluindo duas mudanças de interface de rede.
+5. Guardar os dois diagnósticos JSON e o CSV do soak para comparar latência, perda, memória, handles e reinícios.
+6. Não criar nova VM Oracle até haver cota Always Free disponível. As VMs Voxa e Guará já ocupam a capacidade gratuita observada.
+
+## Critério de publicação
+
+O código está pronto para gerar um draft 0.8.0. Antes de marcar a versão como estável, o workflow de release deve concluir build, assinatura, inspeção do PE, instalação, update e desinstalação na VM Windows. A validação física descrita acima continua sendo o critério para declarar compatibilidade de GPU/rede, não um requisito que possa ser falsamente substituído por testes automatizados.

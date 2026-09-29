@@ -1,6 +1,6 @@
 # Voxa Stream
 
-O Voxa 0.7 é um projeto de streaming P2P para Windows. O Tauri/React funciona
+O Voxa 0.8 é um projeto de streaming P2P para Windows. O Tauri/React funciona
 somente como painel de conexão. Captura, transporte, telemetria e a janela de
 reprodução pertencem ao processo Rust; não existem tags HTML de áudio ou vídeo.
 
