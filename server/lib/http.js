@@ -2,7 +2,7 @@ import express from "express";
 import { rateLimit } from "express-rate-limit";
 import { requestIp } from "./security.js";
 
-export function createHttpApp() {
+export function createHttpApp({ relayCandidates = 0 } = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.use(rateLimit({
@@ -13,7 +13,10 @@ export function createHttpApp() {
   }));
   app.get("/health", (_req, res) => {
     res.set({ "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      relayConfigured: Number.isInteger(relayCandidates) && relayCandidates > 0,
+    });
   });
   app.use((_req, res) => res.status(404).type("text/plain").send("not found"));
   app.use((_error, _req, res, _next) => res.status(500).json({ error: "falha-interna" }));

@@ -70,7 +70,10 @@ const relay = RELAY_PORT > 0 ? startUdpRelay({ port: RELAY_PORT, secret: RELAY_S
 
 /* ------------------------------- HTTP ------------------------------------- */
 
-const httpServer = createServer({ requestTimeout: 10000, headersTimeout: 10000, maxHeaderSize: 16384 }, createHttpApp());
+const httpServer = createServer(
+  { requestTimeout: 10000, headersTimeout: 10000, maxHeaderSize: 16384 },
+  createHttpApp({ relayCandidates: RELAY_PUBLIC_ENDPOINTS.length }),
+);
 const admission = new Admission(128, MAX_SOCKETS_PER_IP);
 const reservations = new WeakMap();
 

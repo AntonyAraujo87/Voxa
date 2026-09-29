@@ -19,8 +19,11 @@ async function probe(handler, overrides = {}, timeoutMs = 2000) {
 
 test('health exige status correto e corpo minimo', async () => {
   for (const [status, body, expected] of [
-    [200, '{"ok":true}', true], [500, '{"ok":true}', false],
-    [200, '{"ok":false}', false], [200, '{"ok":true,"rss":42}', false],
+    [200, '{"ok":true,"relayConfigured":true}', true],
+    [500, '{"ok":true,"relayConfigured":true}', false],
+    [200, '{"ok":true,"relayConfigured":false}', false],
+    [200, '{"ok":false,"relayConfigured":true}', false],
+    [200, '{"ok":true,"relayConfigured":true,"rss":42}', false],
     [200, '<html>proxy error</html>', false], [200, 'null', false],
   ]) {
     const result = await probe((req, res) => { res.writeHead(status); res.end(body); });

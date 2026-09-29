@@ -43,8 +43,9 @@ export function readEndpoint(endpoint, { get = https.get, timeoutMs = 90000 } = 
           try { payload = JSON.parse(body); }
           catch { finish({ healthy: false, error: 'invalid-json' }); return; }
           const object = payload !== null && typeof payload === 'object' && !Array.isArray(payload);
-          const keys = object ? Object.keys(payload) : [];
-          const validBody = object && payload.ok === true && keys.length === 1;
+          const keys = object ? Object.keys(payload).sort() : [];
+          const validBody = object && payload.ok === true && payload.relayConfigured === true
+            && keys.join(',') === 'ok,relayConfigured';
           const healthy = res.statusCode === endpoint.expectedStatus && validBody;
           // Valores e nomes arbitrarios retornados pelo servidor nao vao para logs.
           finish({ healthy, ...(!healthy ? { error: 'unexpected-health-response' } : {}) });

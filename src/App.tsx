@@ -197,6 +197,11 @@ export default function App() {
       );
       const signalingResponse = await fetch(`${validSignalingUrl(serverUrl).replace(/\/$/, "")}/health`, { signal: AbortSignal.timeout(5_000) });
       if (!signalingResponse.ok) throw new Error(`Servidor de matchmaking indisponível (HTTP ${signalingResponse.status})`);
+      const signalingHealth = await signalingResponse.json() as { ok?: boolean; relayConfigured?: boolean };
+      if (signalingHealth.ok !== true) throw new Error("O servidor de matchmaking respondeu com estado inválido");
+      if (signalingHealth.relayConfigured !== true) {
+        throw new Error("O servidor de relay UDP não está configurado; a transmissão poderia falhar em CGNAT");
+      }
       if (!preflight.ready) {
         throw new Error(`Teste preventivo falhou: ${preflight.checks.filter((check) => !check.passed).map((check) => `${check.name}: ${check.detail}`).join("; ")}`);
       }

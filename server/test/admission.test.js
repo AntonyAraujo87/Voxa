@@ -45,13 +45,25 @@ test("HTTP real responde 429 no limite e health nao revela ocupacao", async () =
   try {
     const url = `http://127.0.0.1:${server.address().port}/health`;
     const first = await fetch(url);
-    assert.deepEqual(await first.json(), { ok: true });
+    assert.deepEqual(await first.json(), { ok: true, relayConfigured: false });
     assert.equal(first.headers.get("x-powered-by"), null);
     for (let i = 1; i < 120; i++) { const result = await fetch(url); assert.equal(result.status, 200); await result.text(); }
     const limited = await fetch(url);
     assert.equal(limited.status, 429);
     assert.ok(limited.headers.get("retry-after"));
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
+test("health informa relay sem revelar endpoint ou ocupacao", async () => {
+  const server = createServer(createHttpApp({ relayCandidates: 2 }));
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/health`);
+    assert.deepEqual(await response.json(), { ok: true, relayConfigured: true });
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test("flood de transportes sem Socket.IO hello e bloqueado antes da autenticacao", { timeout: 15000 }, async () => {

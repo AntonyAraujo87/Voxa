@@ -19,7 +19,7 @@ Variáveis necessárias:
 | `VOXA_RELAY_BIND` | `0.0.0.0` para IPv4 ou `::` para dual stack IPv4/IPv6 quando a VM possuir IPv6 público |
 | `VOXA_RELAY_SECRET` | Segredo aleatório de 32+ caracteres, idêntico no Render e na VM |
 
-Execute `node scripts/check-deployment.mjs` depois do deploy. O health não expõe
+Execute `node scripts/check-deployment.mjs` depois do deploy. O health informa apenas se existe relay configurado e não expõe
 salas, IPs, endpoints ou chaves.
 
 A senha escolhida no aplicativo pertence somente à sala. Cada cliente deriva um
