@@ -67,6 +67,10 @@ Captura e reprodução de áudio usam eventos WASAPI nativos, evitando consulta 
 2 ms quando o dispositivo está ocioso. O fallback de recuperação continua
 reabrindo o cliente após troca ou falha do dispositivo.
 
+O cursor usa a forma devolvida por `GetFramePointerShape`, com limite de 64 px,
+fragmentação cifrada, cache e reenvio periódico. Cursores masked-color e maiores
+mantêm fallback seguro até a composição XOR poder ocorrer no backbuffer D3D11.
+
 ## Critério para chamar de transmissão pronta
 
 - Dois PCs físicos, redes distintas, sessões de 30 minutos em 1080p60.

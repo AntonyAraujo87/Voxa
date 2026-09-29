@@ -128,9 +128,10 @@ HTTP 200 por TLS 1.3 com relay anunciado.
 
 - Validar dois PCs, CGNAT, suspensão e troca Wi-Fi/cabo. Mocks não certificam
   driver, firewall, NAT doméstico, áudio do jogo nem relay público sob carga.
-- O cursor transmitido leva posição e visibilidade, mas ainda desenha a seta
-  padrão. Suporte correto a cursores coloridos/animados exige transportar a
-  forma obtida por `GetFramePointerShape` e compô-la na textura D3D11.
+- O cursor transmite posição, visibilidade e formas DXGI monocromáticas ou ARGB
+  de até 64 pixels. Formas `MASKED_COLOR`, que exigem XOR com o desktop, e
+  cursores de acessibilidade maiores usam a seta segura até existir composição
+  por shader.
 - O controle de mouse usa deltas da posição do cursor. Jogos que prendem o mouse
   ou usam Raw Input precisam de captura relativa nativa e tratamento de teclas
   estendidas; gamepad continua dependendo de driver virtual assinado.
@@ -165,3 +166,8 @@ HTTP 200 por TLS 1.3 com relay anunciado.
   eventos nativos do Windows. O caminho de áudio deixa de acordar a thread a
   cada 2 ms quando não há pacote ou espaço no dispositivo, mantendo timeouts
   curtos para encerramento e recuperação.
+- A captura consulta `GetFramePointerShape` apenas quando o DXGI informa uma
+  mudança. A forma fica limitada a 32 KiB, é fragmentada e cifrada pelo mesmo
+  túnel UDP, reenviada periodicamente e armazenada em cache no espectador. O
+  renderer cria o cursor Win32 real para formas monocromáticas e ARGB e mantém
+  fallback para tipos que exigem XOR.

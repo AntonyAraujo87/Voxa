@@ -7,7 +7,7 @@ mod runtime;
 mod state;
 #[cfg(test)]
 use fanout::{negotiated_codec, opus_bitrate_for_video};
-pub use fanout::{AudioPacket, CursorPacket, EncodedFrame, HostTransportHandle};
+pub use fanout::{AudioPacket, CursorPacket, CursorShape, EncodedFrame, HostTransportHandle};
 use feedback::FeedbackReport;
 use route::Route;
 pub use runtime::DatagramHub;
@@ -203,8 +203,14 @@ impl TransportHandle {
     pub fn wait_for_audio(&self, timeout: Duration) {
         self.incoming_audio_wake.wait_blocking(timeout);
     }
-    pub fn queue_cursor(&self, cursor: CursorPacket) {
+    pub fn queue_cursor(&self, mut cursor: CursorPacket) {
         if let Ok(mut slot) = self.outgoing_cursor.lock() {
+            if !cursor.shape_changed {
+                if let Some(pending) = slot.as_ref().filter(|packet| packet.shape_changed) {
+                    cursor.shape_changed = true;
+                    cursor.shape.clone_from(&pending.shape);
+                }
+            }
             *slot = Some(cursor);
         }
         self.outgoing_cursor_wake.notify();
@@ -372,6 +378,7 @@ pub async fn spawn_receiver(
     let recv_peer_id = peer_id.clone();
     let receiver = tauri::async_runtime::spawn(async move {
         let mut frames = Reassembler::default();
+        let mut cursor_frames = Reassembler::default();
         let mut replay = ReplayGuard::default();
         let mut loss = LossEstimator::default();
         let mut last_feedback = Instant::now();
@@ -402,6 +409,7 @@ pub async fn spawn_receiver(
                 });
             }
             let expired = frames.expire();
+            let _ = cursor_frames.expire();
             if expired > 0 {
                 if let Ok(mut inner) = recv_state.lock() {
                     inner.status.dropped_frames += expired as u64;
@@ -621,10 +629,31 @@ pub async fn spawn_receiver(
                                 }
                             }
                             Kind::Cursor => {
-                                if let Some(cursor) =
-                                    CursorPacket::decode(packet.meta.timestamp_us, &packet.payload)
-                                {
+                                let completed = if packet.meta.fragment_count <= 1 {
+                                    Some(packet.payload)
+                                } else {
+                                    cursor_frames
+                                        .push(
+                                            packet.meta.frame_id,
+                                            packet.meta.fragment_index,
+                                            packet.meta.fragment_count,
+                                            false,
+                                            packet.meta.timestamp_us,
+                                            &packet.payload,
+                                        )
+                                        .ok()
+                                        .flatten()
+                                        .map(|frame| frame.bytes)
+                                };
+                                if let Some(mut cursor) = completed.as_deref().and_then(|payload| {
+                                    CursorPacket::decode(packet.meta.timestamp_us, payload)
+                                }) {
                                     if let Ok(mut slot) = recv_cursor.lock() {
+                                        if !cursor.shape_changed {
+                                            cursor.shape = slot
+                                                .as_ref()
+                                                .and_then(|previous| previous.shape.clone());
+                                        }
                                         *slot = Some(cursor);
                                     }
                                 }
@@ -882,20 +911,30 @@ pub async fn spawn_receiver(
                 cursor_wake.wait_async().await;
                 continue;
             };
-            let payload = cursor.encode();
-            let _ = send(
-                &cursor_route,
-                &send_key,
-                Kind::Cursor,
-                Meta {
-                    stream_id,
-                    sequence: cursor_sequence.fetch_add(1, Ordering::Relaxed),
-                    timestamp_us: cursor.timestamp_us,
-                    ..Default::default()
-                },
-                &payload,
-            )
-            .await;
+            let Ok(payload) = cursor.encode() else {
+                continue;
+            };
+            let Ok(fragment_count) = protocol::fragment_count(payload.len()) else {
+                continue;
+            };
+            for (index, fragment) in payload.chunks(protocol::MAX_PAYLOAD).enumerate() {
+                let _ = send(
+                    &cursor_route,
+                    &send_key,
+                    Kind::Cursor,
+                    Meta {
+                        stream_id,
+                        sequence: cursor_sequence.fetch_add(1, Ordering::Relaxed),
+                        frame_id: cursor.timestamp_us,
+                        fragment_index: index as u16,
+                        fragment_count,
+                        timestamp_us: cursor.timestamp_us,
+                        ..Default::default()
+                    },
+                    fragment,
+                )
+                .await;
+            }
         }
     });
 
@@ -1104,8 +1143,10 @@ mod tests {
             y: 345,
             source_width: 2560,
             source_height: 1440,
+            shape_changed: false,
+            shape: None,
         };
-        let encoded = packet.encode();
+        let encoded = packet.encode().unwrap();
         let decoded = CursorPacket::decode(packet.timestamp_us, &encoded).unwrap();
         assert_eq!(decoded.timestamp_us, packet.timestamp_us);
         assert_eq!(decoded.visible, packet.visible);
@@ -1113,6 +1154,36 @@ mod tests {
         assert_eq!(decoded.y, packet.y);
         assert_eq!(decoded.source_width, packet.source_width);
         assert_eq!(decoded.source_height, packet.source_height);
+    }
+
+    #[test]
+    fn cursor_shape_round_trips_and_stays_bounded() {
+        let packet = CursorPacket {
+            timestamp_us: 77,
+            visible: true,
+            x: 10,
+            y: 20,
+            source_width: 1920,
+            source_height: 1080,
+            shape_changed: true,
+            shape: Some(CursorShape {
+                id: 9,
+                kind: 2,
+                width: 2,
+                height: 2,
+                pitch: 8,
+                hotspot_x: 0,
+                hotspot_y: 0,
+                bytes: Arc::new(vec![255; 16]),
+            }),
+        };
+        let encoded = packet.encode().unwrap();
+        let decoded = CursorPacket::decode(packet.timestamp_us, &encoded).unwrap();
+        assert_eq!(decoded, packet);
+
+        let mut malformed = encoded;
+        malformed[38..42].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(CursorPacket::decode(packet.timestamp_us, &malformed).is_none());
     }
 
     #[test]

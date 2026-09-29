@@ -31,9 +31,12 @@ use windows::{
                 DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 DXGI_USAGE_RENDER_TARGET_OUTPUT,
             },
-            Gdi::{GetDC, ReleaseDC},
+            Gdi::{CreateBitmap, DeleteObject, GetDC, ReleaseDC, HBITMAP},
         },
-        UI::WindowsAndMessaging::{DrawIconEx, GetClientRect, LoadCursorW, DI_NORMAL, IDC_ARROW},
+        UI::WindowsAndMessaging::{
+            CreateIconIndirect, DestroyIcon, DrawIconEx, GetClientRect, LoadCursorW, DI_NORMAL,
+            HICON, ICONINFO, IDC_ARROW,
+        },
     },
 };
 
@@ -50,6 +53,20 @@ pub struct NativePresenter {
     output_width: u32,
     output_height: u32,
     hdr10: Option<Hdr10Metadata>,
+    cursor_icon: Option<CachedCursorIcon>,
+}
+
+struct CachedCursorIcon {
+    id: u64,
+    handle: HICON,
+}
+
+impl Drop for CachedCursorIcon {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DestroyIcon(self.handle);
+        }
+    }
 }
 
 impl NativePresenter {
@@ -130,6 +147,7 @@ impl NativePresenter {
                 output_width: width,
                 output_height: height,
                 hdr10,
+                cursor_icon: None,
             })
         }
     }
@@ -228,7 +246,10 @@ impl NativePresenter {
         }
     }
 
-    pub fn present_cursor(&self, cursor: &super::transport::CursorPacket) -> Result<(), String> {
+    pub fn present_cursor(
+        &mut self,
+        cursor: &super::transport::CursorPacket,
+    ) -> Result<(), String> {
         if !cursor.visible || cursor.source_width == 0 || cursor.source_height == 0 {
             return Ok(());
         }
@@ -247,13 +268,12 @@ impl NativePresenter {
             + (i64::from(cursor.y).clamp(0, i64::from(cursor.source_height)) * i64::from(height)
                 / i64::from(cursor.source_height)) as i32;
         unsafe {
-            let icon = LoadCursorW(None, IDC_ARROW)
-                .map_err(|e| format!("Cursor padrão do Windows: {e}"))?;
+            let icon = self.cursor_handle(cursor)?;
             let dc = GetDC(Some(self.hwnd));
             if dc.is_invalid() {
                 return Err("Não foi possível desenhar o cursor remoto".into());
             }
-            let drawn = DrawIconEx(dc, x, y, icon.into(), 0, 0, 0, None, DI_NORMAL).is_ok();
+            let drawn = DrawIconEx(dc, x, y, icon, 0, 0, 0, None, DI_NORMAL).is_ok();
             let _ = ReleaseDC(Some(self.hwnd), dc);
             if drawn {
                 Ok(())
@@ -261,6 +281,25 @@ impl NativePresenter {
                 Err("Falha ao desenhar o cursor remoto".into())
             }
         }
+    }
+
+    fn cursor_handle(&mut self, cursor: &super::transport::CursorPacket) -> Result<HICON, String> {
+        if let Some(shape) = &cursor.shape {
+            if self.cursor_icon.as_ref().map(|icon| icon.id) != Some(shape.id) {
+                self.cursor_icon = create_cursor_icon(shape).map(|handle| CachedCursorIcon {
+                    id: shape.id,
+                    handle,
+                });
+            }
+            if let Some(icon) = &self.cursor_icon {
+                return Ok(icon.handle);
+            }
+        } else {
+            self.cursor_icon = None;
+        }
+        unsafe { LoadCursorW(None, IDC_ARROW) }
+            .map(Into::into)
+            .map_err(|error| format!("Cursor padrão do Windows: {error}"))
     }
 
     unsafe fn resize_if_needed(&mut self) -> Result<bool, String> {
@@ -309,6 +348,72 @@ impl NativePresenter {
         self.output_width = width;
         self.output_height = height;
         Ok(true)
+    }
+}
+
+fn create_cursor_icon(shape: &super::transport::CursorShape) -> Option<HICON> {
+    let width = i32::from(shape.width);
+    let height = i32::from(shape.height);
+    if width <= 0 || height <= 0 || shape.bytes.is_empty() {
+        return None;
+    }
+    unsafe {
+        let (mask, color) = match shape.kind {
+            1 => {
+                let expected = usize::from(shape.pitch).checked_mul(usize::from(shape.height))?;
+                if shape.bytes.len() != expected {
+                    return None;
+                }
+                (
+                    CreateBitmap(width, height, 1, 1, Some(shape.bytes.as_ptr().cast())),
+                    HBITMAP::default(),
+                )
+            }
+            2 => {
+                let row_bytes = usize::from(shape.width).checked_mul(4)?;
+                let pitch = usize::from(shape.pitch);
+                let expected = pitch.checked_mul(usize::from(shape.height))?;
+                if pitch < row_bytes || shape.bytes.len() != expected {
+                    return None;
+                }
+                let mut pixels = Vec::with_capacity(row_bytes * usize::from(shape.height));
+                for row in shape.bytes.chunks_exact(pitch) {
+                    pixels.extend_from_slice(&row[..row_bytes]);
+                }
+                let color = CreateBitmap(width, height, 1, 32, Some(pixels.as_ptr().cast()));
+                let mask_row = usize::from(shape.width).div_ceil(16) * 2;
+                let mask_bits = vec![0u8; mask_row * usize::from(shape.height)];
+                let mask = CreateBitmap(width, height, 1, 1, Some(mask_bits.as_ptr().cast()));
+                (mask, color)
+            }
+            // Masked-color exige XOR com o pixel existente. Aproximar com
+            // alpha altera as cores; nesses cursores usamos a seta segura.
+            _ => return None,
+        };
+        if mask.is_invalid() || (shape.kind == 2 && color.is_invalid()) {
+            if !mask.is_invalid() {
+                let _ = DeleteObject(mask.into());
+            }
+            if !color.is_invalid() {
+                let _ = DeleteObject(color.into());
+            }
+            return None;
+        }
+        let info = ICONINFO {
+            // DrawIconEx recebe a coordenada do canto superior esquerdo
+            // informada pelo DXGI; criar HICON tambem permite DestroyIcon.
+            fIcon: true.into(),
+            xHotspot: u32::from(shape.hotspot_x),
+            yHotspot: u32::from(shape.hotspot_y),
+            hbmMask: mask,
+            hbmColor: color,
+        };
+        let icon = CreateIconIndirect(&info).ok();
+        let _ = DeleteObject(mask.into());
+        if !color.is_invalid() {
+            let _ = DeleteObject(color.into());
+        }
+        icon
     }
 }
 

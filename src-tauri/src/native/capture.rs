@@ -3,7 +3,10 @@
 //! The concrete backend owns DXGI Desktop Duplication textures. Encoders receive
 //! an `ID3D11Texture2D` directly; this API deliberately has no CPU byte buffer.
 #[cfg(target_os = "windows")]
-use super::{CaptureTargetId, CaptureTargetInfo, GraphicsAdapterInfo};
+use super::{
+    transport::{CursorPacket, CursorShape},
+    CaptureTargetId, CaptureTargetInfo, GraphicsAdapterInfo,
+};
 #[cfg(target_os = "windows")]
 use voxa_native_core::protocol::Hdr10Metadata;
 #[cfg(target_os = "windows")]
@@ -24,6 +27,9 @@ use windows::{
                 },
                 CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory1, IDXGIOutput1, IDXGIOutput5,
                 IDXGIOutput6, IDXGIOutputDuplication, IDXGIResource, DXGI_OUTDUPL_FRAME_INFO,
+                DXGI_OUTDUPL_POINTER_SHAPE_INFO, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR,
+                DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR,
+                DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME,
             },
         },
     },
@@ -50,6 +56,8 @@ pub struct GpuFrame<'a> {
     pub cursor_y: i32,
     pub source_width: u32,
     pub source_height: u32,
+    pub cursor_shape_changed: bool,
+    pub cursor_shape: Option<CursorShape>,
     _lease: FrameLease<'a>,
 }
 
@@ -161,6 +169,15 @@ impl DxgiCapture {
                         .ok_or("DXGI não retornou textura")?
                         .cast::<ID3D11Texture2D>()
                         .map_err(|e| e.to_string())?;
+                    let cursor_shape_changed = info.PointerShapeBufferSize > 0;
+                    let cursor_shape = if cursor_shape_changed {
+                        self.pointer_shape(
+                            info.PointerShapeBufferSize,
+                            info.LastMouseUpdateTime.max(0) as u64,
+                        )?
+                    } else {
+                        None
+                    };
                     Ok(Some(GpuFrame {
                         texture,
                         cursor_visible: info.PointerPosition.Visible.as_bool(),
@@ -168,6 +185,8 @@ impl DxgiCapture {
                         cursor_y: info.PointerPosition.Position.y - self.origin_y,
                         source_width: self.width,
                         source_height: self.height,
+                        cursor_shape_changed,
+                        cursor_shape,
                         _lease: lease,
                     }))
                 }
@@ -175,6 +194,57 @@ impl DxgiCapture {
                 Err(error) => Err(format!("Falha na captura DXGI: {error}")),
             }
         }
+    }
+
+    fn pointer_shape(&self, requested: u32, id: u64) -> Result<Option<CursorShape>, String> {
+        if requested == 0 || requested as usize > CursorPacket::MAX_SHAPE_BYTES {
+            return Ok(None);
+        }
+        let mut bytes = vec![0u8; requested as usize];
+        let mut required = 0u32;
+        let mut info = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
+        unsafe {
+            self.duplication
+                .GetFramePointerShape(
+                    requested,
+                    bytes.as_mut_ptr().cast(),
+                    &mut required,
+                    &mut info,
+                )
+                .map_err(|error| format!("Forma do cursor DXGI: {error}"))?;
+        }
+        if required == 0
+            || required as usize > bytes.len()
+            || required as usize > CursorPacket::MAX_SHAPE_BYTES
+            || info.Width == 0
+            || info.Width > 64
+            || info.Height == 0
+            || info.Height > 128
+            || info.Pitch == 0
+        {
+            return Ok(None);
+        }
+        let kind = match info.Type as i32 {
+            value if value == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0 => 1,
+            value if value == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR.0 => 2,
+            value if value == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR.0 => 4,
+            _ => return Ok(None),
+        };
+        bytes.truncate(required as usize);
+        let id = bytes.iter().fold(
+            id ^ u64::from(info.Type) ^ (u64::from(info.Width) << 32) ^ u64::from(info.Height),
+            |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3),
+        );
+        Ok(Some(CursorShape {
+            id,
+            kind,
+            width: info.Width as u16,
+            height: info.Height as u16,
+            pitch: info.Pitch.min(u16::MAX.into()) as u16,
+            hotspot_x: info.HotSpot.x.clamp(0, u16::MAX.into()) as u16,
+            hotspot_y: info.HotSpot.y.clamp(0, u16::MAX.into()) as u16,
+            bytes: std::sync::Arc::new(bytes),
+        }))
     }
 }
 

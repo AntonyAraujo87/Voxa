@@ -245,6 +245,9 @@ fn run_device_session(
     unsafe { first.texture.GetDesc(&mut desc) };
     let mut lanes = HashMap::<(String, VideoCodec), EncoderLane>::new();
     let mut lane_retries = HashMap::<(String, VideoCodec), Instant>::new();
+    let mut cursor_shape = first.cursor_shape.clone();
+    let mut cursor_shape_pending = first.cursor_shape_changed;
+    let mut cursor_shape_sent_at = Instant::now() - Duration::from_secs(3);
     if let Ok(mut inner) = state.lock() {
         inner.status.capture = "dxgi-active";
         inner.status.encoder = "media-foundation-hardware";
@@ -319,6 +322,12 @@ fn run_device_session(
             .lock()
             .map(|inner| inner.cursor_visible)
             .unwrap_or(true);
+        if frame.cursor_shape_changed {
+            cursor_shape = frame.cursor_shape.clone();
+            cursor_shape_pending = true;
+        }
+        let refresh_shape = cursor_shape_sent_at.elapsed() >= Duration::from_secs(5);
+        let shape_changed = cursor_shape_pending || refresh_shape;
         transport.queue_cursor(CursorPacket {
             timestamp_us: timestamp_100ns.max(0) as u64 / 10,
             visible: show_cursor && frame.cursor_visible,
@@ -326,7 +335,13 @@ fn run_device_session(
             y: frame.cursor_y,
             source_width: frame.source_width,
             source_height: frame.source_height,
+            shape_changed,
+            shape: shape_changed.then(|| cursor_shape.clone()).flatten(),
         });
+        if shape_changed {
+            cursor_shape_pending = false;
+            cursor_shape_sent_at = Instant::now();
+        }
         let force_keyframe = transport.take_keyframe_request();
         lanes.retain(|key, _| {
             active_lanes

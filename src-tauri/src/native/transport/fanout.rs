@@ -198,6 +198,18 @@ pub struct AudioPacket {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CursorShape {
+    pub id: u64,
+    pub kind: u8,
+    pub width: u16,
+    pub height: u16,
+    pub pitch: u16,
+    pub hotspot_x: u16,
+    pub hotspot_y: u16,
+    pub bytes: Arc<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CursorPacket {
     pub timestamp_us: u64,
     pub visible: bool,
@@ -205,31 +217,124 @@ pub struct CursorPacket {
     pub y: i32,
     pub source_width: u32,
     pub source_height: u32,
+    /// `false` preserves the last shape on the viewer. `true` with `None`
+    /// explicitly selects the safe system-arrow fallback.
+    pub shape_changed: bool,
+    pub shape: Option<CursorShape>,
 }
 
 impl CursorPacket {
-    const WIRE_LEN: usize = 17;
-    pub(super) fn encode(&self) -> [u8; Self::WIRE_LEN] {
-        let mut bytes = [0u8; Self::WIRE_LEN];
+    const LEGACY_WIRE_LEN: usize = 17;
+    const SHAPE_HEADER_LEN: usize = 43;
+    const SHAPE_VERSION: u8 = 1;
+    // Cursores maiores usam a seta local para nunca disputar dezenas de
+    // kilobytes com audio/video em links lentos. Altura 128 cobre as duas
+    // mascaras empilhadas de um cursor monocromatico 64x64.
+    pub const MAX_SHAPE_BYTES: usize = 64 * 128 * 4;
+
+    pub(super) fn encode(&self) -> Result<Vec<u8>, String> {
+        let shape_len = self.shape.as_ref().map_or(0, |shape| shape.bytes.len());
+        if shape_len > Self::MAX_SHAPE_BYTES || (!self.shape_changed && self.shape.is_some()) {
+            return Err("Forma de cursor fora dos limites".into());
+        }
+        let extended = self.shape_changed || self.shape.is_some();
+        let mut bytes = vec![
+            0u8;
+            if extended {
+                Self::SHAPE_HEADER_LEN + shape_len
+            } else {
+                Self::LEGACY_WIRE_LEN
+            }
+        ];
         bytes[0] = u8::from(self.visible);
         bytes[1..5].copy_from_slice(&self.x.to_be_bytes());
         bytes[5..9].copy_from_slice(&self.y.to_be_bytes());
         bytes[9..13].copy_from_slice(&self.source_width.to_be_bytes());
         bytes[13..17].copy_from_slice(&self.source_height.to_be_bytes());
-        bytes
+        if extended {
+            bytes[17] = Self::SHAPE_VERSION;
+            bytes[18] = if self.shape.is_some() { 2 } else { 1 };
+            if let Some(shape) = &self.shape {
+                if !matches!(shape.kind, 1 | 2 | 4)
+                    || shape.width == 0
+                    || shape.height == 0
+                    || shape.width > 64
+                    || shape.height > 128
+                    || shape.pitch == 0
+                {
+                    return Err("Metadados da forma do cursor invalidos".into());
+                }
+                bytes[19] = shape.kind;
+                bytes[20..28].copy_from_slice(&shape.id.to_be_bytes());
+                bytes[28..30].copy_from_slice(&shape.width.to_be_bytes());
+                bytes[30..32].copy_from_slice(&shape.height.to_be_bytes());
+                bytes[32..34].copy_from_slice(&shape.pitch.to_be_bytes());
+                bytes[34..36].copy_from_slice(&shape.hotspot_x.to_be_bytes());
+                bytes[36..38].copy_from_slice(&shape.hotspot_y.to_be_bytes());
+                bytes[38..42].copy_from_slice(&(shape_len as u32).to_be_bytes());
+                bytes[43..].copy_from_slice(&shape.bytes);
+            }
+        }
+        Ok(bytes)
     }
     pub(super) fn decode(timestamp_us: u64, bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != Self::WIRE_LEN || bytes[0] > 1 {
+        if bytes.len() < Self::LEGACY_WIRE_LEN || bytes[0] > 1 {
             return None;
         }
-        let cursor = Self {
+        let mut cursor = Self {
             timestamp_us,
             visible: bytes[0] == 1,
             x: i32::from_be_bytes(bytes[1..5].try_into().ok()?),
             y: i32::from_be_bytes(bytes[5..9].try_into().ok()?),
             source_width: u32::from_be_bytes(bytes[9..13].try_into().ok()?),
             source_height: u32::from_be_bytes(bytes[13..17].try_into().ok()?),
+            shape_changed: false,
+            shape: None,
         };
-        (cursor.source_width > 0 && cursor.source_height > 0).then_some(cursor)
+        if cursor.source_width == 0 || cursor.source_height == 0 {
+            return None;
+        }
+        if bytes.len() == Self::LEGACY_WIRE_LEN {
+            return Some(cursor);
+        }
+        if bytes.len() < Self::SHAPE_HEADER_LEN
+            || bytes[17] != Self::SHAPE_VERSION
+            || !matches!(bytes[18], 1 | 2)
+            || bytes[42] != 0
+        {
+            return None;
+        }
+        cursor.shape_changed = true;
+        if bytes[18] == 1 {
+            return (bytes.len() == Self::SHAPE_HEADER_LEN).then_some(cursor);
+        }
+        let length = u32::from_be_bytes(bytes[38..42].try_into().ok()?) as usize;
+        if length == 0
+            || length > Self::MAX_SHAPE_BYTES
+            || bytes.len() != Self::SHAPE_HEADER_LEN + length
+        {
+            return None;
+        }
+        let shape = CursorShape {
+            kind: bytes[19],
+            id: u64::from_be_bytes(bytes[20..28].try_into().ok()?),
+            width: u16::from_be_bytes(bytes[28..30].try_into().ok()?),
+            height: u16::from_be_bytes(bytes[30..32].try_into().ok()?),
+            pitch: u16::from_be_bytes(bytes[32..34].try_into().ok()?),
+            hotspot_x: u16::from_be_bytes(bytes[34..36].try_into().ok()?),
+            hotspot_y: u16::from_be_bytes(bytes[36..38].try_into().ok()?),
+            bytes: Arc::new(bytes[43..].to_vec()),
+        };
+        if !matches!(shape.kind, 1 | 2 | 4)
+            || shape.width == 0
+            || shape.height == 0
+            || shape.width > 64
+            || shape.height > 128
+            || shape.pitch == 0
+        {
+            return None;
+        }
+        cursor.shape = Some(shape);
+        Some(cursor)
     }
 }
