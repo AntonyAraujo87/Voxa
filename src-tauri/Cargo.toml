@@ -34,7 +34,7 @@ voxa-native-core = { path = "native-core" }
 rusty-opus = "0.9.1"
 windows-core = "0.61"
 keyring = { version = "4.2", default-features = false, features = ["v1", "windows-native-keyring-store"] }
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_System_ProcessStatus",
   "Win32_System_Threading",
